@@ -12,6 +12,9 @@ struct Cli {
 enum Cmd {
     /// First-run setup: generate nostr keys + write manifest state.
     Init(hashu_cli::init::InitCmd),
+    /// Inspect or update the operator state file.
+    #[command(subcommand)]
+    Config(hashu_cli::config::ConfigAction),
     /// Operator manifest commands (kind 0 publish / dry-run).
     #[command(subcommand)]
     Manifest(hashu_cli::manifest::ManifestAction),
@@ -32,6 +35,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Init(c) => hashu_cli::init::run(c).await,
+        Cmd::Config(action) => {
+            hashu_cli::config::run(hashu_cli::config::ConfigCmd { action }).await
+        }
         Cmd::Manifest(action) => {
             hashu_cli::manifest::run(hashu_cli::manifest::ManifestCmd { action }).await
         }

@@ -19,3 +19,4 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 dialoguer = { workspace = true }
 nostr = { workspace = true }
+serde_json = { workspace = true }

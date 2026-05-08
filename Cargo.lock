@@ -1256,6 +1256,7 @@ dependencies = [
  "hashu-mint",
  "hashu-proxy",
  "nostr",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
