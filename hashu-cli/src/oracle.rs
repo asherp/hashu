@@ -50,20 +50,21 @@ pub async fn run(cmd: OracleCmd) -> Result<()> {
 
 async fn ping(args: PingArgs) -> Result<()> {
     let started = std::time::Instant::now();
-    let sample = match args.source {
+    let (sample, base_url) = match args.source {
         Source::Esplora => fetch_esplora(&args).await?,
         Source::Luxor => fetch_luxor(&args).await?,
     };
     let elapsed = started.elapsed();
-    print_sample(args.source, &sample, elapsed);
+    print_sample(args.source, &base_url, &sample, elapsed);
     Ok(())
 }
 
-async fn fetch_esplora(args: &PingArgs) -> Result<HashpriceSample> {
-    let client = match &args.base_url {
-        Some(url) => esplora::EsploraClient::with_base(url.clone()),
-        None => esplora::EsploraClient::new(),
-    };
+async fn fetch_esplora(args: &PingArgs) -> Result<(HashpriceSample, String)> {
+    let base_url = args
+        .base_url
+        .clone()
+        .unwrap_or_else(|| esplora::DEFAULT_BASE_URL.to_string());
+    let client = esplora::EsploraClient::with_base(base_url.clone());
     let tip = client.tip_hash().await.context("fetch tip hash")?;
     eprintln!("tip: {tip}");
     let mut window = Vec::with_capacity(args.window);
@@ -84,26 +85,30 @@ async fn fetch_esplora(args: &PingArgs) -> Result<HashpriceSample> {
             None => break,
         }
     }
-    esplora::compute_hashprice(&window).context("compute hashprice from empty window")
+    let sample = esplora::compute_hashprice(&window)
+        .context("compute hashprice from empty window")?;
+    Ok((sample, base_url))
 }
 
-async fn fetch_luxor(args: &PingArgs) -> Result<HashpriceSample> {
+async fn fetch_luxor(args: &PingArgs) -> Result<(HashpriceSample, String)> {
     let key = std::env::var(luxor::ENV_LUXOR_API_KEY)
         .with_context(|| format!("missing {} env var", luxor::ENV_LUXOR_API_KEY))?;
-    let client = match &args.base_url {
-        Some(url) => luxor::LuxorClient::with_base(key, url.clone()),
-        None => luxor::LuxorClient::new(key),
-    };
-    client.fetch_latest().await.context("fetch luxor hashprice")
+    let base_url = args
+        .base_url
+        .clone()
+        .unwrap_or_else(|| luxor::DEFAULT_BASE_URL.to_string());
+    let client = luxor::LuxorClient::with_base(key, base_url.clone());
+    let sample = client.fetch_latest().await.context("fetch luxor hashprice")?;
+    Ok((sample, base_url))
 }
 
-fn print_sample(source: Source, sample: &HashpriceSample, elapsed: Duration) {
+fn print_sample(source: Source, base_url: &str, sample: &HashpriceSample, elapsed: Duration) {
     let unix = sample
         .t
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(-1);
-    println!("source:           {source:?}");
+    println!("source:           {source:?} ({base_url})");
     println!("sample timestamp: {unix} (unix)");
     println!("sats/Th-sec:      {:.6e}", sample.sats_per_ths);
     println!("sats/Th/day:      {:.4}", sample.sats_per_th_per_day());
