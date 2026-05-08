@@ -1,0 +1,13 @@
+[package]
+name = "hashu-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hashu-core = { path = "../hashu-core" }
+hashu-mint = { path = "../hashu-mint" }
+hashu-proxy = { path = "../hashu-proxy" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

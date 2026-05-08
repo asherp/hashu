@@ -1,0 +1,28 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Persistent state
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+data/
+state/
+
+# Secrets and config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+nostr-secret*
+mint-secret*
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/

@@ -1,0 +1,18 @@
+[package]
+name = "hashu-mint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hashu-core = { path = "../hashu-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+# `mint` feature pulls in cdk-signatory, which has a build script that
+# invokes `protoc`. Make sure `protoc` is on PATH or `PROTOC` is set.
+cdk = { version = "0.16", features = ["mint", "wallet", "nostr"] }
