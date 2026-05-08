@@ -72,6 +72,12 @@ pub struct ManifestState {
     #[serde(default)]
     pub profile: Profile,
     pub hashprice_oracle: String,
+    /// Base URL the oracle adapter polls at runtime. None falls back to the
+    /// adapter's compiled-in default (e.g. blockstream.info for esplora).
+    /// Captured here so operators see and edit it, and the daemon doesn't
+    /// need a separate config file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hashprice_oracle_url: Option<String>,
     pub relays: Vec<String>,
     #[serde(default)]
     pub keysets: Vec<KeysetEntry>,
@@ -88,6 +94,7 @@ impl ManifestState {
             instance_url,
             profile: Profile::default(),
             hashprice_oracle,
+            hashprice_oracle_url: None,
             relays,
             keysets: Vec::new(),
             last_published_at: None,

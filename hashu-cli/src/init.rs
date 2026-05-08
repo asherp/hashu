@@ -13,6 +13,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use dialoguer::{Confirm, Input, Select};
 use hashu_mint::manifest::{ManifestState, Profile};
+use hashu_mint::oracle::{esplora, luxor};
 use nostr::{Keys, ToBech32};
 
 #[derive(Debug, Args)]
@@ -71,7 +72,7 @@ pub async fn run(cmd: InitCmd) -> Result<()> {
         .with_context(|| format!("chmod 0700 {}", data_dir.display()))?;
 
     let interactive = !cmd.no_interactive;
-    let (instance_url, profile, oracle, relays) = if interactive {
+    let (instance_url, profile, oracle, oracle_url, relays) = if interactive {
         prompt_setup()?
     } else {
         default_setup()
@@ -79,6 +80,7 @@ pub async fn run(cmd: InitCmd) -> Result<()> {
 
     let mut state_obj = ManifestState::new(instance_url, oracle, relays);
     state_obj.profile = profile;
+    state_obj.hashprice_oracle_url = Some(oracle_url);
 
     let keys = Keys::generate();
     write_nsec(&nsec, &keys)?;
@@ -99,7 +101,15 @@ pub async fn run(cmd: InitCmd) -> Result<()> {
     Ok(())
 }
 
-fn prompt_setup() -> Result<(String, Profile, String, Vec<String>)> {
+fn default_oracle_url(source: &str) -> &'static str {
+    match source {
+        "esplora" => esplora::DEFAULT_BASE_URL,
+        "luxor" => luxor::DEFAULT_BASE_URL,
+        _ => "",
+    }
+}
+
+fn prompt_setup() -> Result<(String, Profile, String, String, Vec<String>)> {
     let instance_url: String = Input::new()
         .with_prompt("Instance URL (e.g. https://mint.example.com)")
         .interact_text()?;
@@ -140,6 +150,11 @@ fn prompt_setup() -> Result<(String, Profile, String, Vec<String>)> {
         .default(0)
         .interact()?;
     let oracle = oracles[oracle_idx].to_string();
+    let default_url = default_oracle_url(&oracle);
+    let oracle_url: String = Input::new()
+        .with_prompt(format!("Oracle base URL ({oracle})"))
+        .default(default_url.to_string())
+        .interact_text()?;
 
     let default_relay_str = DEFAULT_RELAYS.join(", ");
     let relays_input: String = Input::new()
@@ -160,7 +175,7 @@ fn prompt_setup() -> Result<(String, Profile, String, Vec<String>)> {
 
     let confirm = Confirm::new()
         .with_prompt(format!(
-            "Generate new nostr keypair and write to disk? (instance={instance_url}, oracle={oracle}, {} relay(s))",
+            "Generate new nostr keypair and write to disk? (instance={instance_url}, oracle={oracle} @ {oracle_url}, {} relay(s))",
             relays.len()
         ))
         .default(true)
@@ -169,14 +184,15 @@ fn prompt_setup() -> Result<(String, Profile, String, Vec<String>)> {
         bail!("aborted by user");
     }
 
-    Ok((instance_url, profile, oracle, relays))
+    Ok((instance_url, profile, oracle, oracle_url, relays))
 }
 
-fn default_setup() -> (String, Profile, String, Vec<String>) {
+fn default_setup() -> (String, Profile, String, String, Vec<String>) {
     (
         "https://CHANGE-ME.example.com".to_string(),
         Profile::default(),
         "esplora".to_string(),
+        esplora::DEFAULT_BASE_URL.to_string(),
         DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect(),
     )
 }
