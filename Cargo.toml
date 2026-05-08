@@ -27,3 +27,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 time = { version = "0.3", default-features = false, features = ["parsing", "formatting", "std", "macros"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
+nostr = "0.44"
+nostr-sdk = { version = "0.44", default-features = false, features = ["all-nips"] }
+dialoguer = "0.11"
+tempfile = "3"

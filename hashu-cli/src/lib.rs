@@ -10,4 +10,6 @@
 //!   hashu daemon         — run mint + proxy in one process
 //!   hashu redemptions    — list active redemptions
 
+pub mod init;
+pub mod manifest;
 pub mod oracle;

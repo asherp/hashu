@@ -10,6 +10,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
+    /// First-run setup: generate nostr keys + write manifest state.
+    Init(hashu_cli::init::InitCmd),
+    /// Operator manifest commands (kind 0 publish / dry-run).
+    #[command(subcommand)]
+    Manifest(hashu_cli::manifest::ManifestAction),
     /// Hashprice oracle queries.
     Oracle(hashu_cli::oracle::OracleCmd),
 }
@@ -26,6 +31,10 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Init(c) => hashu_cli::init::run(c).await,
+        Cmd::Manifest(action) => {
+            hashu_cli::manifest::run(hashu_cli::manifest::ManifestCmd { action }).await
+        }
         Cmd::Oracle(c) => hashu_cli::oracle::run(c).await,
     }
 }

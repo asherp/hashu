@@ -15,9 +15,13 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 reqwest = { workspace = true }
 time = { workspace = true }
+nostr = { workspace = true }
+nostr-sdk = { workspace = true }
+anyhow = { workspace = true }
 # `mint` feature pulls in cdk-signatory, which has a build script that
 # invokes `protoc`. Make sure `protoc` is on PATH or `PROTOC` is set.
 cdk = { version = "0.16", features = ["mint", "wallet", "nostr"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
+tempfile = { workspace = true }
