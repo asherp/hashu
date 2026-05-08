@@ -120,10 +120,28 @@ inbound Stratum connections it is authorized to direct.
 
 ### 4.4 Hashprice oracle adapter
 
-- v0: Luxor Hashrate Index API. Pull cadence: 5 min.
+- **Default v0: self-derived from Bitcoin chain data via the Blockstream
+  Esplora REST API.** Free, public, no auth, no third-party pricing
+  dependency. Fits the self-hosted ethos. Operators running their own
+  `bitcoind`+`electrs`+`esplora` get fully sovereign pricing.
+  Computation:
+  ```
+  sats / PH / day = 86_400 × 1e15 × Σ(coinbase_sats_i)
+                                    ────────────────────────────────
+                                    Σ(difficulty_i × 4_295_032_833)
+  ```
+  averaged over a 24-block window (~4 hours). The coefficient
+  `4_295_032_833 ≈ 2^48 / 65_535` is the expected hashes per unit of
+  bdiff difficulty. `dt` cancels algebraically, so the formula is
+  independent of timestamp jitter and tolerates difficulty adjustments
+  mid-window.
+- **Optional commercial source: Luxor Hashrate Index API** (paid
+  Premium subscription). Configurable for operators who want
+  professionally-smoothed data with their own SLA.
+- Pull cadence: 5 min for both adapters.
 - Cache last N samples; expose interpolated value at arbitrary `t`.
-- Pluggable — define a `HashpriceOracle` trait so we can add Hashrate
-  Index, Braiins, or self-derived (network difficulty + fee market) later.
+- Pluggable via the `HashpriceOracle` trait — Braiins, Hashrate Index
+  GraphQL, or any other source can drop in later.
 
 ### 4.5 Lightning node
 

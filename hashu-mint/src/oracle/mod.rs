@@ -4,4 +4,5 @@
 //! a shared in-memory buffer and exposes the [`hashu_core::hashprice::HashpriceOracle`]
 //! trait so the redemption controller can query at arbitrary `t`.
 
+pub mod esplora;
 pub mod luxor;
