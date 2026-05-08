@@ -1298,6 +1298,7 @@ dependencies = [
 name = "hashu-proxy"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "hashu-core",
  "serde",
  "serde_json",

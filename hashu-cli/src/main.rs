@@ -20,6 +20,9 @@ enum Cmd {
     Manifest(hashu_cli::manifest::ManifestAction),
     /// Hashprice oracle queries.
     Oracle(hashu_cli::oracle::OracleCmd),
+    /// Stratum proxy commands.
+    #[command(subcommand)]
+    Proxy(hashu_cli::proxy::ProxyAction),
 }
 
 #[tokio::main]
@@ -42,5 +45,8 @@ async fn main() -> Result<()> {
             hashu_cli::manifest::run(hashu_cli::manifest::ManifestCmd { action }).await
         }
         Cmd::Oracle(c) => hashu_cli::oracle::run(c).await,
+        Cmd::Proxy(action) => {
+            hashu_cli::proxy::run(hashu_cli::proxy::ProxyCmd { action }).await
+        }
     }
 }
