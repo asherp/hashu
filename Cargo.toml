@@ -25,3 +25,5 @@ sha2 = "0.10"
 hex = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 time = { version = "0.3", default-features = false, features = ["parsing", "formatting", "std", "macros"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"

@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "hashu"
+path = "src/main.rs"
+
 [dependencies]
 hashu-core = { path = "../hashu-core" }
 hashu-mint = { path = "../hashu-mint" }
@@ -11,3 +15,5 @@ hashu-proxy = { path = "../hashu-proxy" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
