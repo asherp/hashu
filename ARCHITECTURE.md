@@ -242,15 +242,26 @@ accepted share becomes a leaf:
 
 ```
 leaf_i = SHA256(
-    share_preimage_i  ||   // bytes that hash to the share
-    target_bits_i     ||   // claimed share difficulty
-    ntime_i           ||   // share timestamp from header
-    seq_i                  // monotonic per-redemption counter
+    u32_be(len(share_preimage_i)) ||   // length prefix to disambiguate
+    share_preimage_i               ||   // bytes that hash to the share
+    u32_be(target_bits_i)          ||   // claimed share difficulty
+    u32_be(ntime_i)                ||   // share timestamp from header
+    u64_be(seq_i)                       // monotonic per-redemption counter
 )
 ```
 
+The u32 length prefix on `share_preimage` removes ambiguity at the
+variable/fixed-width boundary (otherwise a longer preimage could
+collide with a shorter one plus differing trailing fields).
+
 Notably absent from the leaf: pool URL, worker name, redeemer
 identity. The leaf is fully self-contained PoW evidence.
+
+Inner nodes use `SHA256(left || right)`. Odd nodes at any level are
+promoted unchanged to the next level (RFC 6962 / Certificate
+Transparency style), avoiding the duplicate-last-leaf second-preimage
+issue from Bitcoin's Merkle scheme. Inclusion proofs are O(log n) in
+size and O(log n) to verify.
 
 **Public stream (signed by operator npub):** at a configurable cadence
 (default: every 1024 leaves OR every 5 minutes, whichever comes first),
@@ -418,7 +429,52 @@ and replace settlement-by-payment with settlement-by-share-accumulation.
 `THH` as a custom unit needs no new NUT — Cashu already supports
 arbitrary `unit` strings in NUT-04/05; clients just need to display it.
 
-## 8. Open questions
+## 8. Prior art
+
+The share-commitment tree (§4.7.2) is the load-bearing novel piece. Adjacent
+work to position against:
+
+- **SMARTPOOL** (Luu et al., USENIX Security 2017,
+  [eprint.iacr.org/2017/019](https://eprint.iacr.org/2017/019)) — augmented
+  Merkle tree of shares with probabilistic on-chain verification. Closest
+  cryptographic ancestor. **Inverted trust direction:** SMARTPOOL lets a
+  pool verify a miner; Hashu lets a *buyer* verify a *seller*.
+- **Hashpool / eHash** ([github.com/vnprc/hashpool](https://github.com/vnprc/hashpool))
+  — Cashu-meets-mining, but tokens represent a miner's PPLNS claim against a
+  pool, not a buyer's claim on delivered hashrate. No share-tree commitment
+  or operator-signed root; trust still routes through the mint.
+- **Fedimint federated-pool proposal
+  ([#1504](https://github.com/fedimint/fedimint/discussions/1504))** —
+  blind-signed shares plus per-epoch Proof-of-Liabilities. Same primitive
+  family (blind sigs over share commitments) but stops at PoL and addresses
+  miners, not external hashrate buyers.
+
+What we are not doing that others do:
+
+- **Hashrate DLCs** (Suredbits, Atomic Finance) attest *aggregate network
+  hashrate* via header oracles. Different problem: price exposure, not
+  per-seller delivery.
+- **OCEAN DATUM** sends Merkle branches miner→pool to keep templates
+  private from the pool. Opposite direction from Hashu.
+- **Non-outsourceable puzzles** (Miller et al., CCS 2015) try to *prevent*
+  outsourcing. Hashu attests *to* it.
+
+What does not exist (as of this writing):
+
+- No public hashrate marketplace (NiceHash, Mining Rig Rentals, Luxor,
+  Braiins) publishes cryptographic commitments to per-order share
+  preimages — only dashboard accounting.
+- Stratum V2 / SRI specifies no share-attestation primitive; the security
+  layer is Noise/AEAD only.
+- No NIP covers PoW share receipts.
+- No Cashu NUT or Fedimint module bundles a signed Merkle-of-shares with
+  ecash redemption.
+
+The combination *(buyer-chosen pool + Cashu redemption + signed Merkle of
+share preimages + nostr publication + private NIP-44 leaf delivery)*
+appears to be unclaimed.
+
+## 9. Open questions
 
 Resolved 2026-05-07:
 - ~~Q1 — sats-equivalent semantics:~~ **(a)** redeemer's chosen pool;
@@ -443,7 +499,7 @@ Open:
   censorship-resistant but exposes operators to pools that blacklist
   proxies. Likely answer: open by default, operator-pluggable denylist.
 
-## 9. Phased roadmap
+## 10. Phased roadmap
 
 **Phase 0 — Skeleton**
 - Rust workspace: `hashu-mint`, `hashu-proxy`, `hashu-core`, `hashu-cli`.
