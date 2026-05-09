@@ -5,9 +5,10 @@
 //!
 //! All three live in the same tokio runtime on 127.0.0.1 with OS-assigned
 //! ports. The fake pool replays a tiny scripted exchange (subscribe →
-//! authorize → notify → accept-submit → reject-submit) and the test asserts
-//! that the proxy's metrics see one connection, one submitted share, one
-//! accepted, and one rejected.
+//! authorize → set_difficulty → notify → accept-submit → reject-submit) and
+//! the test asserts that the proxy's metrics see one connection, two
+//! submitted shares, one accepted, one rejected, and exactly one *committed*
+//! share leaf (the accepted one — rejects don't enter the tree).
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -26,8 +27,12 @@ async fn read_line<R: tokio::io::AsyncRead + Unpin>(r: &mut BufReader<R>) -> Str
     s
 }
 
+/// 32-byte hex (all 0x11) — used as both the prevhash and as a placeholder
+/// to avoid hand-typing 64 zeros throughout.
+const HASH32_HEX: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+
 #[tokio::test]
-async fn proxy_passes_messages_and_counts_shares() {
+async fn proxy_passes_messages_and_commits_accepted_share() {
     // ---- fake pool ----
     let pool_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let pool_addr = pool_listener.local_addr().unwrap();
@@ -39,10 +44,10 @@ async fn proxy_passes_messages_and_counts_shares() {
         let (r, mut w) = sock.into_split();
         let mut br = BufReader::new(r);
 
-        // mining.subscribe → respond
+        // mining.subscribe → respond with a legitimate-shaped 3-tuple.
         let sub = read_line(&mut br).await;
         pool_received.lock().await.push(sub);
-        w.write_all(b"{\"id\":1,\"result\":[[],\"abcd\",4],\"error\":null}\n")
+        w.write_all(b"{\"id\":1,\"result\":[[[\"mining.set_difficulty\",\"s1\"],[\"mining.notify\",\"s2\"]],\"abcdef01\",4],\"error\":null}\n")
             .await.unwrap();
 
         // mining.authorize → respond true
@@ -50,9 +55,13 @@ async fn proxy_passes_messages_and_counts_shares() {
         pool_received.lock().await.push(auth);
         w.write_all(b"{\"id\":2,\"result\":true,\"error\":null}\n").await.unwrap();
 
-        // pool-initiated mining.notify (no response expected)
-        w.write_all(b"{\"id\":null,\"method\":\"mining.notify\",\"params\":[\"job1\",\"prevh\",\"cb1\",\"cb2\",[],\"v\",\"nb\",\"nt\",true]}\n")
+        // pool-initiated set_difficulty + notify (no response expected)
+        w.write_all(b"{\"id\":null,\"method\":\"mining.set_difficulty\",\"params\":[1.0]}\n")
             .await.unwrap();
+        let notify = format!(
+            "{{\"id\":null,\"method\":\"mining.notify\",\"params\":[\"job1\",\"{HASH32_HEX}\",\"aabbccdd\",\"11223344\",[],\"20000000\",\"1d00ffff\",\"60000000\",true]}}\n"
+        );
+        w.write_all(notify.as_bytes()).await.unwrap();
 
         // mining.submit → accept
         let sub1 = read_line(&mut br).await;
@@ -90,18 +99,20 @@ async fn proxy_passes_messages_and_counts_shares() {
     w.write_all(b"{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"hashu-test/0.1\"]}\n")
         .await.unwrap();
     let sub_resp = read_line(&mut br).await;
-    assert!(sub_resp.contains("\"abcd\""), "got {sub_resp}");
+    assert!(sub_resp.contains("\"abcdef01\""), "got {sub_resp}");
 
     w.write_all(b"{\"id\":2,\"method\":\"mining.authorize\",\"params\":[\"worker.1\",\"x\"]}\n")
         .await.unwrap();
     let auth_resp = read_line(&mut br).await;
     assert!(auth_resp.contains("\"result\":true"), "got {auth_resp}");
 
+    let set_diff = read_line(&mut br).await;
+    assert!(set_diff.contains("set_difficulty"), "got {set_diff}");
     let notify = read_line(&mut br).await;
     assert!(notify.contains("mining.notify"), "got {notify}");
 
     w.write_all(
-        b"{\"id\":3,\"method\":\"mining.submit\",\"params\":[\"worker.1\",\"job1\",\"e2\",\"nt\",\"nonce\"]}\n",
+        b"{\"id\":3,\"method\":\"mining.submit\",\"params\":[\"worker.1\",\"job1\",\"c0c1c2c3\",\"60000001\",\"deadbeef\"]}\n",
     )
     .await
     .unwrap();
@@ -109,7 +120,7 @@ async fn proxy_passes_messages_and_counts_shares() {
     assert!(r1.contains("\"result\":true"), "got {r1}");
 
     w.write_all(
-        b"{\"id\":4,\"method\":\"mining.submit\",\"params\":[\"worker.1\",\"job1\",\"e2\",\"nt\",\"badnonce\"]}\n",
+        b"{\"id\":4,\"method\":\"mining.submit\",\"params\":[\"worker.1\",\"job1\",\"c0c1c2c3\",\"60000001\",\"baadf00d\"]}\n",
     )
     .await
     .unwrap();
@@ -126,6 +137,7 @@ async fn proxy_passes_messages_and_counts_shares() {
     assert_eq!(snap.shares_submitted, 2, "{snap:?}");
     assert_eq!(snap.shares_accepted, 1, "{snap:?}");
     assert_eq!(snap.shares_rejected, 1, "{snap:?}");
+    assert_eq!(snap.shares_committed, 1, "{snap:?}");
 
     let pool_lines = received_at_pool.lock().await;
     assert!(pool_lines[0].contains("mining.subscribe"));

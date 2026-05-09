@@ -30,14 +30,15 @@ mint daemon are still ahead.
 | Operator manifest publisher (kind 0 nostr event) | done | `hashu-mint::manifest` |
 | Stratum V1 pass-through proxy + share counter | done | `hashu-proxy::stratum` |
 | `hashu` operator CLI (init, config, manifest, oracle, proxy) | done | `hashu-cli` |
-| Share commitment tree integration in the proxy | next | — |
+| Share commitment tree integration in the proxy | done | `hashu-proxy::stratum::{session,header,committer,compact}` |
 | `hashrate` melt method via cdk | next | — |
 | Per-share nostr receipts + completion certificate | planned | — |
 | Stratum V2 via SRI | fast-follow | — |
 | Lightning backend (LND/CLN via cdk) | planned | — |
 
-68 tests across the workspace, plus a loopback end-to-end test for the
-proxy.
+99 tests across the workspace, plus a loopback end-to-end test for the
+proxy that asserts an accepted share gets committed to the per-connection
+share tree (and a rejected one does not).
 
 ## Build
 
@@ -118,10 +119,13 @@ hashu proxy run --upstream stratum+tcp://your-pool.example.com:3333
 ```
 
 Listens on `0.0.0.0:3333` (configurable via `--bind`) and forwards
-every accepted miner to the configured upstream pool, observing
-`mining.submit` / accept / reject in passing. Periodic metric snapshots
-are logged via `tracing`. Redemption-driven upstream redirection lands
-in a follow-up commit.
+every accepted miner to the configured upstream pool. As traffic flows
+the proxy maintains a per-connection [share commitment tree
+(§4.7.2)](ARCHITECTURE.md): each accepted share is reconstructed into
+its 80-byte block header, packaged into a `ShareLeaf`, and appended.
+On disconnect the final root + leaf count is logged. Periodic metric
+snapshots (including `shares_committed`) are logged via `tracing`.
+Redemption-driven upstream redirection lands in a follow-up commit.
 
 ## Workspace layout
 
