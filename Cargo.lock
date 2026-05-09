@@ -1250,13 +1250,16 @@ name = "hashu-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bitcoin",
  "clap",
  "dialoguer",
  "hashu-core",
  "hashu-mint",
  "hashu-proxy",
+ "hex",
  "nostr",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "tracing-subscriber",

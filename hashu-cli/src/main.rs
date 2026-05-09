@@ -23,6 +23,11 @@ enum Cmd {
     /// Stratum proxy commands.
     #[command(subcommand)]
     Proxy(hashu_cli::proxy::ProxyAction),
+    /// BTC wallet utilities.
+    #[command(subcommand)]
+    Wallet(hashu_cli::wallet::WalletAction),
+    /// Run a SHA-256d Stratum V1 CPU miner against an upstream endpoint.
+    Mine(hashu_cli::mine::MineArgs),
 }
 
 #[tokio::main]
@@ -48,5 +53,9 @@ async fn main() -> Result<()> {
         Cmd::Proxy(action) => {
             hashu_cli::proxy::run(hashu_cli::proxy::ProxyCmd { action }).await
         }
+        Cmd::Wallet(action) => {
+            hashu_cli::wallet::run(hashu_cli::wallet::WalletCmd { action }).await
+        }
+        Cmd::Mine(args) => hashu_cli::mine::run(args).await,
     }
 }

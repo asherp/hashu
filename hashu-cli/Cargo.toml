@@ -20,3 +20,6 @@ anyhow = { workspace = true }
 dialoguer = { workspace = true }
 nostr = { workspace = true }
 serde_json = { workspace = true }
+bitcoin = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }

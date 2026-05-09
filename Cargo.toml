@@ -31,3 +31,4 @@ nostr = "0.44"
 nostr-sdk = { version = "0.44", default-features = false, features = ["all-nips"] }
 dialoguer = "0.11"
 tempfile = "3"
+bitcoin = { version = "0.32", default-features = false, features = ["std", "rand-std", "secp-recovery"] }

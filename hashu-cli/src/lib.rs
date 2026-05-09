@@ -13,5 +13,7 @@
 pub mod config;
 pub mod init;
 pub mod manifest;
+pub mod mine;
 pub mod oracle;
 pub mod proxy;
+pub mod wallet;
