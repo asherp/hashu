@@ -1,7 +1,0 @@
-# Simulation outputs
-results/
-
-# Python
-__pycache__/
-*.py[cod]
-.venv/
