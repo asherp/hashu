@@ -53,6 +53,12 @@ pub struct HashrateRequest {
     pub worker_name: String,
     /// `THH` to redeem. Must be covered by the melted proofs.
     pub amount_thh: u64,
+    /// Optional wallet-chosen value that makes the request unique. The
+    /// redemption id is derived from the request string, and cdk refuses a
+    /// second melt of an identical request, so a wallet that redeems the
+    /// same amount to the same pool and worker twice sets a fresh nonce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
 }
 
 impl HashrateRequest {
@@ -122,9 +128,22 @@ impl HashrateMelter {
     }
 }
 
-/// Random 16-byte handle for a new redemption.
-fn new_redemption_id() -> RedemptionId {
-    RedemptionId::from_bytes(rand::random())
+/// Redemption id for a melt request: the first 16 bytes of the SHA-256 of
+/// the request string.
+///
+/// It has to be known at quote time. cdk stores the quote's lookup id, and
+/// when `make_payment` returns `Pending` it keeps checking that id, not the
+/// one `make_payment` returns; and `make_payment` is only handed the
+/// request, not the quote. Deriving the id from the request ties the two
+/// together. Identical requests share an id, which cdk treats like two
+/// quotes for one invoice: once one is pending or paid the other is
+/// refused, so nobody pays twice for one redemption.
+fn redemption_id_for(request: &str) -> RedemptionId {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(request.as_bytes());
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&digest[..16]);
+    RedemptionId::from_bytes(id)
 }
 
 /// Lookup id the mint stores for a redemption. Its hex is the handle.
@@ -182,7 +201,7 @@ impl MintPayment for HashrateMelter {
         }
         let req = self.validated(&custom.request)?;
         Ok(PaymentQuoteResponse {
-            request_lookup_id: None,
+            request_lookup_id: Some(lookup_id(&redemption_id_for(&custom.request))),
             amount: Amount::new(req.amount_thh, unit.clone()),
             fee: Amount::new(0, unit.clone()),
             state: MeltQuoteState::Unpaid,
@@ -203,7 +222,11 @@ impl MintPayment for HashrateMelter {
         }
         let req = self.validated(&custom.request)?;
 
-        let id = new_redemption_id();
+        let id = redemption_id_for(&custom.request);
+        if self.ledger.get(&id).is_some() {
+            // Already opened (cdk retrying): report where it stands.
+            return self.check_outgoing_payment(&lookup_id(&id)).await;
+        }
         self.ledger
             .open(Redemption::new(
                 id,
@@ -293,6 +316,47 @@ mod tests {
             melt_options: None,
             extra_json: None,
         }))
+    }
+
+    /// cdk keeps checking a pending melt by the quote's lookup id, so the
+    /// quote must carry the id of the redemption `make_payment` opens.
+    #[tokio::test]
+    async fn quote_lookup_id_matches_the_redemption() {
+        let (m, ledger) = melter();
+        let quote = m
+            .get_payment_quote(&HashrateMelter::unit(), custom(request(3)))
+            .await
+            .unwrap();
+        let paid = m
+            .make_payment(&HashrateMelter::unit(), custom(request(3)))
+            .await
+            .unwrap();
+        assert_eq!(
+            quote.request_lookup_id,
+            Some(paid.payment_lookup_id.clone())
+        );
+        assert_eq!(ledger.active().len(), 1);
+
+        // A retry reports the open redemption instead of failing.
+        let again = m
+            .make_payment(&HashrateMelter::unit(), custom(request(3)))
+            .await
+            .unwrap();
+        assert_eq!(again.payment_lookup_id, paid.payment_lookup_id);
+        assert_eq!(again.status, MeltQuoteState::Pending);
+        assert_eq!(ledger.active().len(), 1);
+    }
+
+    #[test]
+    fn nonce_makes_identical_redemptions_distinct() {
+        let with = |n: &str| {
+            serde_json::json!({
+                "pool_url": POOL, "worker_name": "rig1", "amount_thh": 3, "nonce": n,
+            })
+            .to_string()
+        };
+        assert!(HashrateRequest::parse(&with("a")).is_ok());
+        assert_ne!(redemption_id_for(&with("a")), redemption_id_for(&with("b")));
     }
 
     #[test]

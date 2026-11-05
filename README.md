@@ -31,6 +31,7 @@ mint daemon are still ahead.
 | Operator manifest publisher (kind 0 nostr event) | done | `hashu-mint::manifest` |
 | Stratum V1 pass-through proxy + share counter | done | `hashu-proxy::stratum` |
 | `hashu` operator CLI (init, config, manifest, oracle, proxy) | done | `hashu-cli` |
+| Mint daemon: `hashu mint run` (mint + rails + proxy + control API) | done | `hashu-cli::mint` |
 | Share commitment tree integration in the proxy | done | `hashu-proxy::stratum::{session,header,committer,compact}` |
 | `hashrate` melt method via cdk (redemption ledger + `MintPayment` backend) | done | `hashu-core::redemption`, `hashu-mint::melt` |
 | Tether (USDT) payment rail: buy `THH` with dollars (ERC-20 over EVM JSON-RPC) | done | `hashu-mint::tether` |
@@ -148,6 +149,52 @@ snapshots (including `shares_committed`) are logged via `tracing`.
 With `--control-bind 127.0.0.1:3334` the proxy also serves a small HTTP
 control API (`GET /status`: redemptions and progress) that the
 [MDK heater app](mdk/README.md) polls to switch miners onto the proxy.
+
+### 6. Run the mint
+
+`hashu mint run` is the whole Hashu node in one process: the cdk mint for
+`THH`, the payment rails that sell it, the `hashrate` redemption method,
+the Stratum proxy that fills redemptions, and the control API the
+[MDK app](mdk/README.md) polls.
+
+```bash
+# Mainnet Lightning via phoenixd (same variables as overpay), USDT on Sepolia,
+# priced from the MiningRigRentals floor, default pool = the Testnet4 demo pool.
+export PHOENIXD_URL=http://127.0.0.1:9740 PHOENIXD_PASSWORD=...
+hashu mint run \
+  --usdt-deposit 0xYourSepoliaAddress --usd-per-btc 100000 \
+  --mint-url https://mint.example.com
+```
+
+| Port | What |
+|---|---|
+| `0.0.0.0:8085` (`--listen`) | Cashu mint API: `/v1/info`, `/v1/keys`, `/v1/mint/quote/{bolt11,usdt}`, `/v1/melt/quote/hashrate`, … |
+| `0.0.0.0:3333` (`--stratum-bind`) | Stratum proxy for miners |
+| `127.0.0.1:3334` (`--control-bind`) | Control API, `GET /status` |
+
+- **Lightning** (`--lightning phoenixd|fake|off`): phoenixd is used when
+  `PHOENIXD_URL` or `PHOENIXD_HOSTPORT` is set. It only buys `THH`; the
+  mint never pays out. `fake` pays every invoice by itself, for rehearsals.
+- **Tether**: on when `--usdt-deposit` is set. Watches `--usdt-token`
+  (Sepolia test USDT by default) over `--usdt-rpc`. Price with
+  `--usdt-per-thh 0.05` or derive it from sats with `--usd-per-btc`.
+- **Price** (`--price mrr|esplora|fixed`): MRR rental floor by default;
+  `--sats-per-thh` is the fixed price, and the fallback while a live
+  source has no fresh sample. `--markup-bps` adds the operator's margin.
+- **Redemption**: a wallet melts `THH` with method `hashrate` and request
+  `{"pool_url", "worker_name", "amount_thh", "nonce"?}`. The proxy routes
+  miners to that pool under that worker until the amount is filled, then
+  the melt turns `PAID`. `--upstream` is where miners go otherwise.
+- State lives in `--data-dir` (`mint.sqlite`, `seed.hex`). Open
+  redemptions are in memory: a restart forgets them.
+
+Rehearse the whole loop without money or hardware:
+
+```bash
+hashu mint run --lightning fake --price fixed --sats-per-thh 40
+cargo run -p hashu-cli --example buy_and_redeem -- \
+  http://127.0.0.1:8085 bolt11 2 stratum+tcp://216.230.225.61:3333 yourname.worker1
+```
 
 ## Workspace layout
 
