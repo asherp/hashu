@@ -7,7 +7,8 @@
 #   80/443  Caddy (TLS)  -> mint API (hashu:8085) at https://$HASHU_DOMAIN/
 #                        -> operator GUI (hashu:3334) at /operator/ (basic auth)
 #                        -> GET /control/status (read-only, for the MDK app)
-#   3333    Stratum proxy, raw TCP, straight to the hashu container
+#   3335    Stratum proxy, raw TCP, straight to the hashu container
+#           (3333 on the devbox is already ckpool, the default upstream)
 # Private (compose network only, never published on the host):
 #   hashu:3334  control API + operator GUI (POST api/controls changes pricing)
 #   phoenixd:9740  phoenixd HTTP API (mainnet wallet)
@@ -72,7 +73,8 @@ services:
       - hashu_data:/data
     ports:
       # Miners connect straight to the Stratum proxy (raw TCP, no TLS).
-      - "${HASHU_STRATUM_PORT:-3333}:3333"
+      # Host port 3335 by default: ckpool owns 3333 on the devbox.
+      - "${HASHU_STRATUM_PORT:-3335}:3333"
     networks: [backend, edge]
     restart: unless-stopped
 

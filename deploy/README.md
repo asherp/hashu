@@ -7,7 +7,7 @@ control API and operator GUI), a mainnet **phoenixd** for Lightning, and
 
 ```
                 internet
-   wallets ──https──┐        miners ──stratum+tcp:3333──┐
+   wallets ──https──┐        miners ──stratum+tcp:3335──┐
                     ▼                                   ▼
              ┌────────────┐  :8085 mint API     ┌──────────────┐  ──► redeemer's pool
              │   Caddy    │ ──────────────────► │    hashu     │  ──► default pool
@@ -22,7 +22,7 @@ control API and operator GUI), a mainnet **phoenixd** for Lightning, and
 | Port | Exposed? | What |
 |---|---|---|
 | 80, 443 (tcp+udp) | public | Caddy: mint API at `/`, operator GUI at `/operator/`, `GET /control/status` |
-| 3333 | public | Stratum proxy, raw TCP |
+| 3335 | public | Stratum proxy, raw TCP (host 3335 → container 3333; ckpool keeps 3333) |
 | 8085 | compose network only | Cashu mint API (behind Caddy) |
 | 3334 | compose network only | control API + operator GUI (behind Caddy) |
 | 9740 | compose network only | phoenixd HTTP API |
@@ -37,17 +37,26 @@ but cannot send, so even a compromised mint cannot spend the wallet.
   (`curl -fsSL https://get.docker.com | sh`). 2 GB RAM is enough once
   built; the first `cargo build` inside Docker wants ~4 GB, so on a small
   VPS add swap or build the image elsewhere and `docker save | ssh … docker load`.
-- A DNS name (A record) pointing at the box, e.g. `mint.hashu.io`.
-- Firewall: allow inbound **22, 80, 443/tcp, 443/udp, 3333/tcp**; nothing else.
+- A DNS name for the box. The demo host is the devbox (216.230.225.61),
+  which has no record of its own, so `.env.example` uses
+  `216-230-225-61.sslip.io`, which resolves to that IP; Let's Encrypt
+  issues for it (if it hits a rate limit, try `216.230.225.61.nip.io`). Swap in a real name (e.g. `mint.hashu.io`) later.
+- Ports 80 and 443 free on the host for Caddy. Check first with
+  `sudo ss -tlnp | grep -E ':(80|443|3335) '`; if something (e.g. a faucet
+  web server) already has 80/443, either put the Hashu routes in that
+  server or set Caddy's ports to others in `docker-compose.yml`.
+- Firewall: allow inbound **22, 80, 443/tcp, 443/udp, 3335/tcp** (plus whatever the box already serves, e.g. ckpool on 3333).
 
   ```bash
-  sudo ufw allow 22/tcp && sudo ufw allow 80/tcp && sudo ufw allow 443 \
-    && sudo ufw allow 3333/tcp && sudo ufw enable
+  # devbox: keep ckpool (3333) and anything else it already serves open
+  # BEFORE enabling ufw, or you cut off the pool. Check `sudo ufw status` first.
+  sudo ufw allow 22/tcp && sudo ufw allow 3333/tcp && sudo ufw allow 80/tcp \
+    && sudo ufw allow 443 && sudo ufw allow 3335/tcp && sudo ufw enable
   ```
 
   Note that Docker publishes ports through iptables and bypasses ufw, so
   the real protection for 8085/3334/9740 is that compose never publishes
-  them. Check with `sudo ss -tlnp` after start: only 80, 443, 3333 (and 22).
+  them. Check with `sudo ss -tlnp` after start: only 80, 443, 3335, ckpool's 3333 and 22.
   If the cloud provider has its own security group, open the same ports there.
 
 ## 2. Configure
@@ -128,7 +137,7 @@ LSP open one on the fly and takes a fee out of it (about 2,000+ sats plus
 From any machine:
 
 ```bash
-D=https://mint.example.com
+D=https://216-230-225-61.sslip.io
 
 curl -s $D/v1/info | jq '{name, nuts: (.nuts|keys)}'          # mint is up, TLS works
 curl -s $D/v1/keysets | jq '.keysets[] | {id, unit, active}'  # unit "thh"
@@ -137,20 +146,22 @@ curl -s -X POST $D/v1/mint/quote/bolt11 -H 'content-type: application/json' \
 curl -s $D/control/status | jq                                # redemptions (read-only)
 curl -s -o /dev/null -w '%{http_code}\n' $D/operator/         # 401 without login
 curl -s -o /dev/null -w '%{http_code}\n' -X POST $D/control/redemptions   # 404, stays private
-nc -vz mint.example.com 3333                                  # Stratum reachable
+nc -vz 216-230-225-61.sslip.io 3335                                  # Stratum reachable
 ```
 
 End to end with the example wallet (from a checkout of the repo):
 
 ```bash
 cargo run -p hashu-cli --example buy_and_redeem -- \
-  https://mint.example.com bolt11 2 stratum+tcp://216.230.225.61:3333 yourname.worker1
+  https://216-230-225-61.sslip.io bolt11 2 stratum+tcp://216.230.225.61:3333 yourname.worker1
 ```
 
 It prints the invoice; pay it from any Lightning wallet, then it redeems.
+On the devbox the redemption pool in that command is ckpool on the same
+machine, so redeemed hashrate goes proxy → ckpool without leaving the box.
 Point a miner (Bitaxe, or the Heatbit via the MDK app) at
-`stratum+tcp://mint.example.com:3333` and watch the redemption fill in the
-operator GUI at `https://mint.example.com/operator/`.
+`stratum+tcp://216-230-225-61.sslip.io:3335` and watch the redemption fill in the
+operator GUI at `https://216-230-225-61.sslip.io/operator/`.
 
 **Rehearsal without money:** set `HASHU_LIGHTNING=fake` and
 `HASHU_PRICE=fixed` in `.env`, then `docker compose up -d hashu`. Every
@@ -162,10 +173,10 @@ The MDK app polls the control API to know when to move the heater onto
 the proxy. Point it at the public read-only route:
 
 ```
-hashuControlUrl = https://mint.example.com/control
+hashuControlUrl = https://216-230-225-61.sslip.io/control
 ```
 
-and the miner pool at `stratum+tcp://mint.example.com:3333`.
+and the miner pool at `stratum+tcp://216-230-225-61.sslip.io:3335`.
 `/control/status` lists open redemptions (pool URL, worker name,
 progress). If that should not be public, remove the `/control/*` block
 from the Caddyfile and reach 3334 over an SSH tunnel instead.
@@ -184,7 +195,7 @@ Caveats for the demo:
 
 - Open redemptions live in memory: restarting `hashu` mid-redemption drops
   them (the melt never completes). Don't redeploy during the demo.
-- Stratum on 3333 is plaintext TCP, like most pools.
+- Stratum on 3335 is plaintext TCP, like most pools.
 - The mint API has no rate limiting; fine for a hackathon, not production.
 - The limited-access phoenixd password was not tested end to end before
   merging (phoenixd needs a live Lightning peer). If `hashu` logs a 401

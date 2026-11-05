@@ -1,5 +1,5 @@
 # TLS front for the live Hashu demo. Certificates come from Let's Encrypt
-# automatically once $HASHU_DOMAIN's A record points at this machine and
+# automatically once $HASHU_DOMAIN resolves to this machine (sslip.io works) and
 # ports 80/443 are open.
 {$HASHU_DOMAIN} {
 	encode gzip
