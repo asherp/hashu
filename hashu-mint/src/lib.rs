@@ -6,3 +6,4 @@ pub mod attestation;
 pub mod manifest;
 pub mod melt;
 pub mod oracle;
+pub mod pricing;
