@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand, ValueEnum};
 use hashu_core::hashprice::HashpriceSample;
-use hashu_mint::oracle::{esplora, luxor};
+use hashu_mint::oracle::{esplora, luxor, mrr};
 
 use crate::network::{default_esplora_url, parse_network};
 
@@ -31,12 +31,16 @@ pub struct PingArgs {
     #[arg(long)]
     pub base_url: Option<String>,
 
-    /// Bitcoin network whose public Esplora to query when --base-url is not
-    /// given (Esplora only): `bitcoin` (default), `testnet4`, `testnet`,
-    /// `signet`. `regtest` needs --base-url. Only mainnet yields an economic
-    /// hashprice; testnet chains are useful for connectivity checks.
+    /// Bitcoin network whose public Esplora to read: `bitcoin` (default),
+    /// `testnet4`, `testnet`, `signet` (`regtest` needs --base-url with
+    /// esplora). For esplora it is the hashprice source; for mrr it supplies
+    /// the real difficulty used to price one expected block.
     #[arg(long, default_value = "bitcoin")]
     pub network: String,
+
+    /// MRR algorithm category (mrr only): `sha256ab` (default) or `sha256`.
+    #[arg(long, default_value = mrr::DEFAULT_ALGO)]
+    pub algo: String,
 
     /// Window of recent blocks to average over (Esplora only).
     #[arg(long, default_value_t = esplora::DEFAULT_WINDOW_BLOCKS)]
@@ -49,6 +53,10 @@ pub enum Source {
     Esplora,
     /// Luxor Hashrate Index (requires LUXOR_API_KEY env var).
     Luxor,
+    /// MiningRigRentals SHA-256 rental floor (no key needed). Prices what
+    /// hashrate costs to rent, whichever chain it mines; use with
+    /// `--network testnet4` for the Testnet4 demo.
+    Mrr,
 }
 
 pub async fn run(cmd: OracleCmd) -> Result<()> {
@@ -62,6 +70,7 @@ async fn ping(args: PingArgs) -> Result<()> {
     let (sample, base_url) = match args.source {
         Source::Esplora => fetch_esplora(&args).await?,
         Source::Luxor => fetch_luxor(&args).await?,
+        Source::Mrr => fetch_mrr(&args).await?,
     };
     let elapsed = started.elapsed();
     print_sample(args.source, &base_url, &sample, elapsed);
@@ -101,6 +110,11 @@ async fn fetch_esplora(args: &PingArgs) -> Result<(HashpriceSample, String)> {
     }
     let sample = esplora::compute_hashprice(&window)
         .context("compute hashprice from empty window")?;
+    if let Some(diff) = esplora::real_difficulty(&window) {
+        let thh = esplora::thh_per_expected_block(diff);
+        println!("real difficulty:  {diff:.3e}");
+        println!("THH per block:    {thh:.0} ({:.2} PH-hours)", thh / 1000.0);
+    }
     Ok((sample, base_url))
 }
 
@@ -113,6 +127,46 @@ async fn fetch_luxor(args: &PingArgs) -> Result<(HashpriceSample, String)> {
         .unwrap_or_else(|| luxor::DEFAULT_BASE_URL.to_string());
     let client = luxor::LuxorClient::with_base(key, base_url.clone());
     let sample = client.fetch_latest().await.context("fetch luxor hashprice")?;
+    Ok((sample, base_url))
+}
+
+async fn fetch_mrr(args: &PingArgs) -> Result<(HashpriceSample, String)> {
+    let base_url = args
+        .base_url
+        .clone()
+        .unwrap_or_else(|| mrr::DEFAULT_BASE_URL.to_string());
+    let client = mrr::MrrClient::with_base(base_url.clone(), args.algo.clone());
+    let market = client.fetch_floor().await.context("fetch mrr rig floor")?;
+    let sample = market.sample(std::time::SystemTime::now());
+    let f = &market.floor;
+    println!(
+        "floor rig:        {} ({:.3} PH/s, {}h min, {:.8} BTC for the minimum)",
+        f.id,
+        f.ph,
+        f.min_hours,
+        f.min_rental_btc()
+    );
+    println!(
+        "rigs:             {} eligible of {} listed ({})",
+        market.rigs_seen, market.total_listed, args.algo
+    );
+
+    // Best effort: cost of one expected block on --network at the floor.
+    let network = parse_network(&args.network)?;
+    if let Some(url) = default_esplora_url(network) {
+        let esplora = esplora::EsploraClient::with_base(url.to_string());
+        match esplora::fetch_real_difficulty(&esplora, 500).await {
+            Ok(Some((diff, height))) => {
+                let thh = esplora::thh_per_expected_block(diff);
+                let btc = f.btc_per_ph_day * (thh / 1000.0) / 24.0;
+                println!("{network} real difficulty: {diff:.3e} (height {height})");
+                println!("THH per block:    {thh:.0} ({:.2} PH-hours)", thh / 1000.0);
+                println!("BTC per block:    {btc:.8} at the floor");
+            }
+            Ok(None) => eprintln!("no real-difficulty block found on {network}"),
+            Err(e) => eprintln!("could not read {network} difficulty: {e}"),
+        }
+    }
     Ok((sample, base_url))
 }
 
