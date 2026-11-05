@@ -32,6 +32,7 @@ mint daemon are still ahead.
 | `hashu` operator CLI (init, config, manifest, oracle, proxy) | done | `hashu-cli` |
 | Share commitment tree integration in the proxy | done | `hashu-proxy::stratum::{session,header,committer,compact}` |
 | `hashrate` melt method via cdk (redemption ledger + `MintPayment` backend) | done | `hashu-core::redemption`, `hashu-mint::melt` |
+| Tether (USDT) payment rail: buy `THH` with dollars (ERC-20 over EVM JSON-RPC) | done | `hashu-mint::tether` |
 | Per-share nostr receipts + completion certificate | planned | — |
 | Stratum V2 via SRI | fast-follow | — |
 | Lightning backend (LND/CLN via cdk) | planned | — |
