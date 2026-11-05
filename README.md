@@ -36,6 +36,7 @@ mint daemon are still ahead.
 | `hashrate` melt method via cdk (redemption ledger + `MintPayment` backend) | done | `hashu-core::redemption`, `hashu-mint::melt` |
 | Tether (USDT) payment rail: buy `THH` with dollars (ERC-20 over EVM JSON-RPC) | done | `hashu-mint::tether` |
 | Proxy control API (`GET /status`, demo `POST /redemptions`) | done | `hashu-proxy::control` |
+| Per-redemption share tree + audit API (`GET /redemptions/{id}/root`, `/proof/{n}`) | done | `hashu-proxy::{audit,control}` |
 | MDK heater stack: Worker + app switching pools on redeem, thermostat | done | [`mdk/`](mdk/README.md) |
 | Per-share nostr receipts + completion certificate | planned | — |
 | Stratum V2 via SRI | fast-follow | — |
@@ -150,6 +151,26 @@ With `--control-bind 127.0.0.1:3334` the proxy also serves a small HTTP
 control API (`GET /status`: redemptions and progress) that the
 [MDK heater app](mdk/README.md) polls to switch miners onto the proxy.
 
+**Share audit.** Every share credited to a redemption is also appended to
+that redemption's own Merkle tree (all miners serving it, in credit
+order). Leaves hold only PoW evidence: block header, `target_bits`,
+`ntime`, `seq`.
+
+```bash
+curl -s 127.0.0.1:3334/redemptions/$ID/root
+# {"id":"…","root":"<hex or null>","leaf_count":42}
+curl -s 127.0.0.1:3334/redemptions/$ID/proof/7
+# {"root":"…","tree_size":42,"leaf_index":7,"leaf_hash":"…",
+#  "leaf":{"preimage":"<80-byte header hex>","target_bits":…,"ntime":…,"seq":7},
+#  "siblings":["…", …]}
+```
+
+To check a share: rebuild `leaf_hash = SHA256(u32_be(80) ‖ header ‖
+u32_be(target_bits) ‖ u32_be(ntime) ‖ u64_be(seq))`, fold it with
+`siblings` per RFC 6962 §2.1.1 (`hashu_core::share::verify_inclusion`)
+to get `root`, then double-SHA256 the header and compare it with the
+target. Signed nostr publication of roots is still planned.
+
 ### 6. Run the mint
 
 `hashu mint run` is the whole Hashu node in one process: the cdk mint for
@@ -170,7 +191,7 @@ hashu mint run \
 |---|---|
 | `0.0.0.0:8085` (`--listen`) | Cashu mint API: `/v1/info`, `/v1/keys`, `/v1/mint/quote/{bolt11,usdt}`, `/v1/melt/quote/hashrate`, … |
 | `0.0.0.0:3333` (`--stratum-bind`) | Stratum proxy for miners |
-| `127.0.0.1:3334` (`--control-bind`) | Control API, `GET /status` |
+| `127.0.0.1:3334` (`--control-bind`) | Control API: `GET /status`, `GET /redemptions/{id}/root`, `GET /redemptions/{id}/proof/{n}` |
 
 - **Lightning** (`--lightning phoenixd|fake|off`): phoenixd is used when
   `PHOENIXD_URL` or `PHOENIXD_HOSTPORT` is set. It only buys `THH`; the

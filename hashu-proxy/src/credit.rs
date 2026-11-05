@@ -12,6 +12,10 @@
 //! acks it, so an ack that arrives after a switch still credits the
 //! redemption the share was actually mined for.
 //!
+//! Each credited share is also appended to the redemption's share
+//! commitment tree ([`crate::audit::ShareAudit`]), so the root covers
+//! exactly the work that filled it.
+//!
 //! When a credit crosses a redemption's target, [`ShareCrediter`] sends
 //! that redemption's id once on a broadcast channel, so the router can
 //! move hashrate back to the default pool.
@@ -19,9 +23,12 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use hashu_core::redemption::{CreditOutcome, LedgerError, RedemptionId, RedemptionLedger};
+use hashu_core::redemption::{
+    CreditOutcome, LedgerError, RedemptionId, RedemptionLedger, RedemptionState,
+};
 use tokio::sync::broadcast;
 
+use crate::audit::ShareAudit;
 use crate::ProxyMetrics;
 
 /// Listener-assigned id of one accepted miner connection. Unique for the
@@ -83,7 +90,17 @@ const COMPLETION_CHANNEL_CAPACITY: usize = 64;
 #[derive(Debug)]
 pub struct ShareCrediter {
     ledger: Arc<RedemptionLedger>,
+    audit: Arc<ShareAudit>,
     completions: broadcast::Sender<RedemptionId>,
+}
+
+/// PoW evidence for one accepted share, as it enters the commitment tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShareEvidence {
+    /// The reconstructed 80-byte block header.
+    pub preimage: Vec<u8>,
+    pub target_bits: u32,
+    pub ntime: u32,
 }
 
 impl ShareCrediter {
@@ -91,12 +108,37 @@ impl ShareCrediter {
         let (completions, _) = broadcast::channel(COMPLETION_CHANNEL_CAPACITY);
         Self {
             ledger,
+            audit: Arc::new(ShareAudit::new()),
             completions,
         }
     }
 
     pub fn ledger(&self) -> &Arc<RedemptionLedger> {
         &self.ledger
+    }
+
+    /// Per-redemption share commitment trees filled by
+    /// [`Self::credit_with_evidence`].
+    pub fn audit(&self) -> &Arc<ShareAudit> {
+        &self.audit
+    }
+
+    /// Credit one accepted share and, if the ledger counted it, append its
+    /// evidence to the redemption's commitment tree. Shares arriving after
+    /// completion are ignored by the ledger and kept out of the tree.
+    pub fn credit_with_evidence(
+        &self,
+        id: &RedemptionId,
+        difficulty: f64,
+        evidence: ShareEvidence,
+    ) -> Result<CreditOutcome, LedgerError> {
+        let outcome = self.credit(id, difficulty)?;
+        let ignored = outcome.state == RedemptionState::Completed && !outcome.newly_completed;
+        if !ignored {
+            self.audit
+                .append(*id, evidence.preimage, evidence.target_bits, evidence.ntime);
+        }
+        Ok(outcome)
     }
 
     /// Receive each redemption id once, when its target is reached.
@@ -137,13 +179,17 @@ impl CreditContext {
         conn: ConnectionId,
         bound_to: Option<RedemptionId>,
         difficulty: Option<f64>,
+        evidence: ShareEvidence,
         metrics: &ProxyMetrics,
     ) {
         let Some(id) = bound_to else {
             return;
         };
         let difficulty = difficulty.unwrap_or(DEFAULT_SHARE_DIFFICULTY);
-        match self.crediter.credit(&id, difficulty) {
+        match self
+            .crediter
+            .credit_with_evidence(&id, difficulty, evidence)
+        {
             Ok(outcome) => {
                 metrics.shares_credited.fetch_add(1, Ordering::Relaxed);
                 tracing::debug!(
@@ -171,6 +217,14 @@ mod tests {
         RedemptionId::from_bytes([n; 16])
     }
 
+    fn ev() -> ShareEvidence {
+        ShareEvidence {
+            preimage: vec![0xab; 80],
+            target_bits: 0x1d00_ffff,
+            ntime: 0,
+        }
+    }
+
     fn ctx_with(redemption: RedemptionId, thh: u64) -> (CreditContext, Arc<StaticBinding>) {
         let ledger = Arc::new(RedemptionLedger::new());
         ledger
@@ -190,17 +244,18 @@ mod tests {
     fn unbound_share_is_not_credited() {
         let (ctx, _) = ctx_with(id(1), 1);
         let m = ProxyMetrics::default();
-        ctx.credit_accepted(ConnectionId(1), None, Some(1.0), &m);
+        ctx.credit_accepted(ConnectionId(1), None, Some(1.0), ev(), &m);
         assert_eq!(m.snapshot().shares_credited, 0);
         let r = ctx.crediter.ledger().get(&id(1)).unwrap();
         assert_eq!(r.accumulated_hashes, 0);
+        assert_eq!(ctx.crediter.audit().head(&id(1)).leaf_count, 0);
     }
 
     #[test]
     fn bound_share_credits_difficulty_times_2_32() {
         let (ctx, _) = ctx_with(id(1), 1);
         let m = ProxyMetrics::default();
-        ctx.credit_accepted(ConnectionId(1), Some(id(1)), Some(8.0), &m);
+        ctx.credit_accepted(ConnectionId(1), Some(id(1)), Some(8.0), ev(), &m);
         assert_eq!(m.snapshot().shares_credited, 1);
         let r = ctx.crediter.ledger().get(&id(1)).unwrap();
         assert_eq!(r.accumulated_hashes, 8 * HASHES_PER_DIFF_ONE);
@@ -211,7 +266,7 @@ mod tests {
     fn missing_difficulty_defaults_to_one() {
         let (ctx, _) = ctx_with(id(1), 1);
         let m = ProxyMetrics::default();
-        ctx.credit_accepted(ConnectionId(1), Some(id(1)), None, &m);
+        ctx.credit_accepted(ConnectionId(1), Some(id(1)), None, ev(), &m);
         let r = ctx.crediter.ledger().get(&id(1)).unwrap();
         assert_eq!(r.accumulated_hashes, HASHES_PER_DIFF_ONE);
     }
@@ -220,7 +275,7 @@ mod tests {
     fn unknown_redemption_is_logged_not_counted() {
         let (ctx, _) = ctx_with(id(1), 1);
         let m = ProxyMetrics::default();
-        ctx.credit_accepted(ConnectionId(1), Some(id(9)), Some(1.0), &m);
+        ctx.credit_accepted(ConnectionId(1), Some(id(9)), Some(1.0), ev(), &m);
         assert_eq!(m.snapshot().shares_credited, 0);
     }
 
@@ -231,13 +286,15 @@ mod tests {
         let m = ProxyMetrics::default();
         // 1 THH = 3.6e15 hashes ≈ 838_190.3 × 2^32. Two diff-5e5 shares
         // cross the target on the second one.
-        ctx.credit_accepted(ConnectionId(1), Some(id(2)), Some(5e5), &m);
+        ctx.credit_accepted(ConnectionId(1), Some(id(2)), Some(5e5), ev(), &m);
         assert!(rx.try_recv().is_err());
-        ctx.credit_accepted(ConnectionId(1), Some(id(2)), Some(5e5), &m);
+        ctx.credit_accepted(ConnectionId(1), Some(id(2)), Some(5e5), ev(), &m);
         assert_eq!(rx.try_recv().unwrap(), id(2));
-        ctx.credit_accepted(ConnectionId(1), Some(id(2)), Some(5e5), &m);
+        ctx.credit_accepted(ConnectionId(1), Some(id(2)), Some(5e5), ev(), &m);
         assert!(rx.try_recv().is_err());
         assert!(ctx.crediter.ledger().get(&id(2)).unwrap().is_complete());
+        // The share after completion is not in the tree.
+        assert_eq!(ctx.crediter.audit().head(&id(2)).leaf_count, 2);
     }
 
     #[test]

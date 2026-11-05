@@ -30,7 +30,7 @@ use super::compact::target_bits_from_difficulty;
 use super::header::{build_block_header, SubmitFields};
 use super::observe::{observe_line, Direction, PendingSubmits};
 use super::session::{SessionEvent, SessionState};
-use crate::credit::{ConnectionId, CreditContext};
+use crate::credit::{ConnectionId, CreditContext, ShareEvidence};
 use crate::router::{Route, Router};
 use crate::ProxyMetrics;
 use hashu_core::redemption::RedemptionId;
@@ -314,13 +314,24 @@ fn update_session(
             guard
                 .committer
                 .append(header.to_vec(), target_bits, submit.ntime);
+            let evidence = ShareEvidence {
+                preimage: header.to_vec(),
+                target_bits,
+                ntime: submit.ntime,
+            };
             metrics.shares_committed.fetch_add(1, Ordering::Relaxed);
 
             // Credit only shares that made it into the commitment tree, so
             // every credited hash has a leaf behind it (§4.7.2).
             let bound = guard.submit_bindings.remove(&id).flatten();
             if let Some(credit) = &ctx.credit {
-                credit.credit_accepted(ctx.conn, bound, submit.difficulty_at_submit, metrics);
+                credit.credit_accepted(
+                    ctx.conn,
+                    bound,
+                    submit.difficulty_at_submit,
+                    evidence,
+                    metrics,
+                );
             }
         }
         _ => {
