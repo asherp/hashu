@@ -7,13 +7,14 @@
 //! Planned subcommands:
 //!   hashu init           — generate operator nostr keypair + mint config
 //!   hashu manifest push  — (re)publish the kind 0 manifest
-//!   hashu daemon         — run mint + proxy in one process
+//!   hashu mint run       — run mint + proxy in one process (done)
 //!   hashu redemptions    — list active redemptions
 
 pub mod config;
 pub mod init;
 pub mod manifest;
 pub mod mine;
+pub mod mint;
 pub mod network;
 pub mod oracle;
 pub mod proxy;

@@ -1,0 +1,633 @@
+//! `hashu mint run` — the Hashu mint daemon. ARCHITECTURE.md §1, §4.
+//!
+//! One process runs everything a demo needs:
+//!
+//! - a **cdk mint** for the `THH` unit, served over HTTP (NUT-00..NUT-07 plus
+//!   the payment-method routes);
+//! - **payment rails** that sell `THH`: Lightning over phoenixd (mainnet
+//!   sats, receive-only) and/or Tether (USDT on Sepolia by default);
+//! - the **`hashrate` melt method**, which opens redemptions in an in-memory
+//!   [`RedemptionLedger`];
+//! - the **Stratum V1 proxy**, sharing that ledger: while a redemption is
+//!   open, miners are routed to the redeemer's pool and accepted shares
+//!   credit it, so the melt completes;
+//! - the proxy's **control API** (`GET /status`), which the Hashu MDK app
+//!   polls to move miners onto the proxy while a redemption is open.
+//!
+//! The mint never pays out: bolt11 is offered for minting only, and the
+//! only melt method is `hashrate`.
+
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
+use anyhow::{bail, Context, Result};
+use cdk::cdk_payment::DynMintPayment;
+use cdk::mint::{MintBuilder, MintMeltLimits, UnitConfig};
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
+use clap::{Args, Subcommand, ValueEnum};
+use hashu_core::hashprice::{HashpriceOracle, HashpriceSample};
+use hashu_core::redemption::RedemptionLedger;
+use hashu_mint::lightning::{add_lightning_issuance, lightning_issuer};
+use hashu_mint::melt::{HashrateMelter, METHOD as HASHRATE};
+use hashu_mint::oracle::{esplora, mrr};
+use hashu_mint::payment::thh_unit;
+use hashu_mint::phoenixd::{Phoenixd, PhoenixdConfig};
+use hashu_mint::pricing::{SatsPerThhFromHashprice, ThhPricer, SECS_PER_THH};
+use hashu_mint::tether::{
+    EvmRpcSource, FixedUsdtPrice, SatsToUsdt, TetherPayments, UsdtRail, METHOD as USDT,
+    MICRO_PER_USDT,
+};
+use hashu_proxy::control::{serve as serve_control, ControlState};
+use hashu_proxy::credit::{CreditContext, ShareCrediter};
+use hashu_proxy::router::Router;
+use hashu_proxy::stratum::{run_routed_listener, strip_stratum_prefix};
+use hashu_proxy::ProxyMetrics;
+
+use crate::network::{default_esplora_url, parse_network};
+
+/// Asher's Testnet4 pool at the hackathon. Default upstream for the proxy.
+pub const DEMO_POOL: &str = "stratum+tcp://216.230.225.61:3333";
+
+/// Test USDT (6 decimals) on Sepolia, the token the Tether rail watches by
+/// default.
+pub const SEPOLIA_TEST_USDT: &str = "0x7169D38820dfd117C3FA1f22a697dBA58d90BA06";
+pub const SEPOLIA_CHAIN_ID: u64 = 11_155_111;
+pub const SEPOLIA_PUBLIC_RPC: &str = "https://ethereum-sepolia-rpc.publicnode.com";
+
+/// `THH` denominations the keyset signs: powers of two up to 2^20.
+const DENOMS: [u64; 21] = {
+    let mut d = [0u64; 21];
+    let mut i = 0;
+    while i < 21 {
+        d[i] = 1 << i;
+        i += 1;
+    }
+    d
+};
+
+#[derive(Debug, Args)]
+pub struct MintCmd {
+    #[command(subcommand)]
+    pub action: MintAction,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MintAction {
+    /// Run the mint daemon: cdk mint + payment rails + Stratum proxy +
+    /// control API, in one process.
+    Run(Box<RunArgs>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PriceSource {
+    /// MiningRigRentals SHA-256 rental floor (live, no key).
+    Mrr,
+    /// Hashprice derived from recent blocks on `--network` via Esplora.
+    Esplora,
+    /// A fixed `--sats-per-thh`.
+    Fixed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum LightningBackend {
+    /// phoenixd over HTTP: PHOENIXD_URL (or PHOENIXD_HOSTPORT) and
+    /// PHOENIXD_PASSWORD. Mainnet by default (PHOENIXD_CHAIN).
+    Phoenixd,
+    /// cdk's fake wallet: every invoice pays itself. Rehearsals only.
+    Fake,
+    /// No Lightning rail.
+    Off,
+}
+
+#[derive(Debug, Args)]
+pub struct RunArgs {
+    // ---- mint -------------------------------------------------------
+    /// Address the mint's HTTP API binds to.
+    #[arg(long, env = "HASHU_MINT_LISTEN", default_value = "0.0.0.0:8085")]
+    pub listen: SocketAddr,
+    /// Public URL of the mint, advertised in its info (NUT-06).
+    #[arg(long, env = "HASHU_MINT_URL")]
+    pub mint_url: Option<String>,
+    /// Directory for the mint database and seed (created if missing).
+    #[arg(long, env = "HASHU_DATA_DIR", default_value = "hashu-data")]
+    pub data_dir: PathBuf,
+    /// Mint name (NUT-06).
+    #[arg(long, default_value = "Hashu")]
+    pub name: String,
+    /// Mint description (NUT-06).
+    #[arg(
+        long,
+        default_value = "Hashrate vouchers in terahash-hours (THH). Pay with Lightning or USDT; redeem by pointing hashrate at your pool."
+    )]
+    pub description: String,
+    /// Largest mint quote or redemption, in THH.
+    #[arg(long, default_value_t = 1_000_000)]
+    pub max_thh: u64,
+    /// Smallest redemption, in THH.
+    #[arg(long, default_value_t = hashu_mint::melt::DEFAULT_MIN_THH)]
+    pub min_redeem_thh: u64,
+
+    // ---- pricing ----------------------------------------------------
+    /// Where the sats price of a THH comes from.
+    #[arg(long, value_enum, default_value_t = PriceSource::Mrr)]
+    pub price: PriceSource,
+    /// Fixed price in sats per THH. Required with `--price fixed`; with a
+    /// live source it is used until the first sample arrives and whenever
+    /// the source goes stale.
+    #[arg(long, env = "HASHU_SATS_PER_THH")]
+    pub sats_per_thh: Option<f64>,
+    /// Operator markup over the hashprice, in basis points.
+    #[arg(long)]
+    pub markup_bps: Option<u32>,
+    /// Network for the esplora price source (`testnet4`, `bitcoin`, …).
+    #[arg(long, default_value = "testnet4")]
+    pub network: String,
+    /// Seconds between live price refreshes.
+    #[arg(long, default_value_t = 300)]
+    pub price_refresh_secs: u64,
+
+    // ---- Lightning --------------------------------------------------
+    /// Lightning backend. Default: phoenixd when PHOENIXD_URL or
+    /// PHOENIXD_HOSTPORT is set, otherwise off.
+    #[arg(long, value_enum)]
+    pub lightning: Option<LightningBackend>,
+
+    // ---- Tether -----------------------------------------------------
+    /// EVM address that receives USDT. Turns the Tether rail on.
+    #[arg(long, env = "HASHU_USDT_DEPOSIT")]
+    pub usdt_deposit: Option<String>,
+    /// EVM JSON-RPC endpoint the Tether rail watches.
+    #[arg(long, env = "HASHU_USDT_RPC", default_value = SEPOLIA_PUBLIC_RPC)]
+    pub usdt_rpc: String,
+    /// USDT token contract.
+    #[arg(long, env = "HASHU_USDT_TOKEN", default_value = SEPOLIA_TEST_USDT)]
+    pub usdt_token: String,
+    /// Chain id of `--usdt-rpc`.
+    #[arg(long, env = "HASHU_USDT_CHAIN_ID", default_value_t = SEPOLIA_CHAIN_ID)]
+    pub usdt_chain_id: u64,
+    /// Confirmations before a USDT transfer pays a quote.
+    #[arg(long, default_value_t = 1)]
+    pub usdt_confirmations: u64,
+    /// Fixed USDT price per THH (e.g. 0.05). Takes precedence over
+    /// `--usd-per-btc`.
+    #[arg(long, env = "HASHU_USDT_PER_THH")]
+    pub usdt_per_thh: Option<f64>,
+    /// BTC/USD rate, to price USDT quotes from the sats price so both rails
+    /// sell THH at the same price.
+    #[arg(long, env = "HASHU_USD_PER_BTC")]
+    pub usd_per_btc: Option<f64>,
+
+    // ---- proxy ------------------------------------------------------
+    /// Address the Stratum proxy binds for miners.
+    #[arg(long, default_value = "0.0.0.0:3333")]
+    pub stratum_bind: SocketAddr,
+    /// Default pool: where miners point when no redemption is open.
+    #[arg(long, env = "HASHU_UPSTREAM", default_value = DEMO_POOL)]
+    pub upstream: String,
+    /// Control API (`GET /status`) the MDK app polls. Pass an empty value
+    /// to turn it off.
+    #[arg(long, default_value = "127.0.0.1:3334")]
+    pub control_bind: Option<String>,
+    /// Also serve `POST /redemptions` on the control API, bypassing the
+    /// mint. Anyone who can reach the control port can then redirect the
+    /// hashrate; keep it on loopback.
+    #[arg(long)]
+    pub control_allow_open: bool,
+    /// Periodic proxy metrics log interval (seconds). 0 disables.
+    #[arg(long, default_value_t = 30)]
+    pub metrics_interval: u64,
+}
+
+pub async fn run(cmd: MintCmd) -> Result<()> {
+    match cmd.action {
+        MintAction::Run(args) => run_daemon(*args).await,
+    }
+}
+
+/// A hashprice that never changes and never goes stale.
+#[derive(Debug, Clone, Copy)]
+struct FixedHashprice {
+    sats_per_ths: f64,
+}
+
+impl HashpriceOracle for FixedHashprice {
+    fn sample_at(&self, _t: SystemTime) -> Option<f64> {
+        Some(self.sats_per_ths)
+    }
+    fn latest(&self) -> Option<HashpriceSample> {
+        Some(HashpriceSample::from_sats_per_ths(
+            SystemTime::now(),
+            self.sats_per_ths,
+        ))
+    }
+}
+
+/// A live oracle, falling back to a fixed price while it has no fresh
+/// sample.
+struct WithFallback<O> {
+    live: O,
+    fallback: Option<FixedHashprice>,
+}
+
+impl<O: HashpriceOracle> HashpriceOracle for WithFallback<O> {
+    fn sample_at(&self, t: SystemTime) -> Option<f64> {
+        self.live
+            .sample_at(t)
+            .or_else(|| self.fallback.and_then(|f| f.sample_at(t)))
+    }
+    fn latest(&self) -> Option<HashpriceSample> {
+        self.live
+            .latest()
+            .or_else(|| self.fallback.and_then(|f| f.latest()))
+    }
+}
+
+fn fixed_from_sats_per_thh(sats_per_thh: f64) -> Result<FixedHashprice> {
+    if !sats_per_thh.is_finite() || sats_per_thh <= 0.0 {
+        bail!("--sats-per-thh must be a positive number (got {sats_per_thh})");
+    }
+    Ok(FixedHashprice {
+        sats_per_ths: sats_per_thh / SECS_PER_THH,
+    })
+}
+
+/// Build the hashprice oracle and start its poller, if any.
+async fn build_oracle(args: &RunArgs) -> Result<Arc<dyn HashpriceOracle + Send + Sync>> {
+    let fallback = args.sats_per_thh.map(fixed_from_sats_per_thh).transpose()?;
+    let every = Duration::from_secs(args.price_refresh_secs.max(10));
+    // A sample stays usable for three refreshes, so one failed fetch
+    // doesn't stop quoting.
+    let stale = every * 3;
+    match args.price {
+        PriceSource::Fixed => {
+            let f = fallback.context("--price fixed needs --sats-per-thh")?;
+            Ok(Arc::new(f))
+        }
+        PriceSource::Mrr => {
+            let oracle = mrr::MrrOracle::new(64, stale);
+            let client = mrr::MrrClient::new();
+            // Warm start so the first quote has a price.
+            match client.fetch_floor().await {
+                Ok(m) => {
+                    tracing::info!(
+                        btc_per_ph_day = m.floor.btc_per_ph_day,
+                        rig = m.floor.id,
+                        "mrr hashprice"
+                    );
+                    oracle.push(m.sample(SystemTime::now()));
+                }
+                Err(e) => tracing::warn!(error = %e, "mrr fetch failed; will retry"),
+            }
+            oracle.spawn_poller(client, every);
+            Ok(Arc::new(WithFallback {
+                live: oracle,
+                fallback,
+            }))
+        }
+        PriceSource::Esplora => {
+            let network = parse_network(&args.network)?;
+            let url = default_esplora_url(network)
+                .with_context(|| format!("no public Esplora for {network}"))?;
+            let oracle = esplora::EsploraOracle::new(64, stale);
+            // The poller's first tick fires at once.
+            oracle.spawn_poller(
+                esplora::EsploraClient::with_base(url.to_string()),
+                esplora::DEFAULT_WINDOW_BLOCKS,
+                every,
+            );
+            Ok(Arc::new(WithFallback {
+                live: oracle,
+                fallback,
+            }))
+        }
+    }
+}
+
+fn sats_pricer(
+    oracle: &Arc<dyn HashpriceOracle + Send + Sync>,
+    markup_bps: Option<u32>,
+) -> SatsPerThhFromHashprice {
+    let p = SatsPerThhFromHashprice::new(oracle.clone());
+    match markup_bps {
+        Some(bps) => p.with_markup_bps(bps),
+        None => p,
+    }
+}
+
+/// Load the mint seed from `dir/seed.hex`, creating it on first run.
+fn load_or_create_seed(dir: &Path) -> Result<Vec<u8>> {
+    let path = dir.join("seed.hex");
+    if path.exists() {
+        let s = std::fs::read_to_string(&path).with_context(|| format!("read {path:?}"))?;
+        let seed = hex::decode(s.trim()).with_context(|| format!("decode {path:?}"))?;
+        if seed.len() != 64 {
+            bail!("{path:?} must hold 64 hex-encoded bytes");
+        }
+        return Ok(seed);
+    }
+    let seed: [u8; 64] = {
+        let mut b = [0u8; 64];
+        rand::Rng::fill(&mut rand::thread_rng(), &mut b[..]);
+        b
+    };
+    std::fs::write(&path, hex::encode(seed)).with_context(|| format!("write {path:?}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    tracing::info!(?path, "generated new mint seed; back it up");
+    Ok(seed.to_vec())
+}
+
+async fn lightning_node(args: &RunArgs) -> Result<Option<(DynMintPayment, &'static str)>> {
+    let has_env = ["PHOENIXD_URL", "PHOENIXD_HOSTPORT"]
+        .iter()
+        .any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()));
+    let backend = args.lightning.unwrap_or(if has_env {
+        LightningBackend::Phoenixd
+    } else {
+        LightningBackend::Off
+    });
+    match backend {
+        LightningBackend::Off => Ok(None),
+        LightningBackend::Phoenixd => {
+            let cfg = PhoenixdConfig::from_env().map_err(|e| anyhow::anyhow!("phoenixd: {e}"))?;
+            let node = Phoenixd::connect(cfg)
+                .await
+                .map_err(|e| anyhow::anyhow!("phoenixd: {e}"))?;
+            Ok(Some((Arc::new(node), "phoenixd")))
+        }
+        LightningBackend::Fake => {
+            tracing::warn!("Lightning rail is cdk's FAKE wallet: invoices pay themselves");
+            let node = cdk_fake_wallet::FakeWallet::new(
+                cdk::types::FeeReserve {
+                    min_fee_reserve: 1.into(),
+                    percent_fee_reserve: 0.0,
+                },
+                Default::default(),
+                Default::default(),
+                2,
+                CurrencyUnit::Sat,
+            );
+            Ok(Some((Arc::new(node), "fake")))
+        }
+    }
+}
+
+fn usdt_pricer(
+    args: &RunArgs,
+    oracle: &Arc<dyn HashpriceOracle + Send + Sync>,
+) -> Result<Arc<dyn ThhPricer>> {
+    if let Some(usdt) = args.usdt_per_thh {
+        let micro = (usdt * MICRO_PER_USDT as f64).round();
+        if !micro.is_finite() || micro < 1.0 {
+            bail!("--usdt-per-thh must be at least 0.000001 (got {usdt})");
+        }
+        return Ok(Arc::new(FixedUsdtPrice {
+            micro_per_thh: micro as u64,
+        }));
+    }
+    if let Some(usd_per_btc) = args.usd_per_btc {
+        return Ok(Arc::new(SatsToUsdt {
+            sats: Arc::new(sats_pricer(oracle, args.markup_bps)),
+            usd_per_btc,
+        }));
+    }
+    bail!("the Tether rail needs a price: pass --usdt-per-thh or --usd-per-btc")
+}
+
+async fn run_daemon(args: RunArgs) -> Result<()> {
+    // ---- shared state -------------------------------------------------
+    let upstream = strip_stratum_prefix(&args.upstream).to_string();
+    if !upstream.contains(':') {
+        bail!("--upstream must include a port (got {upstream})");
+    }
+    let ledger = Arc::new(RedemptionLedger::new());
+    let oracle = build_oracle(&args).await?;
+    let limits = MintMeltLimits::new(1, args.max_thh);
+
+    // ---- mint ---------------------------------------------------------
+    std::fs::create_dir_all(&args.data_dir)
+        .with_context(|| format!("create {:?}", args.data_dir))?;
+    let seed = load_or_create_seed(&args.data_dir)?;
+    let db_path = args.data_dir.join("mint.sqlite");
+    let db = Arc::new(
+        cdk_sqlite::MintSqliteDatabase::new(db_path.to_string_lossy().as_ref())
+            .await
+            .with_context(|| format!("open {db_path:?}"))?,
+    );
+
+    let mut builder = MintBuilder::new(db.clone())
+        .with_name(args.name.clone())
+        .with_description(args.description.clone());
+    if let Some(url) = &args.mint_url {
+        builder = builder.with_urls(vec![url.clone()]);
+    }
+    builder
+        .configure_unit(
+            thh_unit(),
+            UnitConfig {
+                amounts: DENOMS.to_vec(),
+                input_fee_ppk: 0,
+            },
+        )
+        .context("configure THH unit")?;
+
+    // Redemption: the only way out of the mint.
+    builder
+        .add_payment_processor(
+            thh_unit(),
+            PaymentMethod::Custom(HASHRATE.into()),
+            MintMeltLimits::new(args.min_redeem_thh.max(1), args.max_thh),
+            Arc::new(HashrateMelter::new(ledger.clone()).with_min_thh(args.min_redeem_thh)),
+        )
+        .await
+        .context("register hashrate melt")?;
+    let mut methods = vec![HASHRATE.to_string()];
+    let mut rails = Vec::new();
+
+    // Lightning: mint-only.
+    if let Some((node, kind)) = lightning_node(&args).await? {
+        let issuer = lightning_issuer(sats_pricer(&oracle, args.markup_bps), node);
+        builder = add_lightning_issuance(builder, issuer, limits)
+            .await
+            .context("register Lightning rail")?;
+        methods.push("bolt11".into());
+        rails.push(format!("bolt11 ({kind})"));
+    }
+
+    // Tether: mint-only.
+    if let Some(deposit) = &args.usdt_deposit {
+        let rail = UsdtRail::new(args.usdt_chain_id, &args.usdt_token, deposit)
+            .map_err(|e| anyhow::anyhow!("Tether rail: {e}"))?;
+        let source =
+            EvmRpcSource::new(args.usdt_rpc.clone(), rail.clone(), args.usdt_confirmations);
+        let payments = TetherPayments::new(rail, usdt_pricer(&args, &oracle)?, Arc::new(source));
+        builder
+            .add_payment_processor(
+                thh_unit(),
+                PaymentMethod::Custom(USDT.into()),
+                limits,
+                Arc::new(payments),
+            )
+            .await
+            .context("register Tether rail")?;
+        methods.push(USDT.into());
+        rails.push(format!("usdt (chain {}, to {deposit})", args.usdt_chain_id));
+    }
+    // cdk advertises every processor for both minting and melting. A Hashu
+    // mint sells THH over its payment rails and redeems it only as
+    // hashrate, so keep NUT-04 to the rails and NUT-05 to `hashrate`.
+    let mut info = builder.current_mint_info();
+    let hashrate = PaymentMethod::Custom(HASHRATE.into());
+    info.nuts.nut04.methods.retain(|m| m.method != hashrate);
+    info.nuts.nut05.methods.retain(|m| m.method == hashrate);
+    info.nuts.nut15.methods.clear();
+    builder = builder.with_mint_info(info);
+
+    if rails.is_empty() {
+        tracing::warn!(
+            "no payment rail enabled: set PHOENIXD_URL/PHOENIXD_PASSWORD, --lightning fake, or --usdt-deposit"
+        );
+    }
+
+    let mint = Arc::new(
+        builder
+            .build_with_seed(db, &seed)
+            .await
+            .context("build mint")?,
+    );
+    mint.start().await.context("start mint")?;
+
+    let price_now = sats_pricer(&oracle, args.markup_bps).price(1).ok();
+    tracing::info!(
+        listen = %args.listen,
+        rails = ?rails,
+        sats_per_thh = ?price_now,
+        "mint ready (unit THH, melt method `hashrate`)"
+    );
+
+    let app = cdk_axum::create_mint_router(mint.clone(), methods)
+        .await
+        .context("build mint HTTP router")?;
+    let http = tokio::net::TcpListener::bind(args.listen)
+        .await
+        .with_context(|| format!("bind mint API on {}", args.listen))?;
+    let http_task = tokio::spawn(async move { axum::serve(http, app).await });
+
+    // ---- proxy --------------------------------------------------------
+    let router = Arc::new(Router::new(upstream.clone(), ledger.clone()));
+    let credit = CreditContext::new(Arc::new(ShareCrediter::new(ledger.clone())), router.clone());
+    let metrics = Arc::new(ProxyMetrics::default());
+
+    if args.metrics_interval > 0 {
+        let m = metrics.clone();
+        let l = ledger.clone();
+        let interval = Duration::from_secs(args.metrics_interval);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(interval);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let s = m.snapshot();
+                tracing::info!(
+                    connections = s.connections_accepted,
+                    accepted = s.shares_accepted,
+                    rejected = s.shares_rejected,
+                    credited = s.shares_credited,
+                    open_redemptions = l.active().len(),
+                    "proxy metrics",
+                );
+            }
+        });
+    }
+
+    if let Some(bind) = args
+        .control_bind
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        let bind: SocketAddr = bind
+            .parse()
+            .with_context(|| format!("--control-bind {bind:?}"))?;
+        let state = ControlState {
+            ledger: ledger.clone(),
+            metrics: metrics.clone(),
+            default_upstream: upstream.clone(),
+            allow_open: args.control_allow_open,
+        };
+        let listener = tokio::net::TcpListener::bind(bind)
+            .await
+            .with_context(|| format!("bind control API on {bind}"))?;
+        tracing::info!(%bind, allow_open = args.control_allow_open, "control API listening");
+        tokio::spawn(async move {
+            if let Err(e) = serve_control(listener, state).await {
+                tracing::error!(error = %e, "control API stopped");
+            }
+        });
+    }
+
+    tracing::info!(bind = %args.stratum_bind, %upstream, "stratum proxy listening");
+    let proxy = run_routed_listener(
+        args.stratum_bind,
+        router,
+        metrics,
+        Some(credit),
+        Duration::from_secs(1),
+    );
+
+    let result = tokio::select! {
+        r = proxy => r.context("stratum proxy"),
+        r = http_task => match r {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(anyhow::Error::from(e).context("mint HTTP server")),
+            Err(e) => Err(anyhow::Error::from(e).context("mint HTTP task")),
+        },
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("shutting down");
+            Ok(())
+        }
+    };
+    if let Err(e) = mint.stop().await {
+        tracing::warn!(error = %e, "mint stop");
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_price_round_trips_to_sats_per_thh() {
+        let oracle: Arc<dyn HashpriceOracle + Send + Sync> =
+            Arc::new(fixed_from_sats_per_thh(50.0).unwrap());
+        let p = sats_pricer(&oracle, Some(0));
+        assert_eq!(p.price(10).unwrap(), 500);
+    }
+
+    #[test]
+    fn fallback_covers_an_empty_live_oracle() {
+        let o = WithFallback {
+            live: mrr::MrrOracle::new(4, Duration::from_secs(60)),
+            fallback: Some(fixed_from_sats_per_thh(36.0).unwrap()),
+        };
+        let per_ths = o.sample_at(SystemTime::now()).unwrap();
+        assert!((per_ths * SECS_PER_THH - 36.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn denominations_are_powers_of_two() {
+        assert_eq!(DENOMS[0], 1);
+        assert_eq!(DENOMS[20], 1 << 20);
+    }
+
+    #[test]
+    fn rejects_non_positive_fixed_price() {
+        assert!(fixed_from_sats_per_thh(0.0).is_err());
+        assert!(fixed_from_sats_per_thh(-1.0).is_err());
+    }
+}

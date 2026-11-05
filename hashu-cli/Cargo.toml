@@ -12,7 +12,7 @@ path = "src/main.rs"
 hashu-core = { path = "../hashu-core" }
 hashu-mint = { path = "../hashu-mint" }
 hashu-proxy = { path = "../hashu-proxy" }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["signal"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
@@ -23,3 +23,9 @@ serde_json = { workspace = true }
 bitcoin = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
+cdk = { version = "0.16", default-features = false, features = ["mint"] }
+cdk-axum = "0.16"
+cdk-sqlite = "0.16"
+axum = "0.8.9"
+cdk-fake-wallet = "0.16"
+rand = "0.8"

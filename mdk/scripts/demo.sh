@@ -5,7 +5,7 @@
 #
 # Starts, all on 127.0.0.1:
 #   fake pools   :3340 "home" and :3341 "redeemer" (accept every share)
-#   hashu proxy  :3333 stratum, :3334 control API
+#   hashu mint   :8085 Cashu mint (fake Lightning), :3333 stratum, :3334 control API
 #   MDK stack    Kernel, the heater Worker with its mock heater, the Hashu app, Gateway :3847
 #   dashboard    :3030
 set -euo pipefail
@@ -34,8 +34,10 @@ trap cleanup EXIT INT TERM
 
 node scripts/fake-pool.js --port 3340 --name home >"$LOGS/pool-home.log" 2>&1 & pids+=($!)
 node scripts/fake-pool.js --port 3341 --name redeemer >"$LOGS/pool-redeemer.log" 2>&1 & pids+=($!)
-RUST_LOG=${RUST_LOG:-info} "$HASHU" proxy run \
-  --bind 127.0.0.1:3333 --upstream 127.0.0.1:3340 \
+RUST_LOG=${RUST_LOG:-info} "$HASHU" mint run \
+  --listen 127.0.0.1:8085 --data-dir "$LOGS/mint-data" \
+  --lightning fake --price fixed --sats-per-thh 40 \
+  --stratum-bind 127.0.0.1:3333 --upstream 127.0.0.1:3340 \
   --control-bind 127.0.0.1:3334 --control-allow-open \
   --metrics-interval 0 >"$LOGS/proxy.log" 2>&1 & pids+=($!)
 echo "$!" >"$LOGS/proxy.pid"
@@ -59,7 +61,7 @@ Hashu Heater demo is running.
 
   Dashboard   http://localhost:3030  (sign in as $USER_NAME / $PASSWORD, open "Hashu Heater")
   App API     http://localhost:3847/apps/hashu/api/hashu/state  (Bearer token from POST /auth/login)
-  Hashu       http://127.0.0.1:3334/status
+  Hashu       http://127.0.0.1:3334/status  (mint: http://127.0.0.1:8085/v1/info)
   Logs        $LOGS
 
 Try it:
