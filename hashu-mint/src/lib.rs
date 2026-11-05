@@ -3,6 +3,9 @@
 //! See ARCHITECTURE.md §4.1, §5, §7.
 
 pub mod attestation;
+pub mod lightning;
 pub mod manifest;
 pub mod melt;
 pub mod oracle;
+pub mod payment;
+pub mod pricing;

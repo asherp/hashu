@@ -580,6 +580,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdk-fake-wallet"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c253bde68f4f05af9798a968dabd393a6c5f76ea8fbaeb42cc808dd2ebeb2413"
+dependencies = [
+ "async-trait",
+ "bitcoin",
+ "cdk-common",
+ "futures",
+ "lightning",
+ "lightning-invoice",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "uuid",
+ "web-time",
+]
+
+[[package]]
 name = "cdk-http-client"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1377,6 +1400,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "cdk",
+ "cdk-fake-wallet",
  "cdk-sqlite",
  "futures",
  "hashu-core",

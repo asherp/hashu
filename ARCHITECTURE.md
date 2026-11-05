@@ -151,6 +151,13 @@ inbound Stratum connections it is authorized to direct.
   abstraction — both are already supported.
 - Holds incoming sats from voucher purchases. **Funds in this wallet
   are operator liability**, not user funds proper — see trust model.
+- Mint-only: the node sells `THH` over bolt11 mint quotes and is never
+  used to pay out. `hashu-mint` wraps the node's cdk backend in a
+  `ThhIssuer` (`payment.rs`), which prices a quote for `N` THH in sats via
+  `SatsPerThhFromHashprice` (`pricing.rs`: hashprice × 3600 s × (1 +
+  markup)), bills that invoice, and reports the payment back to cdk in
+  `THH`. `add_lightning_issuance` (`lightning.rs`) registers it and
+  withdraws bolt11 from the advertised melt methods.
 
 ### 4.6 Pool routing controller
 
