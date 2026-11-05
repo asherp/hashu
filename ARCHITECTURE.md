@@ -109,6 +109,14 @@ inbound Stratum connections it is authorized to direct.
   flow down; share submissions go to the redeemer's pool. On
   redemption end, Hashu reopens the default-pool connection and
   resumes passthrough.
+  *Prototype mechanics:* a connection's upstream is fixed for its
+  lifetime. To switch, the proxy closes the miner's connection and the
+  miner reconnects (every Stratum V1 miner does this unprompted); the
+  router then picks the current route. While routed to a redemption the
+  proxy rewrites the worker name in `mining.authorize` and
+  `mining.submit` to the redeemer's. This avoids `mining.set_extranonce`,
+  which many miners don't support. If the redeemer's pool is
+  unreachable the connection falls back to the default pool for 60 s.
 
 ### 4.3 Voucher accounting
 
@@ -197,6 +205,11 @@ a Hashu operator is selling computation, not moving money.
 ### 4.6 Pool routing controller
 
 - Receives "redirect" intents from voucher accounting.
+- *Prototype:* dedicated assignment (below) is what ships first: each
+  new connection goes to the active redemption with the fewest
+  connections, oldest first. With one miner, redemptions are served in
+  melt order. The router polls the ledger for new redemptions and wakes
+  on the share crediter's completion signal.
 - Maintains a per-redemption allocation. Strategy v0: proportional —
   every connected hashrate source contributes a slice weighted by its
   hashrate EMA, so concurrent redemptions progress at roughly equal

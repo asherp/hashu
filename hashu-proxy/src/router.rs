@@ -33,17 +33,15 @@ use std::time::{Duration, Instant};
 
 use hashu_core::redemption::{Redemption, RedemptionId, RedemptionLedger};
 use serde_json::Value;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 
+use crate::credit::{ConnectionId, RedemptionBinding};
 use crate::stratum::strip_stratum_prefix;
 
 /// How long a connection that fell back to the default pool (redeemer's
 /// pool unreachable) stays there before it is retried. Stops a dead pool
 /// URL from turning into a reconnect loop on every reconcile tick.
 pub const FALLBACK_HOLD: Duration = Duration::from_secs(60);
-
-/// Identifies one accepted miner connection for the router's bookkeeping.
-pub type ConnId = u64;
 
 /// Where a connection's shares go.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,8 +135,7 @@ struct Binding {
 
 #[derive(Default)]
 struct Inner {
-    conns: HashMap<ConnId, Binding>,
-    next_id: ConnId,
+    conns: HashMap<ConnectionId, Binding>,
 }
 
 /// Shared routing state. One per proxy process.
@@ -150,7 +147,7 @@ pub struct Router {
 
 /// What a new connection gets from [`Router::assign`].
 pub struct Assignment {
-    pub conn: ConnId,
+    pub conn: ConnectionId,
     pub route: Route,
     /// Flips to `true` when the router wants this connection closed so
     /// the miner reconnects onto a new route.
@@ -175,12 +172,10 @@ impl Router {
     }
 
     /// Pick a route for a newly accepted miner connection.
-    pub fn assign(&self) -> Assignment {
+    pub fn assign(&self, conn: ConnectionId) -> Assignment {
         let active = self.routable_active();
         let mut inner = self.lock();
         let route = pick_route(&active, &inner.conns, &self.default_upstream);
-        let conn = inner.next_id;
-        inner.next_id += 1;
         let (tx, rx) = watch::channel(false);
         inner.conns.insert(
             conn,
@@ -191,7 +186,7 @@ impl Router {
             },
         );
         if let Some(id) = route.redemption_id() {
-            tracing::info!(conn, redemption = %id, upstream = route.upstream(), "routing connection to redeemer's pool");
+            tracing::info!(%conn, redemption = %id, upstream = route.upstream(), "routing connection to redeemer's pool");
         }
         Assignment {
             conn,
@@ -203,7 +198,7 @@ impl Router {
     /// The redeemer's pool could not be dialed: put this connection on
     /// the default pool instead so the miner keeps working. The
     /// redemption stays open and the next connection tries it again.
-    pub fn fall_back_to_default(&self, conn: ConnId) -> Route {
+    pub fn fall_back_to_default(&self, conn: ConnectionId) -> Route {
         let route = Route::Default {
             upstream: self.default_upstream.clone(),
         };
@@ -215,12 +210,12 @@ impl Router {
     }
 
     /// Forget a connection once it has closed.
-    pub fn release(&self, conn: ConnId) {
+    pub fn release(&self, conn: ConnectionId) {
         self.lock().conns.remove(&conn);
     }
 
     /// Current route of a live connection.
-    pub fn route_of(&self, conn: ConnId) -> Option<Route> {
+    pub fn route_of(&self, conn: ConnectionId) -> Option<Route> {
         self.lock().conns.get(&conn).map(|b| b.route.clone())
     }
 
@@ -248,18 +243,37 @@ impl Router {
             if stale && !*b.kick.borrow() {
                 let _ = b.kick.send(true);
                 kicked += 1;
-                tracing::info!(conn = *conn, from = ?b.route.redemption_id().map(|i| i.to_string()), "kicking connection to re-route");
+                tracing::info!(%conn, from = ?b.route.redemption_id().map(|i| i.to_string()), "kicking connection to re-route");
             }
         }
         kicked
     }
 
-    /// Call [`Router::reconcile`] every `every` until the task is dropped.
-    pub async fn run_reconciler(self: Arc<Self>, every: Duration) {
+    /// Call [`Router::reconcile`] every `every`, and right away whenever
+    /// `completions` (the share crediter's completion signal) fires, until
+    /// the task is dropped. Polling catches newly opened redemptions; the
+    /// signal releases a filled redemption's miners without waiting a tick.
+    pub async fn run_reconciler(
+        self: Arc<Self>,
+        every: Duration,
+        mut completions: Option<broadcast::Receiver<RedemptionId>>,
+    ) {
         let mut tick = tokio::time::interval(every);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tick.tick().await;
+            match completions.as_mut() {
+                Some(rx) => tokio::select! {
+                    _ = tick.tick() => {},
+                    r = rx.recv() => {
+                        if let Err(broadcast::error::RecvError::Closed) = r {
+                            completions = None;
+                        }
+                    }
+                },
+                None => {
+                    tick.tick().await;
+                }
+            }
             self.reconcile();
         }
     }
@@ -284,11 +298,23 @@ impl Router {
     }
 }
 
+/// Which redemption a connection's shares belong to: the one it was
+/// routed to (fixed for the connection's life), or none on the default
+/// pool, including after a fallback.
+impl RedemptionBinding for Router {
+    fn current(&self, conn: ConnectionId) -> Option<RedemptionId> {
+        self.lock()
+            .conns
+            .get(&conn)
+            .and_then(|b| b.route.redemption_id())
+    }
+}
+
 /// Fewest-connections-first over active redemptions (oldest wins ties),
 /// else the default pool.
 fn pick_route(
     active: &[Redemption],
-    conns: &HashMap<ConnId, Binding>,
+    conns: &HashMap<ConnectionId, Binding>,
     default_upstream: &str,
 ) -> Route {
     let load = |id: &RedemptionId| {
@@ -361,14 +387,17 @@ mod tests {
             upstream_for_pool_url("stratum+tcp://pool.example:3333").as_deref(),
             Some("pool.example:3333")
         );
-        assert_eq!(upstream_for_pool_url("stratum+ssl://pool.example:443"), None);
+        assert_eq!(
+            upstream_for_pool_url("stratum+ssl://pool.example:443"),
+            None
+        );
         assert_eq!(upstream_for_pool_url("stratum+tcp://noport"), None);
     }
 
     #[test]
     fn idle_proxy_routes_to_default() {
         let router = Router::new("default:3333", Arc::new(RedemptionLedger::new()));
-        let a = router.assign();
+        let a = router.assign(ConnectionId::next());
         assert_eq!(
             a.route,
             Route::Default {
@@ -382,7 +411,7 @@ mod tests {
         let ledger = Arc::new(RedemptionLedger::new());
         open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
         let router = Router::new("default:3333", ledger);
-        let a = router.assign();
+        let a = router.assign(ConnectionId::next());
         assert_eq!(
             a.route,
             Route::Redemption {
@@ -400,7 +429,13 @@ mod tests {
         open(&ledger, 2, "stratum+tcp://bob:3333", "b");
         let router = Router::new("default:3333", ledger);
         let ids: Vec<_> = (0..4)
-            .map(|_| router.assign().route.redemption_id().unwrap())
+            .map(|_| {
+                router
+                    .assign(ConnectionId::next())
+                    .route
+                    .redemption_id()
+                    .unwrap()
+            })
             .collect();
         assert_eq!(ids, vec![rid(1), rid(2), rid(1), rid(2)]);
     }
@@ -410,7 +445,10 @@ mod tests {
         let ledger = Arc::new(RedemptionLedger::new());
         open(&ledger, 1, "stratum+ssl://alice:443", "a");
         let router = Router::new("default:3333", ledger);
-        assert_eq!(router.assign().route.redemption_id(), None);
+        assert_eq!(
+            router.assign(ConnectionId::next()).route.redemption_id(),
+            None
+        );
     }
 
     #[test]
@@ -419,7 +457,7 @@ mod tests {
         let router = Router::new("default:3333", ledger.clone());
 
         // Idle: miner on the default pool, nothing to kick.
-        let a = router.assign();
+        let a = router.assign(ConnectionId::next());
         assert_eq!(a.route.redemption_id(), None);
         assert_eq!(router.reconcile(), 0);
 
@@ -432,7 +470,7 @@ mod tests {
 
         // Miner reconnects and lands on the redeemer's pool.
         router.release(a.conn);
-        let b = router.assign();
+        let b = router.assign(ConnectionId::next());
         assert_eq!(b.route.redemption_id(), Some(rid(1)));
         assert_eq!(router.reconcile(), 0);
 
@@ -441,7 +479,10 @@ mod tests {
         assert_eq!(router.reconcile(), 1);
         assert!(*b.kicked.borrow());
         router.release(b.conn);
-        assert_eq!(router.assign().route.redemption_id(), None);
+        assert_eq!(
+            router.assign(ConnectionId::next()).route.redemption_id(),
+            None
+        );
     }
 
     #[test]
@@ -449,8 +490,10 @@ mod tests {
         let ledger = Arc::new(RedemptionLedger::new());
         open(&ledger, 1, "stratum+tcp://alice:3333", "a");
         let router = Router::new("default:3333", ledger);
-        let a = router.assign();
+        let a = router.assign(ConnectionId::next());
+        assert_eq!(router.current(a.conn), Some(rid(1)));
         let r = router.fall_back_to_default(a.conn);
+        assert_eq!(router.current(a.conn), None);
         assert_eq!(r.redemption_id(), None);
         assert_eq!(router.route_of(a.conn), Some(r));
         // A fresh fallback is not kicked straight back onto the dead pool.

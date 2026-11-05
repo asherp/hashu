@@ -155,7 +155,10 @@ impl RedemptionLedger {
         map.insert(id, redemption);
         // Take `order` while still holding `inner` so the two never
         // disagree about which ids exist. Lock order: inner, then order.
-        self.order.lock().unwrap_or_else(|e| e.into_inner()).push(id);
+        self.order
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(id);
         Ok(())
     }
 
