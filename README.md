@@ -188,6 +188,9 @@ hashu mint run \
 - State lives in `--data-dir` (`mint.sqlite`, `seed.hex`). Open
   redemptions are in memory: a restart forgets them.
 
+To run it live on an internet-facing machine (Docker Compose with
+phoenixd and Caddy for TLS), see [deploy/README.md](deploy/README.md).
+
 Rehearse the whole loop without money or hardware:
 
 ```bash

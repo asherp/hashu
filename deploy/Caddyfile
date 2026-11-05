@@ -1,0 +1,35 @@
+# TLS front for the live Hashu demo. Certificates come from Let's Encrypt
+# automatically once $HASHU_DOMAIN's A record points at this machine and
+# ports 80/443 are open.
+{$HASHU_DOMAIN} {
+	encode gzip
+
+	# Operator GUI (served by the control API). Password protected: its
+	# POST api/controls pauses issuance and changes the markup.
+	redir /operator /operator/
+	handle_path /operator/* {
+		basic_auth {
+			{$OPERATOR_USER} {$OPERATOR_PASSWORD_HASH}
+		}
+		reverse_proxy hashu:3334
+	}
+
+	# Read-only redemption status for the MDK heater app
+	# (hashuControlUrl = https://$HASHU_DOMAIN/control). GET only:
+	# POST /redemptions and everything else on the control API stays private.
+	handle_path /control/* {
+		@status {
+			method GET HEAD
+			path /status
+		}
+		handle @status {
+			reverse_proxy hashu:3334
+		}
+		respond 404
+	}
+
+	# Everything else: the Cashu mint API (/v1/info, /v1/keys, quotes, ...).
+	handle {
+		reverse_proxy hashu:8085
+	}
+}

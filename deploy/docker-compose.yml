@@ -1,0 +1,105 @@
+# Live Hashu demo on one internet-facing machine.
+#
+#   cp .env.example .env && $EDITOR .env
+#   docker compose up -d --build
+#
+# What is reachable from the internet:
+#   80/443  Caddy (TLS)  -> mint API (hashu:8085) at https://$HASHU_DOMAIN/
+#                        -> operator GUI (hashu:3334) at /operator/ (basic auth)
+#                        -> GET /control/status (read-only, for the MDK app)
+#   3333    Stratum proxy, raw TCP, straight to the hashu container
+# Private (compose network only, never published on the host):
+#   hashu:3334  control API + operator GUI (POST api/controls changes pricing)
+#   phoenixd:9740  phoenixd HTTP API (mainnet wallet)
+# See deploy/README.md for the runbook.
+
+name: hashu
+
+services:
+  phoenixd:
+    build:
+      context: ./phoenixd
+      args:
+        PHOENIXD_VERSION: ${PHOENIXD_VERSION:-0.9.1}
+    image: hashu/phoenixd:${PHOENIXD_VERSION:-0.9.1}
+    environment:
+      PHOENIXD_PASSWORD: ${PHOENIXD_PASSWORD:?set PHOENIXD_PASSWORD in .env}
+      PHOENIXD_LIMITED_PASSWORD: ${PHOENIXD_LIMITED_PASSWORD:?set PHOENIXD_LIMITED_PASSWORD in .env}
+      # Optional: restore an existing wallet on FIRST boot only.
+      PHOENIXD_SEED: ${PHOENIXD_SEED:-}
+      PHOENIXD_EXTRA_ARGS: ${PHOENIXD_EXTRA_ARGS:-}
+    volumes:
+      # Mount AT the datadir (the image declares an anonymous volume there).
+      # seed.dat lives here: back it up.
+      - phoenixd_data:/phoenix/.phoenix
+    # No `ports:` on purpose. Only hashu reaches it, over the compose network.
+    networks: [backend]
+    restart: unless-stopped
+
+  hashu:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: hashu/hashu:latest
+    depends_on: [phoenixd]
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      HASHU_DATA_DIR: /data
+      HASHU_MINT_URL: https://${HASHU_DOMAIN:?set HASHU_DOMAIN in .env}
+      HASHU_UPSTREAM: ${HASHU_UPSTREAM:-stratum+tcp://216.230.225.61:3333}
+      # Fallback price while the live (MRR) source has no fresh sample.
+      HASHU_SATS_PER_THH: ${HASHU_SATS_PER_THH:-40}
+      # Lightning: mainnet phoenixd, limited-access password (can create
+      # invoices and read payments, cannot send).
+      PHOENIXD_URL: http://phoenixd:9740
+      PHOENIXD_PASSWORD: ${PHOENIXD_LIMITED_PASSWORD}
+      PHOENIXD_CHAIN: ${PHOENIXD_CHAIN:-mainnet}
+      # Tether: on when HASHU_USDT_DEPOSIT is set (Sepolia test USDT by default).
+      HASHU_USDT_DEPOSIT: ${HASHU_USDT_DEPOSIT:-}
+      HASHU_USD_PER_BTC: ${HASHU_USD_PER_BTC:-}
+      HASHU_USDT_PER_THH: ${HASHU_USDT_PER_THH:-}
+    command:
+      - mint
+      - run
+      - --listen=0.0.0.0:8085
+      - --stratum-bind=0.0.0.0:3333
+      # Reachable by Caddy on the compose network, NOT published on the host.
+      # Never add --control-allow-open here.
+      - --control-bind=0.0.0.0:3334
+      - --lightning=${HASHU_LIGHTNING:-phoenixd}
+      - --price=${HASHU_PRICE:-mrr}
+    volumes:
+      - hashu_data:/data
+    ports:
+      # Miners connect straight to the Stratum proxy (raw TCP, no TLS).
+      - "${HASHU_STRATUM_PORT:-3333}:3333"
+    networks: [backend, edge]
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    depends_on: [hashu]
+    environment:
+      HASHU_DOMAIN: ${HASHU_DOMAIN}
+      OPERATOR_USER: ${OPERATOR_USER:-operator}
+      OPERATOR_PASSWORD_HASH: ${OPERATOR_PASSWORD_HASH:?set OPERATOR_PASSWORD_HASH in .env (caddy hash-password)}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [edge]
+    restart: unless-stopped
+
+networks:
+  backend: {}
+  edge: {}
+
+volumes:
+  phoenixd_data: {}
+  hashu_data: {}
+  caddy_data: {}
+  caddy_config: {}
