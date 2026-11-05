@@ -33,6 +33,7 @@ mdc: true
 - **1 THH = 1 TH/s × 3,600 s** of hashing pointed where the holder chooses
 - Redeeming a token returns **work**, never coins
 - Running a Hashu mint means **selling computation**, not custodying or sending bitcoin
+- **Hashrate at Home:** a home heater can sell its hashrate as THH (Tether MDK)
 
 </div>
 </div>
@@ -98,44 +99,61 @@ receipted on nostr, so the buyer can check the work against their pool.
 
 ---
 
-# Prototype on Testnet4
+# From scaffold to demo, in one day
 
-<div class="grid grid-cols-2 gap-10 text-sm">
+<style>
+.journey li { line-height: 1.4; margin-top: 0.15rem; margin-bottom: 0.15rem; }
+.journey p { margin-top: 0.2rem; margin-bottom: 0.4rem; }
+</style>
+
+<div class="journey grid grid-cols-[1fr_1.6fr_1fr] gap-5 text-sm mt-2">
+<div class="p-3 rounded bg-gray-500/10">
+
+**This morning**
+
+- Stratum V1 proxy + share Merkle tree
+- Hashprice oracles (Esplora, Luxor)
+- Nostr operator manifest, `hashu` CLI
+- ❌ No minting, no payments
+- ❌ No Testnet4, no Tether
+- ❌ No redemption or redirection
+
+</div>
 <div>
 
-**Working today**
+**What we tackled** (tracking issue #3)
 
-- ✅ Stratum V1 pass-through proxy + share counter
-- ✅ Share commitment tree (RFC 6962) per connection
-- ✅ Hashprice oracle: Esplora (free) + Luxor
-- ✅ Operator manifest on nostr (append-only keysets)
-- ✅ `hashu` CLI: init · config · manifest · oracle · proxy
-- ✅ 99 tests + loopback miner ⇄ proxy ⇄ pool e2e
-
-</div>
-<div>
-
-**Next**
-
-1. 🚧 `hashrate` melt method + redemption ledger (CDK custom backend, on a branch)
-2. Mint daemon + THH issuance on **Testnet4**, paid in **Tether** or **Lightning**
-3. Proxy → ledger crediting and on-demand hashrate redirection
-4. Per-share nostr receipts + completion certificate
-5. Later: concurrent redemptions, buyer wallet, Stratum V2
+- ✅ #2 &nbsp;`hashrate` melt method + redemption ledger (CDK)
+- ✅ #4 &nbsp;Dropped the Lightning melt: a Hashu mint never pays out BTC
+- ✅ #5 &nbsp;Testnet4 + MiningRigRentals hashprice oracle
+- ✅ #6 &nbsp;Lightning rail: buy THH with bolt11
+- ✅ #8 &nbsp;Tether rail: buy THH with USDT
+- ✅ #7 &nbsp;Proxy credits shares to the redemption
+- ✅ #9 &nbsp;Redirect hashrate to the redeemer's pool
+- ✅ #12 &nbsp;Hashu Heater on Tether MDK (Bitaxe Worker)
+- 🚧 #11 &nbsp;Mainnet Lightning via phoenixd
+- 🚧 #13 &nbsp;`hashu mint run`: mint + rails + proxy, one process
 
 </div>
+<div class="p-3 rounded bg-green-500/10">
+
+**The demo**
+
+1. Pay USDT or Lightning
+2. Mint THH, blind-signed
+3. Melt `hashrate` to your pool
+4. MDK app moves the heater to the Hashu proxy
+5. Shares land on the Testnet4 pool; heater goes home when filled
+
 </div>
-
-<div class="mt-4 p-3 rounded bg-gray-500/10 text-xs">
-
-**Demo today:** `hashu proxy run --upstream stratum+tcp://<testnet4-pool>:3333` · shares committed to the Merkle tree live<br/>
-**Target demo:** pay USDT → mint THH → redeem → watch shares (and Testnet4 coins) land at the buyer's pool
-
 </div>
 
 <!--
-Be honest about status: proxy and attestation plumbing are built; issuance,
-melt and payment backends are the next milestone. Trust model: this is a custodial
-Chaumian mint with extra plumbing, mitigated by nostr-signed share receipts the
-redeemer can check against their pool.
+Walk the arc: this morning the repo was plumbing only (proxy, oracles, manifest).
+Every row in the middle is a merged or in-review PR toward the demo milestone (#3).
+#4 matters for the pitch: we removed the cash-out path so the mint only ever
+receives payment and delivers work, which is the "selling computation" argument.
+#12 is the Hashrate at Home angle: a home heater sells its hashrate as THH, and the
+MDK app switches it to the redeemer's pool only while a redemption is open.
+Still open: phoenixd mainnet (#11), the one-process daemon (#13), a real Bitaxe run.
 -->
