@@ -1,6 +1,6 @@
 # Hashu slides
 
-Three-slide [Slidev](https://sli.dev) deck introducing Hashu: what it is, how minting and hashrate redemption work, and the Testnet4 prototype status.
+Four-slide [Slidev](https://sli.dev) deck introducing Hashu: why it sells computation rather than money, the USD → hashrate → BTC flow, share accounting, and the path to the Testnet4 demo.
 
 ```bash
 cd slides

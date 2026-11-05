@@ -3,7 +3,7 @@ theme: default
 title: Hashu — ecash for computation, not money
 info: |
   Hashu: a hashrate proxy fused with a Cashu (CDK) mint.
-  Three-slide overview of the Testnet4 prototype.
+  Four-slide overview of the Testnet4 prototype.
 class: text-left
 drawings:
   persist: false
@@ -67,7 +67,7 @@ sequenceDiagram
   M->>P: schedule redemption
   P->>L: redirect miners' hashrate to the buyer's pool
   L-->>B: pool pays the buyer newly mined BTC
-  P-->>M: shares → Merkle tree + nostr receipts
+  P-->>M: accepted shares credited + Merkle-committed
 ```
 
 <div class="grid grid-cols-3 gap-6 text-xs mt-1">
@@ -93,8 +93,71 @@ sequenceDiagram
 The on-ramp without an exchange: USD stablecoin in, hashrate out, and the
 bitcoin comes from mining, paid by the buyer's chosen pool. Hashu never
 custodies or transmits the mined sats; it only routes Stratum traffic.
-Each accepted share is committed to a per-connection RFC 6962 Merkle tree and
-receipted on nostr, so the buyer can check the work against their pool.
+Each accepted share is credited to the redemption and committed to a
+per-connection RFC 6962 Merkle tree (nostr receipts are next).
+-->
+
+---
+
+# Share accounting: how work is counted
+
+<div class="grid grid-cols-2 gap-8 text-sm mt-2">
+<div>
+
+**Exact integer math, in hashes**
+
+```text
+1 THH    = 1 TH/s × 3,600 s = 3.6 × 10¹⁵ hashes
+1 share  = difficulty × 2³² hashes
+melt N   → target = N × 3.6 × 10¹⁵ hashes
+```
+
+<div class="text-xs opacity-80 mt-1">
+
+At difficulty 65,536, 1 THH ≈ 12.8 shares. A 40 TH/s heater fills 1 THH in 90 s.
+
+</div>
+
+**What counts**
+
+- Only shares the **redeemer's pool accepts**; rejects earn nothing
+- Shares sent to the operator's default pool earn nothing
+- The redemption is fixed when `mining.submit` goes out, so a late ack after a pool switch still credits the right holder
+- Shares in flight after the target is hit are ignored
+
+</div>
+<div>
+
+**Lifecycle of one redemption**
+
+<div class="flex items-center gap-2 text-xs my-3 flex-wrap">
+<span class="px-2 py-1 rounded bg-gray-500/15">melt <code>hashrate</code></span>→
+<span class="px-2 py-1 rounded bg-gray-500/15">Pending</span>→
+<span class="px-2 py-1 rounded bg-blue-500/15">Active: + diff × 2³² per share</span>→
+<span class="px-2 py-1 rounded bg-green-500/15">Completed: hashes ≥ target</span>
+</div>
+
+Completion is broadcast once: the router sends hashrate back to the default pool and the melt quote flips to **PAID**.
+
+
+**Proof of work routed**
+
+- Each accepted share is rebuilt into its 80-byte block header and appended to a per-connection **RFC 6962 Merkle tree**
+- Root and leaf count are logged today; next, publish them as signed nostr receipts the holder checks against their pool
+
+</div>
+</div>
+
+<!--
+The ledger never uses floating-point THH: progress is an integer count of
+expected hashes, so "done" is decided without rounding drift.
+Credit = difficulty × 2^32 per share the redeemer's pool accepted (#7).
+The routing controller tells the proxy which redemption a connection serves (#9);
+that binding is sampled at submit time, so acks that arrive after a switch still
+credit the right redemption. When the total crosses the target, the crediter
+broadcasts completion once: the router moves hashrate back to the default pool and
+the mint's hashrate melt quote flips to PAID (#13; the redemption id is derived
+from the melt request, so cdk can look it up and nobody pays twice).
 -->
 
 ---
