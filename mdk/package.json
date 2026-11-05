@@ -1,0 +1,15 @@
+{
+  "name": "hashu-heater",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "mdk run"
+  },
+  "devDependencies": {
+    "@tetherto/mdk-cli": "^0.13.1"
+  },
+  "dependencies": {
+    "hashu-heater-worker": "file:./workers/heater",
+    "hashu-heater-app": "file:./apps/hashu"
+  }
+}

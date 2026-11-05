@@ -1,0 +1,31 @@
+{
+  "name": "hashu-heater-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hashu Heater MDK app: sells a home miner's hashrate as THH, switching its pool through MDK while a redemption fills, with a thermostat.",
+  "keywords": [
+    "mdk",
+    "mdk-app"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@tetherto/mdk-client": "^0.13.1"
+  },
+  "files": [
+    "mdk-app.yaml",
+    "plugin/",
+    "ui/",
+    "README.md"
+  ],
+  "scripts": {
+    "build:ui": "npm --prefix ui-src run build",
+    "dev:ui": "npm --prefix ui-src run dev",
+    "typecheck:ui": "npm --prefix ui-src run typecheck",
+    "typecheck:plugin": "npm --prefix ui-src run typecheck:plugin",
+    "typecheck": "npm run typecheck:plugin && npm run typecheck:ui",
+    "test": "node --test test/"
+  }
+}

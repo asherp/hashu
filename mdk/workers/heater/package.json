@@ -1,0 +1,15 @@
+{
+  "name": "hashu-heater-worker",
+  "version": "0.1.0",
+  "description": "MDK Worker for a home-mining heater (Heatbit-class, ~40 TH/s) or a Bitaxe, over the AxeOS HTTP API. Reports hashrate, power, chip and room temperature, and the active pool, and switches pools on command so Hashu can redirect sold hashrate.",
+  "keywords": ["mdk", "mdk-worker", "hashu"],
+  "license": "Apache-2.0",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "mock": "node -e \"require('./mock/server').createServer({ host: '127.0.0.1', port: 18080, serial: 'HEAT-0' })\""
+  },
+  "dependencies": {
+    "@tetherto/mdk-worker": "^0.13.1",
+    "debug": "4.4.1"
+  }
+}

@@ -4,6 +4,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub mod control;
 pub mod credit;
 pub mod router;
 pub mod stratum;

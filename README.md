@@ -34,6 +34,8 @@ mint daemon are still ahead.
 | Share commitment tree integration in the proxy | done | `hashu-proxy::stratum::{session,header,committer,compact}` |
 | `hashrate` melt method via cdk (redemption ledger + `MintPayment` backend) | done | `hashu-core::redemption`, `hashu-mint::melt` |
 | Tether (USDT) payment rail: buy `THH` with dollars (ERC-20 over EVM JSON-RPC) | done | `hashu-mint::tether` |
+| Proxy control API (`GET /status`, demo `POST /redemptions`) | done | `hashu-proxy::control` |
+| MDK heater stack: Worker + app switching pools on redeem, thermostat | done | [`mdk/`](mdk/README.md) |
 | Per-share nostr receipts + completion certificate | planned | — |
 | Stratum V2 via SRI | fast-follow | — |
 | Lightning backend (LND/CLN via cdk) | planned | — |
@@ -143,7 +145,9 @@ the proxy maintains a per-connection [share commitment tree
 its 80-byte block header, packaged into a `ShareLeaf`, and appended.
 On disconnect the final root + leaf count is logged. Periodic metric
 snapshots (including `shares_committed`) are logged via `tracing`.
-Redemption-driven upstream redirection lands in a follow-up commit.
+With `--control-bind 127.0.0.1:3334` the proxy also serves a small HTTP
+control API (`GET /status`: redemptions and progress) that the
+[MDK heater app](mdk/README.md) polls to switch miners onto the proxy.
 
 ## Workspace layout
 

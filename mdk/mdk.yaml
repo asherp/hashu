@@ -1,0 +1,83 @@
+apiVersion: mdk/v1
+kind: Stack
+metadata:
+  name: hashu-heater
+spec:
+  network:
+    dht: { host: 127.0.0.1, port: 49737 }
+  kernel: { port: 3848 }
+  gateway: { port: 3847 }
+  workers:
+    - name: heater
+      package: ./workers/heater
+      config:
+        mock: true
+        devices:
+          - id: living-room
+            opts:
+              {
+                host: 127.0.0.1,
+                port: 18080,
+                serial: HEAT-0,
+                stratumURL: 127.0.0.1,
+                stratumPort: 3340,
+                stratumUser: home.heater
+              }
+  apps:
+    - name: hashu
+      package: ./apps/hashu
+      config:
+        # Mock demo: every pool is local, because the mock heater's shares
+        # only pass a pool that accepts everything (scripts/fake-pool.js).
+        homePool: { url: "stratum+tcp://127.0.0.1:3340", user: "home.heater", pass: "x" }
+        redeemPool: { url: "stratum+tcp://127.0.0.1:3341", user: "alice.heater" }
+        thermostat: { enabled: true, setpointC: 22, hysteresisC: 0.5, maxRoomC: 27 }
+      serviceAccount: app:hashu
+      permissionsDigest: a4e71417ef246cf9
+  rbac:
+    enforcement: deny
+    roles:
+      - name: app-hashu
+        rules:
+          - resources:
+              - workers
+            verbs:
+              - list
+          - resources:
+              - devices
+            verbs:
+              - read
+              - write
+      - name: admin
+        rules:
+          - resources:
+              - "*"
+            verbs:
+              - "*"
+      - name: gateway
+        rules:
+          - resources:
+              - policy
+            verbs:
+              - read
+    bindings:
+      - role: app-hashu
+        subjects:
+          - kind: ServiceAccount
+            name: app:hashu
+      - role: admin
+        subjects:
+          - kind: ServiceAccount
+            name: mdk-cli
+      - role: gateway
+        subjects:
+          - kind: ServiceAccount
+            name: mdk-gateway
+      - role: gateway
+        subjects:
+          - kind: ServiceAccount
+            name: mdk-mcp
+      - role: admin
+        subjects:
+          - kind: User
+            name: demo@hashu.io
