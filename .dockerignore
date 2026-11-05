@@ -1,0 +1,10 @@
+target
+.git
+mdk/node_modules
+**/node_modules
+deploy/*
+!deploy/hashu
+hashu-data
+*.sqlite
+.env
+.env.*
