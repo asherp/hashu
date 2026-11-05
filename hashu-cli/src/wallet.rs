@@ -1,7 +1,8 @@
 //! `hashu wallet` — fresh BTC wallet utility for testing.
 //!
-//! `hashu wallet generate` produces a one-shot mainnet P2WPKH (`bc1q…`)
-//! address + WIF privkey + pubkey hex on stdout. Output is *not*
+//! `hashu wallet generate` produces a one-shot P2WPKH address (`bc1q…` on
+//! mainnet, `tb1q…` on testnet4 / testnet / signet) + WIF privkey + pubkey
+//! hex on stdout. Output is *not*
 //! persisted — paste into your password manager if you want to keep it.
 //!
 //! Intended for the live `hashu mine` ⇄ `hashu proxy` ⇄ public pool test
@@ -11,8 +12,10 @@
 
 use anyhow::{Context, Result};
 use bitcoin::secp256k1::{rand, Secp256k1, SecretKey};
-use bitcoin::{Address, CompressedPublicKey, Network, NetworkKind, PrivateKey};
+use bitcoin::{Address, CompressedPublicKey, NetworkKind, PrivateKey};
 use clap::{Args, Subcommand};
+
+use crate::network::parse_network;
 
 #[derive(Debug, Args)]
 pub struct WalletCmd {
@@ -28,8 +31,8 @@ pub enum WalletAction {
 
 #[derive(Debug, Args)]
 pub struct GenerateArgs {
-    /// Network for the address. `bitcoin` (default), `testnet`, `signet`,
-    /// or `regtest`.
+    /// Network for the address. `bitcoin` (default), `testnet4` (the demo
+    /// network), `testnet` (Testnet3), `signet`, or `regtest`.
     #[arg(long, default_value = "bitcoin")]
     pub network: String,
 }
@@ -56,39 +59,18 @@ fn generate(args: GenerateArgs) -> Result<()> {
     Ok(())
 }
 
-fn parse_network(s: &str) -> Result<Network> {
-    match s.to_ascii_lowercase().as_str() {
-        "bitcoin" | "mainnet" => Ok(Network::Bitcoin),
-        "testnet" => Ok(Network::Testnet),
-        "signet" => Ok(Network::Signet),
-        "regtest" => Ok(Network::Regtest),
-        other => anyhow::bail!(
-            "unknown network {other:?}; expected bitcoin / testnet / signet / regtest",
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoin::Address;
+    use bitcoin::{Address, Network};
     use std::str::FromStr;
-
-    #[test]
-    fn parse_network_accepts_aliases() {
-        assert_eq!(parse_network("bitcoin").unwrap(), Network::Bitcoin);
-        assert_eq!(parse_network("MAINNET").unwrap(), Network::Bitcoin);
-        assert_eq!(parse_network("testnet").unwrap(), Network::Testnet);
-        assert_eq!(parse_network("signet").unwrap(), Network::Signet);
-        assert_eq!(parse_network("regtest").unwrap(), Network::Regtest);
-        assert!(parse_network("nonsense").is_err());
-    }
 
     #[test]
     fn generated_address_round_trips_for_each_network() {
         let secp = Secp256k1::new();
         for net in [
             Network::Bitcoin,
+            Network::Testnet4,
             Network::Testnet,
             Network::Signet,
             Network::Regtest,
@@ -119,5 +101,20 @@ mod tests {
                 "expected bc1q prefix, got {address}"
             );
         }
+    }
+
+    #[test]
+    fn testnet4_addresses_have_tb1q_prefix() {
+        let secp = Secp256k1::new();
+        let net = parse_network("testnet4").unwrap();
+        let sk = SecretKey::new(&mut rand::thread_rng());
+        let priv_key = PrivateKey::new(sk, NetworkKind::from(net));
+        assert!(!priv_key.network.is_mainnet());
+        let pub_key = CompressedPublicKey::from_private_key(&secp, &priv_key).unwrap();
+        let address = Address::p2wpkh(&pub_key, net).to_string();
+        assert!(
+            address.starts_with("tb1q"),
+            "expected tb1q prefix, got {address}"
+        );
     }
 }

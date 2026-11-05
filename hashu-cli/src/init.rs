@@ -13,7 +13,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use dialoguer::{Confirm, Input, Select};
 use hashu_mint::manifest::{ManifestState, Profile};
-use hashu_mint::oracle::{esplora, luxor};
+use hashu_mint::oracle::{esplora, luxor, mrr};
 use nostr::{Keys, ToBech32};
 
 #[derive(Debug, Args)]
@@ -105,6 +105,7 @@ fn default_oracle_url(source: &str) -> &'static str {
     match source {
         "esplora" => esplora::DEFAULT_BASE_URL,
         "luxor" => luxor::DEFAULT_BASE_URL,
+        "mrr" => mrr::DEFAULT_BASE_URL,
         _ => "",
     }
 }
@@ -143,7 +144,7 @@ fn prompt_setup() -> Result<(String, Profile, String, String, Vec<String>)> {
         website: nonblank(website),
     };
 
-    let oracles = ["esplora", "luxor"];
+    let oracles = ["esplora", "luxor", "mrr"];
     let oracle_idx = Select::new()
         .with_prompt("Hashprice oracle")
         .items(&oracles)

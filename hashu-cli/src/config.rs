@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use hashu_mint::manifest::ManifestState;
-use hashu_mint::oracle::{esplora, luxor};
+use hashu_mint::oracle::{esplora, luxor, mrr};
 
 use crate::init::{resolve_data_dir, state_path};
 
@@ -40,7 +40,7 @@ pub struct SetArgs {
     pub data_dir: Option<PathBuf>,
     #[arg(long)]
     pub instance_url: Option<String>,
-    /// `esplora` or `luxor`. If you change this without --oracle-url, the
+    /// `esplora`, `luxor` or `mrr`. If you change this without --oracle-url, the
     /// URL is reset to the new source's compiled-in default.
     #[arg(long)]
     pub oracle_source: Option<String>,
@@ -82,6 +82,7 @@ fn default_oracle_url(source: &str) -> Option<&'static str> {
     match source {
         "esplora" => Some(esplora::DEFAULT_BASE_URL),
         "luxor" => Some(luxor::DEFAULT_BASE_URL),
+        "mrr" => Some(mrr::DEFAULT_BASE_URL),
         _ => None,
     }
 }
