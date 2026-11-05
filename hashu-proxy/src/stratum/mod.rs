@@ -10,6 +10,8 @@ pub mod listener;
 pub mod observe;
 pub mod session;
 
-pub use connection::proxy_connection;
-pub use listener::{run as run_listener, strip_stratum_prefix, ListenerConfig};
+pub use connection::{proxy_connection, proxy_connection_with};
+pub use listener::{
+    run as run_listener, run_with as run_listener_with, strip_stratum_prefix, ListenerConfig,
+};
 pub use observe::{observe_line, Direction, PendingSubmits};

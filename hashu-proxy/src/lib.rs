@@ -4,6 +4,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub mod credit;
 pub mod router;
 pub mod stratum;
 
@@ -14,7 +15,9 @@ pub mod stratum;
 /// is the subset for which we successfully reconstructed a share preimage
 /// from session state and appended it to the commitment tree — these can
 /// diverge when the proxy missed the relevant `mining.subscribe` /
-/// `mining.notify` (e.g. attaching mid-session).
+/// `mining.notify` (e.g. attaching mid-session). `shares_credited` is the
+/// subset of accepted shares credited to an open redemption in the ledger
+/// (shares sent to the default pool are accepted but not credited).
 #[derive(Debug, Default)]
 pub struct ProxyMetrics {
     pub connections_accepted: AtomicU64,
@@ -22,6 +25,7 @@ pub struct ProxyMetrics {
     pub shares_accepted: AtomicU64,
     pub shares_rejected: AtomicU64,
     pub shares_committed: AtomicU64,
+    pub shares_credited: AtomicU64,
 }
 
 impl ProxyMetrics {
@@ -32,6 +36,7 @@ impl ProxyMetrics {
             shares_accepted: self.shares_accepted.load(Ordering::Relaxed),
             shares_rejected: self.shares_rejected.load(Ordering::Relaxed),
             shares_committed: self.shares_committed.load(Ordering::Relaxed),
+            shares_credited: self.shares_credited.load(Ordering::Relaxed),
         }
     }
 }
@@ -43,4 +48,5 @@ pub struct ProxyMetricsSnapshot {
     pub shares_accepted: u64,
     pub shares_rejected: u64,
     pub shares_committed: u64,
+    pub shares_credited: u64,
 }

@@ -111,6 +111,17 @@ pub fn hashes_for_difficulty(difficulty: f64) -> u128 {
     (difficulty * HASHES_PER_DIFF_ONE as f64).round() as u128
 }
 
+/// Result of crediting one share through the ledger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CreditOutcome {
+    /// State after the credit.
+    pub state: RedemptionState,
+    /// True only for the credit that crossed the target.
+    pub newly_completed: bool,
+    pub accumulated_hashes: u128,
+    pub target_hashes: u128,
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum LedgerError {
     #[error("redemption {0} already exists")]
@@ -150,6 +161,27 @@ impl RedemptionLedger {
         let mut map = self.lock();
         let redemption = map.get_mut(id).ok_or(LedgerError::Unknown(*id))?;
         Ok(redemption.credit_share(difficulty))
+    }
+
+    /// Like [`Self::credit_share`], but also reports whether this credit is
+    /// the one that moved the redemption to `Completed`. Exactly one credit
+    /// per redemption returns `newly_completed = true`, which lets callers
+    /// fire a completion signal once without racing other crediters.
+    pub fn credit_share_outcome(
+        &self,
+        id: &RedemptionId,
+        difficulty: f64,
+    ) -> Result<CreditOutcome, LedgerError> {
+        let mut map = self.lock();
+        let redemption = map.get_mut(id).ok_or(LedgerError::Unknown(*id))?;
+        let was_complete = redemption.is_complete();
+        let state = redemption.credit_share(difficulty);
+        Ok(CreditOutcome {
+            state,
+            newly_completed: !was_complete && state == RedemptionState::Completed,
+            accumulated_hashes: redemption.accumulated_hashes,
+            target_hashes: redemption.target_hashes,
+        })
     }
 
     /// Snapshot of one redemption, or `None` if unknown.
@@ -251,6 +283,24 @@ mod tests {
             ledger.credit_share(&id(9), 1.0),
             Err(LedgerError::Unknown(id(9)))
         );
+    }
+
+    #[test]
+    fn credit_outcome_flags_completion_exactly_once() {
+        let ledger = RedemptionLedger::new();
+        ledger
+            .open(Redemption::new(id(4), 1, "p".into(), "w".into()))
+            .unwrap();
+        let first = ledger.credit_share_outcome(&id(4), 1.0).unwrap();
+        assert_eq!(first.state, RedemptionState::Active);
+        assert!(!first.newly_completed);
+        assert_eq!(first.accumulated_hashes, HASHES_PER_DIFF_ONE);
+        let crossing = ledger.credit_share_outcome(&id(4), 1e9).unwrap();
+        assert_eq!(crossing.state, RedemptionState::Completed);
+        assert!(crossing.newly_completed);
+        let after = ledger.credit_share_outcome(&id(4), 1e9).unwrap();
+        assert_eq!(after.state, RedemptionState::Completed);
+        assert!(!after.newly_completed);
     }
 
     #[test]

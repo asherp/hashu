@@ -69,6 +69,7 @@ async fn run_listener_cmd(args: RunArgs) -> Result<()> {
                     accepted = s.shares_accepted,
                     rejected = s.shares_rejected,
                     committed = s.shares_committed,
+                    credited = s.shares_credited,
                     "proxy metrics",
                 );
             }
