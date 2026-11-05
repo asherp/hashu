@@ -18,10 +18,14 @@ time = { workspace = true }
 nostr = { workspace = true }
 nostr-sdk = { workspace = true }
 anyhow = { workspace = true }
+async-trait = "0.1"
+futures = "0.3"
+rand = "0.8"
 # `mint` feature pulls in cdk-signatory, which has a build script that
 # invokes `protoc`. Make sure `protoc` is on PATH or `PROTOC` is set.
 cdk = { version = "0.16", features = ["mint", "wallet", "nostr"] }
 
 [dev-dependencies]
+cdk-sqlite = "0.16"
 tokio = { workspace = true, features = ["macros", "rt"] }
 tempfile = { workspace = true }
