@@ -25,8 +25,10 @@ can run a Hashu instance and start issuing vouchers backed by it.
 Spiritually closer to `fedimintd` or `cashu-mintd` than to a centralized
 hashrate marketplace. Each Hashu instance is a single trust domain: one
 operator, one mint, one pool of hashrate. Vouchers from different
-operators interoperate through standard Cashu and Lightning rails
-(swap, BOLT11 melt) but are issued under separate trust assumptions.
+operators interoperate through standard Cashu swaps but are issued
+under separate trust assumptions. A Hashu mint sells computation and
+never pays out bitcoin: `THH` is redeemed only for hashrate, never
+melted back to sats.
 
 ## 2. Core actors
 
@@ -210,7 +212,7 @@ machine-readable manifest:
       {"id": "<keyset-id-0>", "status": "retired", "retired_at": <unix>}
     ],
     "supported_units":  ["THH"],
-    "supported_melts":  ["bolt11", "hashrate", "hashrate-sats"],
+    "supported_melts":  ["hashrate", "hashrate-sats"],
     "hashprice_oracle": "luxor",
     "manifest_version": 1,
     "issued_at":        <unix>
@@ -402,13 +404,6 @@ Redeem (melt method "hashrate-sats"):
     Mint   ──▶ marks redemption complete when integral ≥ target_sats
 ```
 
-### 5.3 Lightning melt (escape hatch)
-
-Standard NUT-05 BOLT11 melt, denominated by hashprice at melt time.
-Lets holders bail out to sats without ever redeeming hashrate. This is
-important: it makes `THH` tokens *fungible with sats* and lets the
-secondary market price them.
-
 ## 6. Trust model
 
 This is **a custodial mint** like every Cashu mint today. Trust
@@ -504,8 +499,7 @@ Resolved 2026-05-07:
   is managed outside Hashu.
 - ~~Q4 — redemption SLA:~~ on proxy outage or unfillable redemption,
   the unredeemed portion of `THH` is **re-issued as fresh blinded
-  signatures back to the holder**. Holder can re-redeem, hold, or melt
-  to BOLT11.
+  signatures back to the holder**. Holder can re-redeem or hold.
 - ~~Q7 — miner registration UX:~~ **out of scope** (no third-party
   miners connect to a stranger's Hashu under this model).
 
@@ -541,7 +535,6 @@ Open:
 
 **Phase 3 — Sats-equivalent + secondary market**
 - `hashrate-sats` melt method.
-- Lightning melt for bailout (NUT-05 standard).
 - Public token spec so other wallets can hold `THH`.
 
 **Phase 4 — Stratum V2**

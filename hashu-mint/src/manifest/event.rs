@@ -44,7 +44,6 @@ impl HashuManifest {
             mint_pubkey_ids: state.keysets.clone(),
             supported_units: vec!["THH".to_string()],
             supported_melts: vec![
-                "bolt11".to_string(),
                 "hashrate".to_string(),
                 "hashrate-sats".to_string(),
             ],
@@ -139,7 +138,7 @@ mod tests {
         assert_eq!(m.instance_url, "https://mint.example.com");
         assert_eq!(m.hashprice_oracle, "esplora");
         assert_eq!(m.supported_units, vec!["THH"]);
-        assert_eq!(m.supported_melts.len(), 3);
+        assert_eq!(m.supported_melts.len(), 2);
         assert_eq!(m.issued_at, 9_000);
         assert_eq!(m.mint_pubkey_ids.len(), 2);
         assert_eq!(m.mint_pubkey_ids[0].id, "00aa");
