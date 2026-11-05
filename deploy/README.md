@@ -21,7 +21,7 @@ control API and operator GUI), a mainnet **phoenixd** for Lightning, and
 
 | Port | Exposed? | What |
 |---|---|---|
-| 80, 443 (tcp+udp) | public | Caddy: mint API at `/`, operator GUI at `/operator/`, `GET /control/status` |
+| 80, 443 (tcp+udp) | public | Caddy: mint API at `/`, buyer checkout at `/checkout/`, operator GUI at `/operator/`, `GET /control/status` |
 | 3335 | public | Stratum proxy, raw TCP (host 3335 → container 3333; ckpool keeps 3333) |
 | 8085 | compose network only | Cashu mint API (behind Caddy) |
 | 3334 | compose network only | control API + operator GUI (behind Caddy) |
@@ -158,6 +158,7 @@ curl -s $D/v1/info | jq '{name, nuts: (.nuts|keys)}'          # mint is up, TLS 
 curl -s $D/v1/keysets | jq '.keysets[] | {id, unit, active}'  # unit "thh"
 curl -s -X POST $D/v1/mint/quote/bolt11 -H 'content-type: application/json' \
   -d '{"amount": 1, "unit": "thh"}' | jq                      # real mainnet invoice
+curl -s -o /dev/null -w '%{http_code}\n' $D/checkout/       # 200, public buyer page
 curl -s $D/control/status | jq                                # redemptions (read-only)
 curl -s -o /dev/null -w '%{http_code}\n' $D/operator/         # 401 without login
 curl -s -o /dev/null -w '%{http_code}\n' -X POST $D/control/redemptions   # 404, stays private

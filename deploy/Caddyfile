@@ -28,7 +28,8 @@
 		respond 404
 	}
 
-	# Everything else: the Cashu mint API (/v1/info, /v1/keys, quotes, ...).
+	# Everything else: the Cashu mint API (/v1/info, /v1/keys, quotes, ...)
+	# and the public buyer checkout page (/checkout/), both on the mint port.
 	handle {
 		reverse_proxy hashu:8085
 	}
