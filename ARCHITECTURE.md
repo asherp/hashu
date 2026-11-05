@@ -155,8 +155,19 @@ inbound Stratum connections it is authorized to direct.
 
 ### 4.5 Lightning node
 
-- LND or CLN via gRPC/CLN-gRPC. Pluggable through `cdk`'s LN backend
-  abstraction — both are already supported.
+- **Mainnet.** Buyers pay real sats. The Lightning network is
+  independent of the redemption side: `THH` bought with mainnet sats can
+  be redeemed against any pool, Testnet4 pools included.
+- Default node: **phoenixd** (ACINQ), the same setup overpay runs
+  (`PHOENIXD_URL` or `PHOENIXD_HOSTPORT`, `PHOENIXD_PASSWORD`).
+  `hashu_mint::phoenixd::Phoenixd` creates invoices with
+  `/createinvoice` and learns of settlement instantly from phoenixd's
+  `/websocket` `payment_received` push, with a 5 s poll of
+  `/payments/incoming/{hash}` as fallback. It credits the invoiced amount (phoenixd deducts channel-opening fees from
+  `receivedSat`). `Phoenixd::connect` refuses a node that isn't on
+  mainnet unless `PHOENIXD_CHAIN` says otherwise.
+- LND or CLN via gRPC/CLN-gRPC also plug in through `cdk`'s LN backend
+  abstraction.
 - Holds incoming sats from voucher purchases. **Funds in this wallet
   are operator liability**, not user funds proper — see trust model.
 - Mint-only: the node sells `THH` over bolt11 mint quotes and is never

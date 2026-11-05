@@ -9,5 +9,6 @@ pub mod manifest;
 pub mod melt;
 pub mod oracle;
 pub mod payment;
+pub mod phoenixd;
 pub mod pricing;
 pub mod tether;
