@@ -28,5 +28,6 @@ cdk = { version = "0.16", features = ["mint", "wallet", "nostr"] }
 [dev-dependencies]
 cdk-sqlite = "0.16"
 cdk-fake-wallet = "0.16"
+wiremock = "0.6"
 tokio = { workspace = true, features = ["macros", "rt"] }
 tempfile = { workspace = true }

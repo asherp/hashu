@@ -8,9 +8,12 @@
 //! Buyer ──▶ POST /v1/mint/bolt11 { quote, outputs }  ──▶ N THH of ecash
 //! ```
 //!
-//! The Lightning node is any cdk backend that settles in sats: `cdk-lnd`,
-//! `cdk-cln` or `cdk-ldk-node` on Testnet4 for the demo, `cdk-fake-wallet`
-//! in tests. [`ThhIssuer`] prices quotes with [`SatsPerThhFromHashprice`]
+//! Buyers pay **real mainnet sats**. The node is any cdk backend that
+//! settles in sats: [`crate::phoenixd::Phoenixd`] (the default, same node
+//! setup as overpay), or `cdk-lnd` / `cdk-cln` / `cdk-ldk-node`;
+//! `cdk-fake-wallet` in tests. The payment network is independent of the
+//! redemption side: `THH` bought with mainnet sats can be redeemed against
+//! any pool, Testnet4 included. [`ThhIssuer`] prices quotes with [`SatsPerThhFromHashprice`]
 //! and translates the node's payments into `THH`.
 //!
 //! Lightning is mint-only. [`add_lightning_issuance`] registers bolt11 for
@@ -176,7 +179,44 @@ mod tests {
     /// receives 20 sats, the mint issues 10 THH of signatures.
     #[tokio::test]
     async fn buys_thh_over_bolt11_end_to_end() {
-        let issuer = lightning_issuer(pricer().with_markup_bps(0), fake_node());
+        buy_10_thh(fake_node()).await;
+    }
+
+    /// The same flow over phoenixd's HTTP API (mocked): the invoice comes
+    /// from `/createinvoice`, settlement from polling `/payments/incoming`,
+    /// with a channel-opening fee taken out of what the node received.
+    #[tokio::test]
+    async fn buys_thh_over_phoenixd_end_to_end() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let invoice = cdk_fake_wallet::create_fake_invoice(20_000, "Hashu: 10 THH".into());
+        let hash = hex::encode(invoice.payment_hash());
+        Mock::given(method("POST"))
+            .and(path("/createinvoice"))
+            .and(body_string_contains("amountSat=20&"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "amountSat": 20, "paymentHash": hash, "serialized": invoice.to_string(),
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/payments/incoming/{hash}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "isPaid": true, "receivedSat": 12, "invoice": invoice.to_string(),
+            })))
+            .mount(&server)
+            .await;
+
+        let mut cfg = crate::phoenixd::PhoenixdConfig::new(server.uri(), "pw");
+        cfg.poll_interval = Duration::from_millis(50);
+        buy_10_thh(Arc::new(crate::phoenixd::Phoenixd::new(cfg).unwrap())).await;
+    }
+
+    /// Buy 10 THH at 2 sats/THH over `node` and check 10 THH are issued.
+    async fn buy_10_thh(node: DynMintPayment) {
+        let issuer = lightning_issuer(pricer().with_markup_bps(0), node);
         let b = add_lightning_issuance(builder().await, issuer, MintMeltLimits::new(1, 1000))
             .await
             .unwrap();
@@ -204,7 +244,7 @@ mod tests {
         let invoice: cdk::Bolt11Invoice = quote.request.parse().unwrap();
         assert_eq!(invoice.amount_milli_satoshis(), Some(20_000));
 
-        // The fake node pays at once; wait for the mint to see it.
+        // The node reports it paid; wait for the mint to see it.
         let mut state = MintQuoteState::Unpaid;
         for _ in 0..50 {
             state = bolt11_state(&mint, &quote_id).await;
