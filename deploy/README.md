@@ -37,10 +37,9 @@ but cannot send, so even a compromised mint cannot spend the wallet.
   (`curl -fsSL https://get.docker.com | sh`). 2 GB RAM is enough once
   built; the first `cargo build` inside Docker wants ~4 GB, so on a small
   VPS add swap or build the image elsewhere and `docker save | ssh … docker load`.
-- A DNS name for the box. The demo host is the devbox (216.230.225.61),
-  which has no record of its own, so `.env.example` uses
-  `216-230-225-61.sslip.io`, which resolves to that IP; Let's Encrypt
-  issues for it (if it hits a rate limit, try `216.230.225.61.nip.io`). Swap in a real name (e.g. `mint.hashu.io`) later.
+- A DNS name for the box: **`mint.hashu.io`** → the devbox (216.230.225.61).
+  See "DNS on Squarespace" below. Until it resolves, `216-230-225-61.sslip.io`
+  works as a stand-in (sslip.io maps it to that IP).
 - Ports 80 and 443 free on the host for Caddy. Check first with
   `sudo ss -tlnp | grep -E ':(80|443|3335) '`; if something (e.g. a faucet
   web server) already has 80/443, either put the Hashu routes in that
@@ -58,6 +57,22 @@ but cannot send, so even a compromised mint cannot spend the wallet.
   the real protection for 8085/3334/9740 is that compose never publishes
   them. Check with `sudo ss -tlnp` after start: only 80, 443, 3335, ckpool's 3333 and 22.
   If the cloud provider has its own security group, open the same ports there.
+
+### DNS on Squarespace
+
+1. Squarespace → **Domains** → `hashu.io` → **DNS** (DNS Settings).
+2. Under **Custom records**, **Add record**: Host `mint`, Type `A`,
+   Data `216.230.225.61`, TTL default. Save. Leave the existing
+   Squarespace records for the apex/`www` alone.
+3. Wait until it resolves (usually minutes):
+
+   ```bash
+   dig +short mint.hashu.io      # -> 216.230.225.61
+   ```
+
+Start Caddy only after that: Let's Encrypt checks the name over port 80,
+and repeated failures hit its rate limit. If Squarespace says the domain
+uses external nameservers, add the same A record at that DNS provider instead.
 
 ## 2. Configure
 
@@ -137,7 +152,7 @@ LSP open one on the fly and takes a fee out of it (about 2,000+ sats plus
 From any machine:
 
 ```bash
-D=https://216-230-225-61.sslip.io
+D=https://mint.hashu.io
 
 curl -s $D/v1/info | jq '{name, nuts: (.nuts|keys)}'          # mint is up, TLS works
 curl -s $D/v1/keysets | jq '.keysets[] | {id, unit, active}'  # unit "thh"
@@ -146,22 +161,22 @@ curl -s -X POST $D/v1/mint/quote/bolt11 -H 'content-type: application/json' \
 curl -s $D/control/status | jq                                # redemptions (read-only)
 curl -s -o /dev/null -w '%{http_code}\n' $D/operator/         # 401 without login
 curl -s -o /dev/null -w '%{http_code}\n' -X POST $D/control/redemptions   # 404, stays private
-nc -vz 216-230-225-61.sslip.io 3335                                  # Stratum reachable
+nc -vz mint.hashu.io 3335                                  # Stratum reachable
 ```
 
 End to end with the example wallet (from a checkout of the repo):
 
 ```bash
 cargo run -p hashu-cli --example buy_and_redeem -- \
-  https://216-230-225-61.sslip.io bolt11 2 stratum+tcp://216.230.225.61:3333 yourname.worker1
+  https://mint.hashu.io bolt11 2 stratum+tcp://216.230.225.61:3333 yourname.worker1
 ```
 
 It prints the invoice; pay it from any Lightning wallet, then it redeems.
 On the devbox the redemption pool in that command is ckpool on the same
 machine, so redeemed hashrate goes proxy → ckpool without leaving the box.
 Point a miner (Bitaxe, or the Heatbit via the MDK app) at
-`stratum+tcp://216-230-225-61.sslip.io:3335` and watch the redemption fill in the
-operator GUI at `https://216-230-225-61.sslip.io/operator/`.
+`stratum+tcp://mint.hashu.io:3335` and watch the redemption fill in the
+operator GUI at `https://mint.hashu.io/operator/`.
 
 **Rehearsal without money:** set `HASHU_LIGHTNING=fake` and
 `HASHU_PRICE=fixed` in `.env`, then `docker compose up -d hashu`. Every
@@ -173,10 +188,10 @@ The MDK app polls the control API to know when to move the heater onto
 the proxy. Point it at the public read-only route:
 
 ```
-hashuControlUrl = https://216-230-225-61.sslip.io/control
+hashuControlUrl = https://mint.hashu.io/control
 ```
 
-and the miner pool at `stratum+tcp://216-230-225-61.sslip.io:3335`.
+and the miner pool at `stratum+tcp://mint.hashu.io:3335`.
 `/control/status` lists open redemptions (pool URL, worker name,
 progress). If that should not be public, remove the `/control/*` block
 from the Caddyfile and reach 3334 over an SSH tunnel instead.
