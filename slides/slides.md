@@ -1,6 +1,6 @@
 ---
 theme: default
-title: Hashu — bearer ecash for hashrate
+title: Hashu — ecash for computation, not money
 info: |
   Hashu: a hashrate proxy fused with a Cashu (CDK) mint.
   Three-slide overview of the Testnet4 prototype.
@@ -13,86 +13,87 @@ mdc: true
 
 # Hashu
 
-### Bearer ecash for hashrate-time
+### An ecash mint that sells computation, not money
 
-<div class="mt-8 grid grid-cols-2 gap-10 text-left">
+<div class="mt-6 grid grid-cols-2 gap-10 text-left text-sm">
 <div>
 
 **The problem**
 
-- Buying hashrate today is custodial, KYC-heavy and locked into rigid contracts
-- You can't hold, transfer, or resell it like money
-- You can't point it at the pool *you* choose, on demand
+- A Cashu mint holds bitcoin and issues IOUs redeemable for bitcoin
+- Accepting value and paying it back out to someone else looks like **money transmission**
+- So operators face licensing and KYC risk, or stay small and hidden
 
 </div>
 <div>
 
-**Hashu**
+**Hashu's answer**
 
-- A Stratum proxy fused with a **Cashu mint (CDK)**
-- Mints blinded ecash in **THH**: terahash-hours
-- **1 THH = 1 TH/s × 3,600 s ≈ 3.6 × 10¹⁵ hashes**
-- Holders redeem by **redirecting real hashrate** to their pool
-- Self-hosted: anyone with hashrate can run an instance
+- Hashu tokens (**THH**) are backed **only by miners' hashrate**, not by bitcoin
+- **1 THH = 1 TH/s × 3,600 s** of hashing pointed where the holder chooses
+- Redeeming a token returns **work**, never coins
+- Running a Hashu mint means **selling computation**, not custodying or sending bitcoin
 
 </div>
 </div>
 
-<div class="abs-bl m-6 text-sm opacity-60">hashu.io · Rust · MIT / Apache-2.0</div>
+<div class="abs-bl m-6 text-sm opacity-60">hashu.io · built on CDK · Rust · MIT / Apache-2.0</div>
 
 <!--
-Hook: hashrate is a commodity, but there's no bearer instrument for it.
-Cashu gives privacy-preserving bearer tokens; a Stratum proxy gives programmable
-control over where hashrate points. Compose them and you get a voucher for
-hashrate-time that the mint can't link to the holder.
+Framing: most Cashu mints custody BTC and pay it out on request, which is the
+shape regulators call money transmission. Hashu changes what backs the token.
+A THH token is a claim on hashing work from the operator's miners. The operator
+never holds or sends the holder's bitcoin; it sells time on its machines, like
+a cloud provider sells CPU-hours.
+(This is our positioning, not a legal opinion.)
 -->
 
 ---
 
-# How it works
+# Dollars → hashrate → bitcoin, no exchange
 
 ```mermaid {scale: 0.55}
 %%{init: {'sequence': {'mirrorActors': false, 'messageMargin': 22}}}%%
 sequenceDiagram
-  participant B as Holder
+  participant B as Buyer
   participant M as Hashu mint (CDK, unit THH)
   participant P as Stratum proxy
-  participant L as Holder's pool
-  B->>M: quote N THH (priced by hashprice oracle)
-  B->>M: pay via Lightning or Tether (USDT)
-  M-->>B: blinded THH ecash (transferable bearer tokens)
-  B->>M: melt "hashrate" {pool_url, worker}
+  participant L as Buyer's pool
+  B->>M: pay in Tether (USDT) or Lightning
+  M-->>B: blinded THH ecash, priced by hashprice oracle
+  Note over B: hold or transfer like any Cashu token
+  B->>M: redeem THH {pool_url, worker}
   M->>P: schedule redemption
-  P->>L: redirect miners' hashrate
+  P->>L: redirect miners' hashrate to the buyer's pool
+  L-->>B: pool pays the buyer newly mined BTC
   P-->>M: shares → Merkle tree + nostr receipts
-  M-->>B: done when ∫ hashrate dt ≥ N · 1h
 ```
 
 <div class="grid grid-cols-3 gap-6 text-xs mt-1">
 <div>
 
-**Mint** · price locks in today's hashprice:
-`invoice = N · hashprice · 1h + fee`
+**In: dollars** · pay with USDT; price locks in today's hashprice:
+`N · hashprice · 1h + fee`
 
 </div>
 <div>
 
-**Hold / transfer** · standard Cashu bearer tokens; swap, send, or melt back to Lightning anytime
+**Middle: computation** · THH is a bearer claim on hashing work, private by Cashu's blind signatures
 
 </div>
 <div>
 
-**Redeem** · proxy routes hashrate to the holder's pool until ∫ hashrate dt ≥ N · 1h; shortfall is re-issued as fresh ecash
+**Out: bitcoin** · the buyer's own pool pays them for the work; the mint never sends BTC
 
 </div>
 </div>
 
 <!--
-Key economic primitive: the buyer locks in today's hashprice for future hashrate-time.
-Redemption is a custom NUT-05 melt method ("hashrate") that replaces the BOLT11 invoice
-with {pool_url, worker_name} and settles by share accumulation instead of payment.
-Every accepted share is reconstructed into its 80-byte header and appended to a
-per-connection RFC 6962 Merkle tree, so the operator can prove the work was routed.
+The on-ramp without an exchange: USD stablecoin in, hashrate out, and the
+bitcoin comes from mining, paid by the buyer's chosen pool. Hashu never
+custodies or transmits the mined sats; it only routes Stratum traffic.
+Each accepted share is committed to a per-connection RFC 6962 Merkle tree and
+receipted on nostr, so the buyer can check the work against their pool.
 -->
 
 ---
@@ -117,7 +118,7 @@ per-connection RFC 6962 Merkle tree, so the operator can prove the work was rout
 **Next**
 
 1. 🚧 `hashrate` melt method + redemption ledger (CDK custom backend, on a branch)
-2. Mint daemon + THH issuance on **Testnet4**, paid via **Lightning** or **Tether**
+2. Mint daemon + THH issuance on **Testnet4**, paid in **Tether** or **Lightning**
 3. Proxy → ledger crediting and on-demand hashrate redirection
 4. Per-share nostr receipts + completion certificate
 5. Later: concurrent redemptions, buyer wallet, Stratum V2
@@ -128,7 +129,7 @@ per-connection RFC 6962 Merkle tree, so the operator can prove the work was rout
 <div class="mt-4 p-3 rounded bg-gray-500/10 text-xs">
 
 **Demo today:** `hashu proxy run --upstream stratum+tcp://<testnet4-pool>:3333` · shares committed to the Merkle tree live<br/>
-**Target demo:** pay → mint THH → redeem → watch shares land at the holder's pool on Testnet4
+**Target demo:** pay USDT → mint THH → redeem → watch shares (and Testnet4 coins) land at the buyer's pool
 
 </div>
 
