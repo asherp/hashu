@@ -161,8 +161,9 @@ inbound Stratum connections it is authorized to direct.
 - Default node: **phoenixd** (ACINQ), the same setup overpay runs
   (`PHOENIXD_URL` or `PHOENIXD_HOSTPORT`, `PHOENIXD_PASSWORD`).
   `hashu_mint::phoenixd::Phoenixd` creates invoices with
-  `/createinvoice`, polls `/payments/incoming/{hash}` for settlement, and
-  credits the invoiced amount (phoenixd deducts channel-opening fees from
+  `/createinvoice` and learns of settlement instantly from phoenixd's
+  `/websocket` `payment_received` push, with a 5 s poll of
+  `/payments/incoming/{hash}` as fallback. It credits the invoiced amount (phoenixd deducts channel-opening fees from
   `receivedSat`). `Phoenixd::connect` refuses a node that isn't on
   mainnet unless `PHOENIXD_CHAIN` says otherwise.
 - LND or CLN via gRPC/CLN-gRPC also plug in through `cdk`'s LN backend
