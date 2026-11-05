@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::sync::watch;
 
 use super::committer::ShareCommitter;
 use super::compact::target_bits_from_difficulty;
@@ -30,6 +31,7 @@ use super::header::{build_block_header, SubmitFields};
 use super::observe::{observe_line, Direction, PendingSubmits};
 use super::session::{SessionEvent, SessionState};
 use crate::credit::{ConnectionId, CreditContext};
+use crate::router::{Route, Router};
 use crate::ProxyMetrics;
 use hashu_core::redemption::RedemptionId;
 
@@ -48,6 +50,9 @@ struct ConnectionState {
 struct ConnectionCtx {
     conn: ConnectionId,
     credit: Option<CreditContext>,
+    /// Where this connection's shares go; also rewrites the worker name
+    /// on miner→pool lines when routed to a redemption.
+    route: Route,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,17 +99,85 @@ pub async fn proxy_connection_with(
     let pool_socket = TcpStream::connect(upstream_addr)
         .await
         .with_context(|| format!("connect upstream {upstream_addr}"))?;
+    let route = Route::Default {
+        upstream: upstream_addr.to_string(),
+    };
+    let (_never, kicked) = watch::channel(false);
+    let ctx = ConnectionCtx {
+        conn,
+        credit,
+        route,
+    };
+    relay(miner_socket, pool_socket, kicked, ctx, metrics).await
+}
+
+/// Like [`proxy_connection_with`], but the [`Router`] picks the upstream:
+/// the default pool, or a redeemer's pool while a redemption is active,
+/// with the worker name rewritten to the redeemer's. The connection is
+/// closed when the router kicks it, so the miner reconnects onto whatever
+/// route is current. ARCHITECTURE.md §4.2. Pass the router itself as the
+/// [`CreditContext`] binding so shares credit the redemption they were
+/// routed for.
+pub async fn proxy_routed_connection(
+    miner_socket: TcpStream,
+    router: Arc<Router>,
+    metrics: Arc<ProxyMetrics>,
+    conn: ConnectionId,
+    credit: Option<CreditContext>,
+) -> Result<()> {
+    let assignment = router.assign(conn);
+    let result = async {
+        let mut route = assignment.route;
+        let pool_socket = match TcpStream::connect(route.upstream()).await {
+            Ok(s) => s,
+            Err(e) if route.redemption_id().is_some() => {
+                tracing::warn!(
+                    %conn,
+                    upstream = route.upstream(),
+                    error = %e,
+                    "redeemer's pool unreachable; falling back to default pool",
+                );
+                route = router.fall_back_to_default(conn);
+                TcpStream::connect(route.upstream())
+                    .await
+                    .with_context(|| format!("connect default upstream {}", route.upstream()))?
+            }
+            Err(e) => {
+                return Err(e).with_context(|| format!("connect upstream {}", route.upstream()))
+            }
+        };
+        let ctx = ConnectionCtx {
+            conn,
+            credit,
+            route,
+        };
+        relay(miner_socket, pool_socket, assignment.kicked, ctx, metrics).await
+    }
+    .await;
+    router.release(conn);
+    result
+}
+
+/// Forward lines both ways between an already-connected miner and pool
+/// until either side closes or `kicked` turns true.
+async fn relay(
+    miner_socket: TcpStream,
+    pool_socket: TcpStream,
+    mut kicked: watch::Receiver<bool>,
+    ctx: ConnectionCtx,
+    metrics: Arc<ProxyMetrics>,
+) -> Result<()> {
     pool_socket.set_nodelay(true).ok();
     miner_socket.set_nodelay(true).ok();
 
     let pending = Arc::new(PendingSubmits::default());
     let state = Arc::new(Mutex::new(ConnectionState::default()));
-    let ctx = Arc::new(ConnectionCtx { conn, credit });
+    let ctx = Arc::new(ctx);
 
     let (miner_r, miner_w) = miner_socket.into_split();
     let (pool_r, pool_w) = pool_socket.into_split();
 
-    let m_to_p = tokio::spawn(forward(
+    let mut m_to_p = tokio::spawn(forward(
         BufReader::new(miner_r),
         pool_w,
         ForwardDirection::Miner2Pool,
@@ -113,7 +186,7 @@ pub async fn proxy_connection_with(
         ctx.clone(),
         metrics.clone(),
     ));
-    let p_to_m = tokio::spawn(forward(
+    let mut p_to_m = tokio::spawn(forward(
         BufReader::new(pool_r),
         miner_w,
         ForwardDirection::Pool2Miner,
@@ -123,12 +196,22 @@ pub async fn proxy_connection_with(
         metrics.clone(),
     ));
 
-    // First side to finish or error wins; abort the other so we don't leak
-    // a half-open connection.
+    // First side to finish (or a kick from the router) wins; abort both so
+    // we don't leak a half-open connection. Aborting drops the socket
+    // halves, which closes the miner's TCP connection.
     tokio::select! {
-        r = m_to_p => { let _ = r; },
-        r = p_to_m => { let _ = r; },
+        _ = &mut m_to_p => {},
+        _ = &mut p_to_m => {},
+        _ = kicked.wait_for(|k| *k) => {
+            tracing::info!(
+                conn = %ctx.conn,
+                redemption = ?ctx.route.redemption_id().map(|i| i.to_string()),
+                "route changed; closing miner connection so it reconnects",
+            );
+        },
     }
+    m_to_p.abort();
+    p_to_m.abort();
 
     // Log final commitment-tree state so the operator can correlate later.
     if let Ok(s) = state.lock() {
@@ -166,7 +249,12 @@ where
         }
         observe_line(&line, direction.into(), &pending, &metrics);
         update_session(&line, direction, &state, &ctx, &metrics);
-        writer.write_all(line.as_bytes()).await?;
+        let rewritten = match direction {
+            ForwardDirection::Miner2Pool => ctx.route.rewrite_miner_line(&line),
+            ForwardDirection::Pool2Miner => None,
+        };
+        let out = rewritten.as_deref().unwrap_or(&line);
+        writer.write_all(out.as_bytes()).await?;
         writer.flush().await?;
     }
     let _ = writer.shutdown().await;

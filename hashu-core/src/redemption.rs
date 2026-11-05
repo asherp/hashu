@@ -136,6 +136,9 @@ pub enum LedgerError {
 #[derive(Debug, Default)]
 pub struct RedemptionLedger {
     inner: Mutex<HashMap<RedemptionId, Redemption>>,
+    /// Ids in the order they were opened, so routing can serve the oldest
+    /// redemption first. Never shrinks; completed ids are skipped on read.
+    order: Mutex<Vec<RedemptionId>>,
 }
 
 impl RedemptionLedger {
@@ -148,8 +151,28 @@ impl RedemptionLedger {
         if map.contains_key(&redemption.id) {
             return Err(LedgerError::Duplicate(redemption.id));
         }
-        map.insert(redemption.id, redemption);
+        let id = redemption.id;
+        map.insert(id, redemption);
+        // Take `order` while still holding `inner` so the two never
+        // disagree about which ids exist. Lock order: inner, then order.
+        self.order
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(id);
         Ok(())
+    }
+
+    /// Snapshots of every redemption that is not yet complete, oldest
+    /// first. The pool router polls this to decide where to send hashrate.
+    pub fn active(&self) -> Vec<Redemption> {
+        let map = self.lock();
+        let order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+        order
+            .iter()
+            .filter_map(|id| map.get(id))
+            .filter(|r| !r.is_complete())
+            .cloned()
+            .collect()
     }
 
     /// Credit an accepted share to a redemption and return its new state.
@@ -301,6 +324,22 @@ mod tests {
         let after = ledger.credit_share_outcome(&id(4), 1e9).unwrap();
         assert_eq!(after.state, RedemptionState::Completed);
         assert!(!after.newly_completed);
+    }
+
+    #[test]
+    fn active_lists_open_redemptions_oldest_first() {
+        let ledger = RedemptionLedger::new();
+        for n in [5u8, 2, 9] {
+            ledger
+                .open(Redemption::new(id(n), 1, "p".into(), "w".into()))
+                .unwrap();
+        }
+        let ids: Vec<_> = ledger.active().iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![id(5), id(2), id(9)]);
+
+        ledger.credit_share(&id(2), 1e9).unwrap();
+        let ids: Vec<_> = ledger.active().iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![id(5), id(9)]);
     }
 
     #[test]
