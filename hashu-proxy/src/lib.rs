@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub mod audit;
 pub mod control;
 pub mod credit;
+pub mod meter;
 pub mod router;
 pub mod stratum;
 
@@ -28,9 +29,32 @@ pub struct ProxyMetrics {
     pub shares_rejected: AtomicU64,
     pub shares_committed: AtomicU64,
     pub shares_credited: AtomicU64,
+    /// Sum of the difficulty of every committed accepted share, as `f64`
+    /// bits. Times 2^32 this is the work (hashes) miners delivered through
+    /// the proxy, wherever it was routed; [`meter::HashrateMeter`] turns it
+    /// into a hashrate.
+    accepted_difficulty_bits: AtomicU64,
 }
 
 impl ProxyMetrics {
+    /// Record the work of one accepted share of `difficulty`.
+    pub fn add_accepted_work(&self, difficulty: f64) {
+        if !difficulty.is_finite() || difficulty <= 0.0 {
+            return;
+        }
+        let _ = self.accepted_difficulty_bits.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |bits| Some((f64::from_bits(bits) + difficulty).to_bits()),
+        );
+    }
+
+    /// Total work of accepted shares, in hashes (difficulty × 2^32).
+    pub fn accepted_hashes(&self) -> f64 {
+        f64::from_bits(self.accepted_difficulty_bits.load(Ordering::Relaxed))
+            * hashu_core::redemption::HASHES_PER_DIFF_ONE as f64
+    }
+
     pub fn snapshot(&self) -> ProxyMetricsSnapshot {
         ProxyMetricsSnapshot {
             connections_accepted: self.connections_accepted.load(Ordering::Relaxed),

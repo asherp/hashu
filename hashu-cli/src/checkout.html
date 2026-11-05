@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buy hashrate · Hashu</title>
+<style>
+:root {
+  --bg: #f6f6f4; --surface: #ffffff; --ink: #1b1b1a; --ink-2: #55534f; --ink-3: #8a8782;
+  --line: rgba(27,27,26,0.12); --grid: rgba(27,27,26,0.08);
+  --brand: #e8850c; --brand-fill: rgba(232,133,12,0.14); --brand-ink: #111;
+  --target: #6b6964; --good: #2f8a57; --good-bg: rgba(47,138,87,0.14);
+  --bad: #c2403a; --bad-bg: rgba(194,64,58,0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111110; --surface: #1a1a19; --ink: #f1efea; --ink-2: #b5b2ab; --ink-3: #85827c;
+    --line: rgba(241,239,234,0.14); --grid: rgba(241,239,234,0.08);
+    --brand: #f7931a; --brand-fill: rgba(247,147,26,0.18);
+    --target: #a19e97; --good: #5cc28a; --good-bg: rgba(92,194,138,0.16);
+    --bad: #e06c6c; --bad-bg: rgba(224,108,108,0.14);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 640px; margin: 0 auto; padding: 24px 16px 56px; display: flex; flex-direction: column; gap: 16px; }
+h1 { font-size: 24px; margin: 0; letter-spacing: -0.01em; }
+h1 span { color: var(--brand); }
+h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-2); margin: 0; }
+.lede { color: var(--ink-2); margin: 4px 0 0; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.steps { display: flex; gap: 6px; font-size: 12px; color: var(--ink-3); flex-wrap: wrap; }
+.steps span { padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); }
+.steps span.on { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
+.steps span.done { color: var(--good); border-color: var(--good); }
+label.f { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink-2); }
+input[type=number], input[type=text], textarea { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; }
+textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; resize: vertical; min-height: 84px; word-break: break-all; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: transparent; color: var(--ink-2); padding: 8px 14px; cursor: pointer; font: inherit; font-size: 14px; }
+.seg button.on { background: var(--brand); color: var(--brand-ink); font-weight: 600; }
+.chips button { border: 1px solid var(--line); background: transparent; color: var(--ink-2); border-radius: 999px; padding: 4px 12px; cursor: pointer; font: inherit; font-size: 13px; }
+button.act { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 8px; padding: 10px 18px; cursor: pointer; font: inherit; }
+button.act.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
+button.act:disabled { opacity: 0.5; cursor: default; }
+.price { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
+.price b { font-size: 26px; font-variant-numeric: tabular-nums; }
+.note { color: var(--ink-3); font-size: 13px; margin: 0; }
+.qr { align-self: center; background: #fff; padding: 8px; border-radius: 10px; line-height: 0; }
+.qr svg { width: 240px; height: 240px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; color: var(--ink-2); }
+.pill { border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600; }
+.pill.wait { border: 1px solid var(--line); color: var(--ink-2); }
+.pill.ok { background: var(--good-bg); color: var(--good); }
+.alert { border: 1px solid var(--bad); background: var(--bad-bg); border-radius: 8px; padding: 10px 14px; display: none; }
+.bar { height: 10px; background: var(--grid); border-radius: 5px; overflow: hidden; }
+.bar > div { height: 100%; background: var(--brand); transition: width 0.5s; }
+.big { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.chart { position: relative; width: 100%; height: 220px; }
+.chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.chart .axis text { fill: var(--ink-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart .gridline { stroke: var(--grid); }
+.chart .series { fill: none; stroke: var(--brand); stroke-width: 2; stroke-linejoin: round; }
+.chart .area { fill: var(--brand-fill); }
+.chart .target { stroke: var(--target); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.chart .target-label { fill: var(--ink-2); font-size: 11px; }
+.chart .cross { stroke: var(--ink-3); }
+.chart .dot { fill: var(--brand); stroke: var(--surface); stroke-width: 2; }
+.chart .empty { fill: var(--ink-3); font-size: 13px; }
+.tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--bg); border-radius: 6px; padding: 6px 8px; font-size: 12px; white-space: nowrap; transform: translate(-50%, -110%); display: none; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1><span>Hashu</span> · buy hashrate</h1>
+    <p class="lede">Pay for terahash-hours (THH) and get them as Cashu ecash. Redeem any time by pointing the mint's hashrate at your own pool. 1 THH is 1 TH/s for one hour.</p>
+  </header>
+
+  <div class="steps" id="steps"><span data-s="buy">1 · Choose</span><span data-s="pay">2 · Pay</span><span data-s="token">3 · Your THH</span><span data-s="redeem">4 · Redeem</span></div>
+  <div class="alert" id="alert"></div>
+
+  <!-- 1. choose -->
+  <section class="card" id="s-buy">
+    <h2>How much hashrate?</h2>
+    <label class="f">Terahash-hours (THH)
+      <input type="number" id="amount" min="1" step="1" value="10">
+    </label>
+    <div class="row chips" id="chips"><button data-v="1">1</button><button data-v="10">10</button><button data-v="100">100</button><button data-v="1000">1,000</button></div>
+    <div class="row" id="methods-row"><span class="note">Pay with</span><div class="seg" id="methods"></div></div>
+    <p class="note" id="equiv"></p>
+    <div class="price"><span class="note" id="price-label">Price</span><b id="price">—</b></div>
+    <button class="act primary" id="btn-buy">Get invoice</button>
+    <p class="note" id="paused" hidden>Sales are paused by the mint operator.</p>
+  </section>
+
+  <!-- 2. pay -->
+  <section class="card" id="s-pay" hidden>
+    <div class="row" style="justify-content:space-between"><h2 id="pay-title">Pay the invoice</h2><span class="pill wait" id="pay-state">waiting for payment</span></div>
+    <div class="qr" id="qr"></div>
+    <div class="mono" id="request"></div>
+    <div class="row"><button class="act" id="btn-copy-req">Copy</button><a class="act" id="open-wallet" style="text-decoration:none;color:inherit">Open in wallet</a></div>
+    <p class="note" id="pay-note"></p>
+  </section>
+
+  <!-- 3. token -->
+  <section class="card" id="s-token" hidden>
+    <div class="row" style="justify-content:space-between"><h2>Your THH</h2><span class="pill ok" id="token-amt"></span></div>
+    <p class="note">This Cashu token is the hashrate you bought. It is bearer money: anyone holding it can redeem it. Save it in a Cashu wallet, or redeem it now.</p>
+    <textarea id="token" readonly></textarea>
+    <div class="row"><button class="act" id="btn-copy-token">Copy token</button><button class="act primary" id="btn-goto-redeem">Redeem now</button></div>
+  </section>
+
+  <!-- 4. redeem -->
+  <section class="card" id="s-redeem">
+    <h2>Redeem THH as hashrate</h2>
+    <label class="f">Cashu token
+      <textarea id="r-token" placeholder="cashuB…"></textarea>
+    </label>
+    <label class="f">Your pool
+      <input type="text" id="r-pool" placeholder="stratum+tcp://pool.example:3333">
+    </label>
+    <label class="f">Worker name on that pool
+      <input type="text" id="r-worker" placeholder="you.worker1">
+    </label>
+    <button class="act primary" id="btn-redeem">Send me the hashrate</button>
+    <p class="note">The mint's miners switch to your pool and mine under your worker name until the THH in the token is delivered.</p>
+  </section>
+
+  <!-- 5. progress -->
+  <section class="card" id="s-progress" hidden>
+    <div class="row" style="justify-content:space-between"><h2>Hashrate delivered to your pool</h2><span class="pill wait" id="p-state"></span></div>
+    <div class="row" style="justify-content:space-between;align-items:baseline"><span class="big" id="p-filled"></span><span class="note" id="p-rate"></span></div>
+    <div class="bar"><div id="p-bar" style="width:0%"></div></div>
+    <div class="chart" id="c-red"></div>
+    <p class="note" id="p-meta"></p>
+  </section>
+</main>
+
+<script>
+'use strict'
+// Relative URLs: the page lives at …/checkout/.
+const $ = (id) => document.getElementById(id)
+const HASHES_PER_THH = 3.6e15
+const st = { info: null, method: null, checkout: null, redemption: null, pollT: null }
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+const fmtThh = (x, d) => Number.isFinite(x) ? x.toLocaleString(undefined, { minimumFractionDigits: d ?? (x < 10 ? 3 : 2), maximumFractionDigits: d ?? (x < 10 ? 3 : 2) }) : '—'
+const fmtRate = (hs) => { if (!(hs > 0)) return '0 H/s'; const u = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s']; let i = 0; while (hs >= 1000 && i < u.length - 1) { hs /= 1000; i++ } return `${hs.toFixed(hs >= 100 ? 0 : 1)} ${u[i]}` }
+const fmtDur = (s) => { if (!Number.isFinite(s) || s < 0) return '—'; s = Math.round(s); if (s < 60) return `${s}s`; if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`; return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m` }
+const methodName = (m) => m === 'bolt11' ? 'Lightning' : m === 'usdt' ? 'USDT' : m
+
+async function api (path, opts) {
+  const r = await fetch(path, opts)
+  const body = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`)
+  return body
+}
+const post = (path, body) => api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+function alertMsg (m) { $('alert').textContent = m || ''; $('alert').style.display = m ? 'block' : 'none' }
+function step (name) {
+  const order = ['buy', 'pay', 'token', 'redeem']
+  const i = order.indexOf(name)
+  for (const s of $('steps').children) {
+    const j = order.indexOf(s.dataset.s)
+    s.className = j === i ? 'on' : j < i ? 'done' : ''
+  }
+}
+async function copy (text, btn) {
+  try { await navigator.clipboard.writeText(text); const t = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = t }, 1200) } catch { alertMsg('Copy failed; select the text instead.') }
+}
+
+// ---- 1. choose ----------------------------------------------------------
+function renderPrice () {
+  const i = st.info; if (!i) return
+  const n = Math.max(1, Math.floor(Number($('amount').value) || 0))
+  const hours = n
+  $('equiv').textContent = `${n.toLocaleString()} THH = ${hours < 48 ? `1 TH/s for ${hours} h` : `${(n / 24).toFixed(1)} TH/s for a day`}, or ${(n * HASHES_PER_THH).toExponential(2)} hashes.`
+  if (st.method === 'usdt' && i.usdt_per_thh != null) {
+    $('price-label').textContent = `${(i.usdt_per_thh).toFixed(4)} USDT per THH`
+    $('price').textContent = `${(n * i.usdt_per_thh).toFixed(2)} USDT`
+  } else if (i.sats_per_thh != null) {
+    $('price-label').textContent = `${i.sats_per_thh.toLocaleString()} sats per THH`
+    $('price').textContent = `${(n * i.sats_per_thh).toLocaleString()} sats`
+  } else { $('price').textContent = '—' }
+}
+async function loadInfo () {
+  try {
+    st.info = await api('api/info')
+    const ms = st.info.methods
+    if (!st.method || !ms.includes(st.method)) st.method = ms[0] || null
+    $('methods').innerHTML = ms.map((m) => `<button data-m="${esc(m)}" class="${m === st.method ? 'on' : ''}">${esc(methodName(m))}</button>`).join('')
+    $('methods-row').hidden = !ms.length
+    $('paused').hidden = !st.info.issuance_paused
+    $('btn-buy').disabled = st.info.issuance_paused || !ms.length
+    $('amount').max = st.info.max_thh
+    renderPrice()
+  } catch (e) { alertMsg(`Cannot reach the mint: ${e.message}`) }
+}
+$('methods').addEventListener('click', (ev) => { const b = ev.target.closest('button'); if (!b) return; st.method = b.dataset.m; loadInfo() })
+$('chips').addEventListener('click', (ev) => { const b = ev.target.closest('button'); if (!b) return; $('amount').value = b.dataset.v; renderPrice() })
+$('amount').addEventListener('input', renderPrice)
+
+$('btn-buy').addEventListener('click', async () => {
+  const amount = Math.floor(Number($('amount').value))
+  $('btn-buy').disabled = true
+  try {
+    st.checkout = await post('api/buy', { amount_thh: amount, method: st.method })
+    alertMsg('')
+    showPay()
+    history.replaceState(null, '', `#buy=${encodeURIComponent(st.checkout.id)}`)
+    pollBuy()
+  } catch (e) { alertMsg(e.message) } finally { $('btn-buy').disabled = false }
+})
+
+// ---- 2. pay -------------------------------------------------------------
+function showPay () {
+  const c = st.checkout
+  $('s-pay').hidden = false
+  step('pay')
+  $('qr').innerHTML = c.qr_svg || ''
+  $('request').textContent = c.request
+  const ln = c.method === 'bolt11'
+  $('pay-title').textContent = ln ? `Pay ${c.price != null ? c.price.toLocaleString() + ' sats' : 'the invoice'} over Lightning` : 'Send USDT'
+  $('open-wallet').href = ln ? `lightning:${c.request}` : c.request
+  const m = !ln && /uint256=(\d+)/.exec(c.request)
+  $('pay-note').textContent = ln
+    ? `For ${c.amount_thh} THH. Scan with any Lightning wallet. This page updates when the payment arrives.`
+    : `Send exactly ${m ? (Number(m[1]) / 1e6).toFixed(6) : 'the amount in the request'} USDT to the address in the request; the exact amount identifies your order. ${c.amount_thh} THH.`
+  $('s-pay').scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+async function pollBuy () {
+  clearTimeout(st.pollT)
+  if (!st.checkout) return
+  try {
+    const c = await api(`api/buy/${encodeURIComponent(st.checkout.id)}`)
+    st.checkout = c
+    if (c.state === 'issued' && c.token) { showToken(); return }
+    $('pay-state').textContent = 'waiting for payment'
+  } catch (e) { alertMsg(e.message) }
+  st.pollT = setTimeout(pollBuy, 2000)
+}
+$('btn-copy-req').addEventListener('click', (ev) => copy(st.checkout.request, ev.target))
+
+// ---- 3. token -----------------------------------------------------------
+function showToken () {
+  const c = st.checkout
+  $('pay-state').textContent = 'paid'; $('pay-state').className = 'pill ok'
+  $('s-token').hidden = false
+  $('token').value = c.token
+  $('token-amt').textContent = `${c.amount_thh} THH`
+  $('r-token').value = c.token
+  step('token')
+  $('s-token').scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+$('btn-copy-token').addEventListener('click', (ev) => copy($('token').value, ev.target))
+$('btn-goto-redeem').addEventListener('click', () => { step('redeem'); $('s-redeem').scrollIntoView({ behavior: 'smooth' }); $('r-pool').focus() })
+
+// ---- 4. redeem ----------------------------------------------------------
+$('btn-redeem').addEventListener('click', async () => {
+  $('btn-redeem').disabled = true
+  try {
+    const r = await post('api/redeem', { token: $('r-token').value, pool_url: $('r-pool').value, worker_name: $('r-worker').value })
+    alertMsg('')
+    st.redemption = r.redemption_id
+    history.replaceState(null, '', `#redemption=${r.redemption_id}`)
+    step('redeem')
+    pollRedemption()
+  } catch (e) { alertMsg(e.message) } finally { $('btn-redeem').disabled = false }
+})
+
+// ---- 5. progress --------------------------------------------------------
+function niceTicks (max, n) {
+  const raw = max / n, p = Math.pow(10, Math.floor(Math.log10(raw)))
+  const s = [1, 2, 2.5, 5, 10].map((m) => m * p).find((x) => x >= raw)
+  const t = []; for (let v = 0; v <= max + s * 0.001; v += s) t.push(v)
+  if (t[t.length - 1] < max) t.push(t[t.length - 1] + s)
+  return t
+}
+function drawChart (el, pts, x0, x1, target) {
+  const W = Math.max(280, el.clientWidth), H = el.clientHeight, m = { l: 58, r: 12, t: 12, b: 24 }
+  let svg = el.querySelector('svg'), tip = el.querySelector('.tip')
+  if (!svg) {
+    svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); el.appendChild(svg)
+    tip = document.createElement('div'); tip.className = 'tip'; el.appendChild(tip)
+    svg.addEventListener('mouseleave', () => { tip.style.display = 'none'; const g = svg.querySelector('.hover'); if (g) g.style.display = 'none' })
+  }
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`)
+  if (!pts.length) { svg.innerHTML = `<text class="empty" x="${W / 2}" y="${H / 2}" text-anchor="middle">Waiting for shares…</text>`; return }
+  const ticks = niceTicks(Math.max(target, ...pts.map((p) => p[1])) * 1.05, 4), y1 = ticks[ticks.length - 1]
+  const X = (t) => m.l + ((t - x0) / (x1 - x0)) * (W - m.l - m.r), Y = (v) => H - m.b - (v / y1) * (H - m.t - m.b)
+  let s = '<g class="axis">'
+  for (const v of ticks) s += `<line class="gridline" x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${m.l - 8}" y="${Y(v) + 4}" text-anchor="end">${fmtThh(v, v < 10 ? 1 : 0)}</text>`
+  const nx = Math.max(2, Math.floor((W - m.l - m.r) / 100))
+  for (let i = 0; i <= nx; i++) { const t = x0 + ((x1 - x0) * i) / nx; s += `<text x="${X(t)}" y="${H - 6}" text-anchor="${i === 0 ? 'start' : i === nx ? 'end' : 'middle'}">+${fmtDur((t - x0) / 1000)}</text>` }
+  s += '</g>'
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join('')
+  s += `<path class="area" d="${line}L${X(pts[pts.length - 1][0])},${Y(0)}L${X(pts[0][0])},${Y(0)}Z"/>`
+  s += `<line class="target" x1="${m.l}" x2="${W - m.r}" y1="${Y(target)}" y2="${Y(target)}"/><text class="target-label" x="${W - m.r}" y="${Y(target) - 6}" text-anchor="end">${target} THH</text>`
+  s += `<path class="series" d="${line}"/><circle class="dot" r="4" cx="${X(pts[pts.length - 1][0])}" cy="${Y(pts[pts.length - 1][1])}"/>`
+  s += `<g class="hover" style="display:none"><line class="cross" y1="${m.t}" y2="${H - m.b}"/><circle class="dot" r="5"/></g><rect x="${m.l}" y="${m.t}" width="${W - m.l - m.r}" height="${H - m.t - m.b}" fill="transparent"/>`
+  svg.innerHTML = s
+  const g = svg.querySelector('.hover'), cross = g.querySelector('line'), dot = g.querySelector('circle')
+  svg.onmousemove = (ev) => {
+    const r = svg.getBoundingClientRect(), t = x0 + ((((ev.clientX - r.left) / r.width) * W - m.l) / (W - m.l - m.r)) * (x1 - x0)
+    let b = pts[0]; for (const p of pts) if (Math.abs(p[0] - t) < Math.abs(b[0] - t)) b = p
+    g.style.display = ''; cross.setAttribute('x1', X(b[0])); cross.setAttribute('x2', X(b[0])); dot.setAttribute('cx', X(b[0])); dot.setAttribute('cy', Y(b[1]))
+    tip.innerHTML = `<b>${fmtThh(b[1])} THH</b> · +${fmtDur((b[0] - x0) / 1000)}`; tip.style.display = 'block'
+    tip.style.left = `${(X(b[0]) / W) * r.width}px`; tip.style.top = `${(Y(b[1]) / H) * r.height}px`
+  }
+}
+async function pollRedemption () {
+  clearTimeout(st.pollT)
+  try {
+    const r = await api(`api/redemption/${st.redemption}`)
+    $('s-progress').hidden = false
+    $('p-state').textContent = r.state === 'completed' ? 'delivered' : r.state
+    $('p-state').className = `pill ${r.state === 'completed' ? 'ok' : 'wait'}`
+    $('p-filled').textContent = `${fmtThh(r.filled_thh)} of ${r.amount_thh} THH`
+    $('p-bar').style.width = `${(r.progress * 100).toFixed(1)}%`
+    $('p-meta').innerHTML = `To <span class="mono">${esc(r.pool_url)}</span> as <b>${esc(r.worker_name)}</b>. Each share your pool accepts from this worker counts its difficulty × 2<sup>32</sup> hashes.`
+    const t = r.track
+    if (t) {
+      const end = t.completed_ms || r.now_ms
+      const pts = t.points.map((p) => [p[0], p[1] / HASHES_PER_THH]); if (!t.completed_ms) pts.push([end, pts[pts.length - 1][1]])
+      let base = t.points[0]; for (const p of t.points) if (p[0] <= end - 60000) base = p
+      const last = t.points[t.points.length - 1]
+      const rate = end > base[0] ? (last[1] - base[1]) * 1000 / (end - base[0]) : 0
+      const remaining = (r.amount_thh - r.filled_thh) * HASHES_PER_THH
+      $('p-rate').textContent = r.state === 'completed' ? `done in ${fmtDur((t.completed_ms - t.opened_ms) / 1000)}` : `${fmtRate(rate)}${rate > 0 ? ` · about ${fmtDur(remaining / rate)} left` : ''}`
+      drawChart($('c-red'), pts, t.opened_ms, Math.max(end, t.opened_ms + 60000), r.amount_thh)
+    }
+    if (r.state === 'completed') return
+  } catch (e) { alertMsg(e.message) }
+  st.pollT = setTimeout(pollRedemption, 2000)
+}
+
+// Resume from the URL so a reload keeps the order.
+const h = new URLSearchParams(location.hash.slice(1))
+loadInfo().then(() => {
+  if (h.get('buy')) { st.checkout = { id: h.get('buy') }; api(`api/buy/${encodeURIComponent(h.get('buy'))}`).then((c) => { st.checkout = c; showPay(); if (c.token) showToken(); else pollBuy() }).catch((e) => alertMsg(e.message)) }
+  else if (h.get('redemption')) { st.redemption = h.get('redemption'); step('redeem'); pollRedemption() }
+  else step('buy')
+})
+setInterval(() => { if (!st.checkout) loadInfo() }, 15000)
+window.addEventListener('resize', () => { if (st.redemption) pollRedemption() })
+</script>
+</body>
+</html>

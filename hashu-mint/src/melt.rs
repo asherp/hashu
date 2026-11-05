@@ -138,7 +138,7 @@ impl HashrateMelter {
 /// together. Identical requests share an id, which cdk treats like two
 /// quotes for one invoice: once one is pending or paid the other is
 /// refused, so nobody pays twice for one redemption.
-fn redemption_id_for(request: &str) -> RedemptionId {
+pub fn redemption_id_for(request: &str) -> RedemptionId {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(request.as_bytes());
     let mut id = [0u8; 16];

@@ -23,9 +23,10 @@ serde_json = { workspace = true }
 bitcoin = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
-cdk = { version = "0.16", default-features = false, features = ["mint"] }
+cdk = { version = "0.16", default-features = false, features = ["mint", "wallet"] }
 cdk-axum = "0.16"
 cdk-sqlite = "0.16"
 axum = "0.8.9"
 cdk-fake-wallet = "0.16"
 rand = "0.8"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }

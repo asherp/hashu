@@ -13,6 +13,9 @@
 //!   credit it, so the melt completes;
 //! - the proxy's **control API** (`GET /status`), which the Hashu MDK app
 //!   polls to move miners onto the proxy while a redemption is open.
+//! - the **operator GUI** on the same port (`http://127.0.0.1:3334/`):
+//!   live hashrate, delivery against the current redemption, obligations,
+//!   and issuance/pricing controls. See [`crate::operator`].
 //!
 //! The mint never pays out: bolt11 is offered for minting only, and the
 //! only melt method is `hashrate`.
@@ -29,23 +32,26 @@ use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use clap::{Args, Subcommand, ValueEnum};
 use hashu_core::hashprice::{HashpriceOracle, HashpriceSample};
 use hashu_core::redemption::RedemptionLedger;
-use hashu_mint::lightning::{add_lightning_issuance, lightning_issuer};
+use hashu_mint::lightning::add_lightning_issuance;
 use hashu_mint::melt::{HashrateMelter, METHOD as HASHRATE};
 use hashu_mint::oracle::{esplora, mrr};
-use hashu_mint::payment::thh_unit;
+use hashu_mint::payment::{thh_unit, ThhIssuer};
 use hashu_mint::phoenixd::{Phoenixd, PhoenixdConfig};
 use hashu_mint::pricing::{SatsPerThhFromHashprice, ThhPricer, SECS_PER_THH};
 use hashu_mint::tether::{
     EvmRpcSource, FixedUsdtPrice, SatsToUsdt, TetherPayments, UsdtRail, METHOD as USDT,
     MICRO_PER_USDT,
 };
-use hashu_proxy::control::{serve as serve_control, ControlState};
+use hashu_proxy::control::ControlState;
 use hashu_proxy::credit::{CreditContext, ShareCrediter};
+use hashu_proxy::meter::HashrateMeter;
 use hashu_proxy::router::Router;
 use hashu_proxy::stratum::{run_routed_listener, strip_stratum_prefix};
 use hashu_proxy::ProxyMetrics;
 
+use crate::checkout::{self, CheckoutState};
 use crate::network::{default_esplora_url, parse_network};
+use crate::operator::{self, ControlledPricer, DaemonInfo, MintControls, OperatorState};
 
 /// Asher's Testnet4 pool at the hackathon. Default upstream for the proxy.
 pub const DEMO_POOL: &str = "stratum+tcp://216.230.225.61:3333";
@@ -138,7 +144,8 @@ pub struct RunArgs {
     /// the source goes stale.
     #[arg(long, env = "HASHU_SATS_PER_THH")]
     pub sats_per_thh: Option<f64>,
-    /// Operator markup over the hashprice, in basis points.
+    /// Operator markup in basis points, applied to every rail's price.
+    /// The operator GUI can change it while the mint runs.
     #[arg(long)]
     pub markup_bps: Option<u32>,
     /// Network for the esplora price source (`testnet4`, `bitcoin`, …).
@@ -186,8 +193,8 @@ pub struct RunArgs {
     /// Default pool: where miners point when no redemption is open.
     #[arg(long, env = "HASHU_UPSTREAM", default_value = DEMO_POOL)]
     pub upstream: String,
-    /// Control API (`GET /status`) the MDK app polls. Pass an empty value
-    /// to turn it off.
+    /// Control API (`GET /status`) the MDK app polls, and the operator GUI
+    /// at `/`. Pass an empty value to turn it off.
     #[arg(long, default_value = "127.0.0.1:3334")]
     pub control_bind: Option<String>,
     /// Also serve `POST /redemptions` on the control API, bypassing the
@@ -198,6 +205,10 @@ pub struct RunArgs {
     /// Periodic proxy metrics log interval (seconds). 0 disables.
     #[arg(long, default_value_t = 30)]
     pub metrics_interval: u64,
+    /// Window the operator GUI's hashrate averages accepted shares over
+    /// (seconds). Shares are sparse, so short windows are noisy.
+    #[arg(long, default_value_t = 60)]
+    pub hashrate_window: u64,
 }
 
 pub async fn run(cmd: MintCmd) -> Result<()> {
@@ -392,7 +403,7 @@ fn usdt_pricer(
     }
     if let Some(usd_per_btc) = args.usd_per_btc {
         return Ok(Arc::new(SatsToUsdt {
-            sats: Arc::new(sats_pricer(oracle, args.markup_bps)),
+            sats: Arc::new(sats_pricer(oracle, None)),
             usd_per_btc,
         }));
     }
@@ -408,6 +419,18 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let ledger = Arc::new(RedemptionLedger::new());
     let oracle = build_oracle(&args).await?;
     let limits = MintMeltLimits::new(1, args.max_thh);
+    let started_ms = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default();
+    // Live operator settings. Rails price at the base rate and the
+    // controlled pricer adds the markup, so the GUI can change it.
+    let controls = Arc::new(MintControls::new(args.markup_bps.unwrap_or(0) as i64));
+    let sats_controlled = Arc::new(ControlledPricer::new(
+        Arc::new(sats_pricer(&oracle, None)),
+        controls.clone(),
+    ));
+    let mut usdt_controlled = None;
 
     // ---- mint ---------------------------------------------------------
     std::fs::create_dir_all(&args.data_dir)
@@ -451,7 +474,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
 
     // Lightning: mint-only.
     if let Some((node, kind)) = lightning_node(&args).await? {
-        let issuer = lightning_issuer(sats_pricer(&oracle, args.markup_bps), node);
+        let issuer = ThhIssuer::new(sats_controlled.clone(), node, CurrencyUnit::Sat);
         builder = add_lightning_issuance(builder, issuer, limits)
             .await
             .context("register Lightning rail")?;
@@ -465,7 +488,12 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("Tether rail: {e}"))?;
         let source =
             EvmRpcSource::new(args.usdt_rpc.clone(), rail.clone(), args.usdt_confirmations);
-        let payments = TetherPayments::new(rail, usdt_pricer(&args, &oracle)?, Arc::new(source));
+        let pricer = Arc::new(ControlledPricer::new(
+            usdt_pricer(&args, &oracle)?,
+            controls.clone(),
+        ));
+        usdt_controlled = Some(pricer.clone());
+        let payments = TetherPayments::new(rail, pricer, Arc::new(source));
         builder
             .add_payment_processor(
                 thh_unit(),
@@ -502,17 +530,45 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     );
     mint.start().await.context("start mint")?;
 
-    let price_now = sats_pricer(&oracle, args.markup_bps).price(1).ok();
+    let price_now = sats_controlled.quote(1).ok();
     tracing::info!(
         listen = %args.listen,
         rails = ?rails,
         sats_per_thh = ?price_now,
-        "mint ready (unit THH, melt method `hashrate`)"
+        "mint ready (unit THH, melt method `hashrate`); buyer checkout at http://{}/checkout/",
+        args.listen
     );
+
+    // ---- hashrate meter + buyer checkout --------------------------------
+    let metrics = Arc::new(ProxyMetrics::default());
+    let meter = Arc::new(HashrateMeter::new(
+        metrics.clone(),
+        ledger.clone(),
+        Duration::from_secs(args.hashrate_window.max(1)),
+    ));
+    tokio::spawn(meter.clone().run(Duration::from_secs(1)));
+    let internal_url = if args.listen.ip().is_unspecified() {
+        format!("http://127.0.0.1:{}", args.listen.port())
+    } else {
+        format!("http://{}", args.listen)
+    };
+    let checkout = Arc::new(CheckoutState::new(
+        internal_url.clone(),
+        args.mint_url.clone().unwrap_or(internal_url),
+        controls.clone(),
+        Some(sats_controlled.clone()),
+        usdt_controlled.clone(),
+        methods.iter().filter(|m| *m != HASHRATE).cloned().collect(),
+        args.min_redeem_thh.max(1),
+        args.max_thh,
+        ledger.clone(),
+        meter.clone(),
+    ));
 
     let app = cdk_axum::create_mint_router(mint.clone(), methods)
         .await
-        .context("build mint HTTP router")?;
+        .context("build mint HTTP router")?
+        .merge(checkout::router(checkout));
     let http = tokio::net::TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("bind mint API on {}", args.listen))?;
@@ -523,7 +579,6 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let crediter = Arc::new(ShareCrediter::new(ledger.clone()));
     let audit = crediter.audit().clone();
     let credit = CreditContext::new(crediter, router.clone());
-    let metrics = Arc::new(ProxyMetrics::default());
 
     if args.metrics_interval > 0 {
         let m = metrics.clone();
@@ -555,19 +610,41 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         let bind: SocketAddr = bind
             .parse()
             .with_context(|| format!("--control-bind {bind:?}"))?;
-        let state = ControlState {
+        let control = ControlState {
             ledger: ledger.clone(),
             metrics: metrics.clone(),
             default_upstream: upstream.clone(),
             audit,
             allow_open: args.control_allow_open,
         };
+        let state = Arc::new(OperatorState {
+            mint: mint.clone(),
+            control,
+            meter: meter.clone(),
+            controls: controls.clone(),
+            sats: Some(sats_controlled.clone()),
+            usdt: usdt_controlled.clone(),
+            info: DaemonInfo {
+                name: args.name.clone(),
+                mint_listen: args.listen.to_string(),
+                mint_url: args.mint_url.clone(),
+                stratum_bind: args.stratum_bind.to_string(),
+                rails: rails.clone(),
+                min_redeem_thh: args.min_redeem_thh,
+                max_thh: args.max_thh,
+            },
+            started_ms,
+        });
         let listener = tokio::net::TcpListener::bind(bind)
             .await
             .with_context(|| format!("bind control API on {bind}"))?;
-        tracing::info!(%bind, allow_open = args.control_allow_open, "control API listening");
+        tracing::info!(
+            %bind,
+            allow_open = args.control_allow_open,
+            "control API listening; operator GUI at http://{bind}/"
+        );
         tokio::spawn(async move {
-            if let Err(e) = serve_control(listener, state).await {
+            if let Err(e) = axum::serve(listener, operator::router(state)).await {
                 tracing::error!(error = %e, "control API stopped");
             }
         });

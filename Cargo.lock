@@ -1472,6 +1472,7 @@ dependencies = [
  "hashu-proxy",
  "hex",
  "nostr",
+ "qrcode",
  "rand 0.8.6",
  "serde_json",
  "sha2",
@@ -2661,6 +2662,12 @@ checksum = "50793def1b900256624a709439404384204a5dc3a6ec580281bfaac35e882e90"
 dependencies = [
  "pulldown-cmark",
 ]
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quinn"

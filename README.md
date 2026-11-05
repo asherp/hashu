@@ -37,6 +37,8 @@ mint daemon are still ahead.
 | Tether (USDT) payment rail: buy `THH` with dollars (ERC-20 over EVM JSON-RPC) | done | `hashu-mint::tether` |
 | Proxy control API (`GET /status`, demo `POST /redemptions`) | done | `hashu-proxy::control` |
 | Per-redemption share tree + audit API (`GET /redemptions/{id}/root`, `/proof/{n}`) | done | `hashu-proxy::{audit,control}` |
+| Mint operator GUI (live hashrate, redemption delivery, obligations, pause/markup) | done | `hashu-cli::operator`, `hashu-proxy::meter` |
+| Buyer checkout page (pay by Lightning QR or USDT, get a token, redeem to a pool) | done | `hashu-cli::checkout` |
 | MDK heater stack: Worker + app switching pools on redeem, thermostat | done | [`mdk/`](mdk/README.md) |
 | Per-share nostr receipts + completion certificate | planned | — |
 | Stratum V2 via SRI | fast-follow | — |
@@ -189,9 +191,9 @@ hashu mint run \
 
 | Port | What |
 |---|---|
-| `0.0.0.0:8085` (`--listen`) | Cashu mint API: `/v1/info`, `/v1/keys`, `/v1/mint/quote/{bolt11,usdt}`, `/v1/melt/quote/hashrate`, … |
+| `0.0.0.0:8085` (`--listen`) | Cashu mint API: `/v1/info`, `/v1/keys`, `/v1/mint/quote/{bolt11,usdt}`, `/v1/melt/quote/hashrate`, …, and the buyer **checkout page** at `/checkout/` |
 | `0.0.0.0:3333` (`--stratum-bind`) | Stratum proxy for miners |
-| `127.0.0.1:3334` (`--control-bind`) | Control API: `GET /status`, `GET /redemptions/{id}/root`, `GET /redemptions/{id}/proof/{n}` |
+| `127.0.0.1:3334` (`--control-bind`) | **Operator GUI** at `/`, its API under `/api/`, and the control API: `GET /status`, `GET /redemptions/{id}/root`, `GET /redemptions/{id}/proof/{n}` |
 
 - **Lightning** (`--lightning phoenixd|fake|off`): phoenixd is used when
   `PHOENIXD_URL` or `PHOENIXD_HOSTPORT` is set. It only buys `THH`; the
@@ -208,6 +210,19 @@ hashu mint run \
   the melt turns `PAID`. `--upstream` is where miners go otherwise.
 - State lives in `--data-dir` (`mint.sqlite`, `seed.hex`). Open
   redemptions are in memory: a restart forgets them.
+- **Operator GUI** (`http://127.0.0.1:3334/`): real-time hashrate through
+  the proxy (from accepted shares, difficulty × 2^32 hashes each, averaged
+  over `--hashrate-window` seconds), the current redemption's delivered
+  THH against its target, outstanding obligations (ecash held by users,
+  paid-but-unminted quotes, open redemptions), and controls to pause
+  issuance or change the markup live. It trusts whoever can reach the
+  port, like `POST /redemptions`: keep it on loopback or behind auth. It
+  uses relative URLs, so it can sit behind a path prefix.
+- **Checkout** (`http://<mint>/checkout/`): a buyer picks THH, pays the
+  invoice QR (or the USDT request), and gets a `cashuB` token; pasting it
+  back with a pool and worker redeems it and shows the hashrate arriving.
+  The daemon runs a throwaway wallet per checkout, so it briefly holds the
+  buyer's ecash; any Cashu wallet with the `thh` unit can skip the page.
 
 Rehearse the whole loop without money or hardware:
 
@@ -216,6 +231,9 @@ hashu mint run --lightning fake --price fixed --sats-per-thh 40
 cargo run -p hashu-cli --example buy_and_redeem -- \
   http://127.0.0.1:8085 bolt11 2 stratum+tcp://216.230.225.61:3333 yourname.worker1
 ```
+
+Or do the same from a browser: open `http://127.0.0.1:8085/checkout/` to buy
+and redeem, and `http://127.0.0.1:3334/` to watch it as the operator.
 
 ## Workspace layout
 
