@@ -175,6 +175,14 @@ impl RedemptionLedger {
             .collect()
     }
 
+    /// Snapshots of every redemption, completed ones included, oldest
+    /// first. For status reporting; routing uses [`Self::active`].
+    pub fn all(&self) -> Vec<Redemption> {
+        let map = self.lock();
+        let order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+        order.iter().filter_map(|id| map.get(id)).cloned().collect()
+    }
+
     /// Credit an accepted share to a redemption and return its new state.
     pub fn credit_share(
         &self,

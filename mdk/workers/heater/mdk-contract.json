@@ -1,0 +1,49 @@
+{
+  "contractVersion": "1",
+  "metadata": {
+    "provider": "hashu",
+    "deviceFamily": "miner",
+    "brand": "HomeHeater",
+    "modelsSupported": ["HEATER_40T", "BITAXE"],
+    "overview": "A home-mining space heater (or a Bitaxe) that speaks the AxeOS HTTP API. Its heat warms a room; its hashrate is sold as THH through a Hashu mint. setupPools moves the hashrate between the owner's home pool and the Hashu proxy while a redemption is being filled."
+  },
+  "capabilities": {
+    "telemetry": [
+      { "name": "hashrate_rt", "unit": "TH/s", "type": "number", "handler": "src/telemetry/hashrate-rt.js", "description": "Real-time hashrate." },
+      { "name": "power", "unit": "W", "type": "number", "handler": "src/telemetry/power.js", "description": "Power draw, which is also the heat output." },
+      { "name": "temperature", "unit": "°C", "type": "number", "handler": "src/telemetry/temperature.js", "description": "ASIC temperature." },
+      { "name": "room_temperature", "unit": "°C", "type": "number", "handler": "src/telemetry/room-temperature.js", "description": "Room temperature from the heater's ambient sensor; null when the device has none." },
+      { "name": "power_mode", "type": "string", "handler": "src/telemetry/power-mode.js", "description": "Heat level: sleep, eco, normal or high." },
+      { "name": "pool", "type": "object", "handler": "src/telemetry/pool.js", "description": "Active pool: { url, user }." },
+      { "name": "shares_accepted", "unit": "count", "type": "number", "handler": "src/telemetry/shares-accepted.js", "description": "Shares accepted since boot." }
+    ],
+    "commands": [
+      {
+        "name": "setupPools",
+        "handler": "src/commands/setup-pools.js",
+        "description": "Point the miner at a pool and restart its stratum session. Takes pools: [{ url, user, pass }]; the first entry is used.",
+        "params": [ { "name": "pools", "type": "object" } ]
+      },
+      {
+        "name": "setPowerMode",
+        "handler": "src/commands/set-power-mode.js",
+        "description": "Set the heat level: sleep, eco, normal or high.",
+        "params": [ { "name": "mode", "type": "string" } ],
+        "verify": { "telemetry": "power_mode", "param": "mode", "withinMs": 30000 }
+      },
+      {
+        "name": "reboot",
+        "handler": "src/commands/reboot.js",
+        "description": "Restart the miner.",
+        "constraints": "Do not call more than once per 5 minutes.",
+        "params": []
+      }
+    ],
+    "health": { "supportedStates": ["OK", "OFFLINE"] },
+    "errors": {
+      "ERR_BAD_POWER_MODE": "Unknown heat level.",
+      "ERR_BAD_POOL": "The pool must be stratum+tcp://host:port with a user.",
+      "ERR_DEVICE_CALL_FAILED": "The device's HTTP API call failed or returned an error."
+    }
+  }
+}

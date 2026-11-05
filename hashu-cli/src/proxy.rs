@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use hashu_core::redemption::RedemptionLedger;
+use hashu_proxy::control::{serve as serve_control, ControlState};
 use hashu_proxy::credit::{CreditContext, ShareCrediter};
 use hashu_proxy::router::Router;
 use hashu_proxy::stratum::{run_routed_listener, strip_stratum_prefix};
@@ -36,6 +37,17 @@ pub struct RunArgs {
     /// Periodic metrics log interval (seconds). 0 disables.
     #[arg(long, default_value_t = 30)]
     pub metrics_interval: u64,
+    /// Serve the HTTP control API (`GET /status`) here, e.g.
+    /// `127.0.0.1:3334`. The Hashu MDK app polls it to know when to move
+    /// miners onto the proxy. Off unless set.
+    #[arg(long)]
+    pub control_bind: Option<SocketAddr>,
+    /// Also serve `POST /redemptions` on the control API, so a demo can
+    /// open a redemption without a mint in this process. Anyone who can
+    /// reach the control port can then redirect the hashrate; keep it on
+    /// loopback.
+    #[arg(long, requires = "control_bind")]
+    pub control_allow_open: bool,
 }
 
 pub async fn run(cmd: ProxyCmd) -> Result<()> {
@@ -59,6 +71,24 @@ async fn run_listener_cmd(args: RunArgs) -> Result<()> {
     // connection was routed to.
     let credit = CreditContext::new(Arc::new(ShareCrediter::new(ledger)), router.clone());
     let metrics = Arc::new(ProxyMetrics::default());
+
+    if let Some(bind) = args.control_bind {
+        let state = ControlState {
+            ledger: router.ledger().clone(),
+            metrics: metrics.clone(),
+            default_upstream: router.default_upstream().to_string(),
+            allow_open: args.control_allow_open,
+        };
+        let listener = tokio::net::TcpListener::bind(bind)
+            .await
+            .with_context(|| format!("bind control API on {bind}"))?;
+        tracing::info!(%bind, allow_open = args.control_allow_open, "control API listening");
+        tokio::spawn(async move {
+            if let Err(e) = serve_control(listener, state).await {
+                tracing::error!(error = %e, "control API stopped");
+            }
+        });
+    }
 
     if args.metrics_interval > 0 {
         let m = metrics.clone();
