@@ -186,7 +186,7 @@ Caveats for the demo:
   them (the melt never completes). Don't redeploy during the demo.
 - Stratum on 3333 is plaintext TCP, like most pools.
 - The mint API has no rate limiting; fine for a hackathon, not production.
-- The limited-access phoenixd password could not be exercised end to end
-  from CI (phoenixd needs a live Lightning peer). If `hashu` logs a 401
+- The limited-access phoenixd password was not tested end to end before
+  merging (phoenixd needs a live Lightning peer). If `hashu` logs a 401
   from phoenixd, temporarily set its `PHOENIXD_PASSWORD` in
   `docker-compose.yml` to `${PHOENIXD_PASSWORD}` (full access) and tell us.
