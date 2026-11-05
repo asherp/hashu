@@ -520,7 +520,9 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
 
     // ---- proxy --------------------------------------------------------
     let router = Arc::new(Router::new(upstream.clone(), ledger.clone()));
-    let credit = CreditContext::new(Arc::new(ShareCrediter::new(ledger.clone())), router.clone());
+    let crediter = Arc::new(ShareCrediter::new(ledger.clone()));
+    let audit = crediter.audit().clone();
+    let credit = CreditContext::new(crediter, router.clone());
     let metrics = Arc::new(ProxyMetrics::default());
 
     if args.metrics_interval > 0 {
@@ -557,6 +559,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             ledger: ledger.clone(),
             metrics: metrics.clone(),
             default_upstream: upstream.clone(),
+            audit,
             allow_open: args.control_allow_open,
         };
         let listener = tokio::net::TcpListener::bind(bind)

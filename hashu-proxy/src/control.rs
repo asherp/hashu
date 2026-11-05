@@ -13,6 +13,11 @@
 //!   stand-in for the mint's `hashrate` melt until the mint daemon runs in
 //!   this process (issue #3); anyone who can reach it can redirect the
 //!   hashrate, so it binds to loopback by default.
+//! - `GET /redemptions/{id}/root`: the redemption's share commitment root
+//!   (`null` until a share is credited) and leaf count (§4.7.2).
+//! - `GET /redemptions/{id}/proof/{index}`: one leaf (block header,
+//!   target_bits, ntime, seq), its hash, and an RFC 6962 inclusion proof
+//!   against the current root.
 //!
 //! Plain HTTP/1.1 over tokio, one request per connection, no extra
 //! dependencies.
@@ -30,6 +35,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::audit::ShareAudit;
 use crate::router::upstream_for_pool_url;
 use crate::ProxyMetrics;
 
@@ -42,6 +48,9 @@ pub struct ControlState {
     pub ledger: Arc<RedemptionLedger>,
     pub metrics: Arc<ProxyMetrics>,
     pub default_upstream: String,
+    /// Share commitment trees; use the crediter's
+    /// ([`crate::credit::ShareCrediter::audit`]) so roots match credits.
+    pub audit: Arc<ShareAudit>,
     /// Whether `POST /redemptions` is served.
     pub allow_open: bool,
 }
@@ -128,8 +137,77 @@ pub fn route(method: &str, path: &str, body: &[u8], state: &ControlState) -> (u1
             404,
             json!({ "error": "opening redemptions over HTTP is disabled (start the proxy with --control-allow-open)" }),
         ),
+        ("GET", p) if p.starts_with("/redemptions/") => audit_route(p, state),
         _ => (404, json!({ "error": "not found" })),
     }
+}
+
+/// `/redemptions/{id}/root` and `/redemptions/{id}/proof/{index}`.
+fn audit_route(path: &str, state: &ControlState) -> (u16, Value) {
+    let segs: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    let (id_hex, rest) = match segs.as_slice() {
+        ["redemptions", id, rest @ ..] => (*id, rest),
+        _ => return (404, json!({ "error": "not found" })),
+    };
+    let Some(id) = parse_id(id_hex) else {
+        return (
+            400,
+            json!({ "error": "redemption id must be 32 hex characters" }),
+        );
+    };
+    if state.ledger.get(&id).is_none() {
+        return (404, json!({ "error": format!("unknown redemption {id}") }));
+    }
+    match rest {
+        ["root"] => {
+            let head = state.audit.head(&id);
+            (
+                200,
+                json!({
+                    "id": id.to_string(),
+                    "root": head.root.map(hex::encode),
+                    "leaf_count": head.leaf_count,
+                }),
+            )
+        }
+        ["proof", index] => {
+            let Ok(index) = index.parse::<u64>() else {
+                return (
+                    400,
+                    json!({ "error": "leaf index must be a non-negative integer" }),
+                );
+            };
+            match state.audit.proof(&id, index) {
+                Some(p) => (
+                    200,
+                    json!({
+                        "id": id.to_string(),
+                        "root": hex::encode(p.root),
+                        "tree_size": p.proof.tree_size,
+                        "leaf_index": p.proof.leaf_index,
+                        "leaf_hash": hex::encode(p.leaf_hash),
+                        "leaf": {
+                            "preimage": hex::encode(&p.leaf.preimage),
+                            "target_bits": p.leaf.target_bits,
+                            "ntime": p.leaf.ntime,
+                            "seq": p.leaf.seq,
+                        },
+                        "siblings": p.proof.siblings.iter().map(hex::encode).collect::<Vec<_>>(),
+                    }),
+                ),
+                None => (
+                    404,
+                    json!({ "error": format!("redemption {id} has no leaf {index}") }),
+                ),
+            }
+        }
+        _ => (404, json!({ "error": "not found" })),
+    }
+}
+
+fn parse_id(s: &str) -> Option<RedemptionId> {
+    let bytes: [u8; 16] = hex::decode(s).ok()?.try_into().ok()?;
+    Some(RedemptionId::from_bytes(bytes))
 }
 
 fn status(state: &ControlState) -> Value {
@@ -243,6 +321,7 @@ mod tests {
             ledger: Arc::new(RedemptionLedger::new()),
             metrics: Arc::new(ProxyMetrics::default()),
             default_upstream: "home:3333".into(),
+            audit: Arc::new(ShareAudit::new()),
             allow_open,
         }
     }
@@ -318,6 +397,65 @@ mod tests {
             assert_eq!(route("POST", "/redemptions", body, &s).0, 400);
         }
         assert!(s.ledger.all().is_empty());
+    }
+
+    #[test]
+    fn root_and_proof_endpoints() {
+        use hashu_core::share::{verify_inclusion, InclusionProof, ShareLeaf};
+        let s = state(false);
+        let id = RedemptionId::from_bytes([9; 16]);
+        let path = |p: &str| format!("/redemptions/{id}{p}");
+        s.ledger
+            .open(Redemption::new(id, 1, "pool:3333".into(), "w".into()))
+            .unwrap();
+
+        // No shares yet: root is null.
+        let (code, v) = route("GET", &path("/root"), b"", &s);
+        assert_eq!(code, 200, "{v}");
+        assert_eq!(v["root"], Value::Null);
+        assert_eq!(v["leaf_count"], 0);
+        assert_eq!(route("GET", &path("/proof/0"), b"", &s).0, 404);
+
+        for i in 0..3u8 {
+            s.audit
+                .append(id, vec![i; 80], 0x1d00_ffff, 100 + u32::from(i));
+        }
+        let (_, v) = route("GET", &path("/root"), b"", &s);
+        assert_eq!(v["leaf_count"], 3);
+        let root_hex = v["root"].as_str().unwrap().to_string();
+
+        // A verifier rebuilds the leaf from the JSON and checks the proof.
+        let (code, p) = route("GET", &path("/proof/2"), b"", &s);
+        assert_eq!(code, 200, "{p}");
+        assert_eq!(p["root"], root_hex);
+        let leaf = ShareLeaf {
+            preimage: hex::decode(p["leaf"]["preimage"].as_str().unwrap()).unwrap(),
+            target_bits: p["leaf"]["target_bits"].as_u64().unwrap() as u32,
+            ntime: p["leaf"]["ntime"].as_u64().unwrap() as u32,
+            seq: p["leaf"]["seq"].as_u64().unwrap(),
+        };
+        assert_eq!(hex::encode(leaf.leaf_hash()), p["leaf_hash"]);
+        let h32 = |s: &str| -> [u8; 32] { hex::decode(s).unwrap().try_into().unwrap() };
+        let proof = InclusionProof {
+            leaf_index: p["leaf_index"].as_u64().unwrap(),
+            tree_size: p["tree_size"].as_u64().unwrap(),
+            siblings: p["siblings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| h32(x.as_str().unwrap()))
+                .collect(),
+        };
+        assert!(verify_inclusion(&leaf.leaf_hash(), &proof, &h32(&root_hex)));
+
+        assert_eq!(route("GET", &path("/proof/3"), b"", &s).0, 404);
+        assert_eq!(route("GET", &path("/proof/x"), b"", &s).0, 400);
+        assert_eq!(route("GET", "/redemptions/zz/root", b"", &s).0, 400);
+        let other = RedemptionId::from_bytes([1; 16]);
+        assert_eq!(
+            route("GET", &format!("/redemptions/{other}/root"), b"", &s).0,
+            404
+        );
     }
 
     #[test]

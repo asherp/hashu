@@ -102,6 +102,7 @@ async fn accepted_shares_fill_bound_redemption() {
     let crediter = Arc::new(ShareCrediter::new(ledger.clone()));
     let mut completions = crediter.subscribe_completions();
     let binding = Arc::new(StaticBinding::default());
+    let crediter_audit = crediter.audit().clone();
     let credit = CreditContext::new(crediter, binding.clone());
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -156,6 +157,22 @@ async fn accepted_shares_fill_bound_redemption() {
         .expect("completion not signalled")
         .unwrap();
     assert_eq!(done, rid);
+
+    // The two credited shares, and only those, are in the redemption's
+    // commitment tree, and each proves against its root.
+    let audit = crediter_audit;
+    let head = audit.head(&rid);
+    assert_eq!(head.leaf_count, 2);
+    let root = head.root.unwrap();
+    for i in 0..2 {
+        let p = audit.proof(&rid, i).unwrap();
+        assert_eq!(p.leaf.preimage.len(), 80);
+        assert!(hashu_core::share::verify_inclusion(
+            &p.leaf_hash,
+            &p.proof,
+            &root
+        ));
+    }
 
     let snap = metrics.snapshot();
     assert_eq!(snap.shares_accepted, 3, "{snap:?}");

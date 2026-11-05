@@ -69,7 +69,9 @@ async fn run_listener_cmd(args: RunArgs) -> Result<()> {
     let router = Arc::new(Router::new(upstream, ledger.clone()));
     // The router is also the binding: shares credit the redemption the
     // connection was routed to.
-    let credit = CreditContext::new(Arc::new(ShareCrediter::new(ledger)), router.clone());
+    let crediter = Arc::new(ShareCrediter::new(ledger));
+    let audit = crediter.audit().clone();
+    let credit = CreditContext::new(crediter, router.clone());
     let metrics = Arc::new(ProxyMetrics::default());
 
     if let Some(bind) = args.control_bind {
@@ -77,6 +79,7 @@ async fn run_listener_cmd(args: RunArgs) -> Result<()> {
             ledger: router.ledger().clone(),
             metrics: metrics.clone(),
             default_upstream: router.default_upstream().to_string(),
+            audit,
             allow_open: args.control_allow_open,
         };
         let listener = tokio::net::TcpListener::bind(bind)
