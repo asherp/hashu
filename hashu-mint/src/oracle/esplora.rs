@@ -29,6 +29,21 @@ use serde::Deserialize;
 /// Default Blockstream-hosted Esplora base URL.
 pub const DEFAULT_BASE_URL: &str = "https://blockstream.info/api";
 
+/// Public Esplora base URL for Bitcoin Testnet4 (BIP 94), hosted by
+/// mempool.space. Blockstream does not host a Testnet4 Esplora instance.
+///
+/// Note: Testnet4 coins have no market value and its 20-minute
+/// min-difficulty rule (BIP 94) lets CPU-mined blocks land at difficulty 1,
+/// so a hashprice computed from this chain is not an economic price. Use it
+/// for chain/tip checks on a testnet demo; keep pricing on mainnet data.
+pub const TESTNET4_BASE_URL: &str = "https://mempool.space/testnet4/api";
+
+/// Public Esplora base URL for Bitcoin Testnet3 (Blockstream-hosted).
+pub const TESTNET3_BASE_URL: &str = "https://blockstream.info/testnet/api";
+
+/// Public Esplora base URL for the default Bitcoin Signet (mempool.space).
+pub const SIGNET_BASE_URL: &str = "https://mempool.space/signet/api";
+
 /// Default fee/work averaging window. 24 blocks ≈ 4 hours of network history;
 /// long enough to smooth fee volatility without making startup expensive.
 pub const DEFAULT_WINDOW_BLOCKS: usize = 24;

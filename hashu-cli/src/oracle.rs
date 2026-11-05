@@ -7,6 +7,8 @@ use clap::{Args, Subcommand, ValueEnum};
 use hashu_core::hashprice::HashpriceSample;
 use hashu_mint::oracle::{esplora, luxor};
 
+use crate::network::{default_esplora_url, parse_network};
+
 #[derive(Debug, Args)]
 pub struct OracleCmd {
     #[command(subcommand)]
@@ -28,6 +30,13 @@ pub struct PingArgs {
     /// Override the API base URL (e.g. self-hosted Esplora).
     #[arg(long)]
     pub base_url: Option<String>,
+
+    /// Bitcoin network whose public Esplora to query when --base-url is not
+    /// given (Esplora only): `bitcoin` (default), `testnet4`, `testnet`,
+    /// `signet`. `regtest` needs --base-url. Only mainnet yields an economic
+    /// hashprice; testnet chains are useful for connectivity checks.
+    #[arg(long, default_value = "bitcoin")]
+    pub network: String,
 
     /// Window of recent blocks to average over (Esplora only).
     #[arg(long, default_value_t = esplora::DEFAULT_WINDOW_BLOCKS)]
@@ -60,10 +69,15 @@ async fn ping(args: PingArgs) -> Result<()> {
 }
 
 async fn fetch_esplora(args: &PingArgs) -> Result<(HashpriceSample, String)> {
-    let base_url = args
-        .base_url
-        .clone()
-        .unwrap_or_else(|| esplora::DEFAULT_BASE_URL.to_string());
+    let base_url = match &args.base_url {
+        Some(url) => url.clone(),
+        None => {
+            let network = parse_network(&args.network)?;
+            default_esplora_url(network)
+                .with_context(|| format!("no public Esplora for {network}; pass --base-url"))?
+                .to_string()
+        }
+    };
     let client = esplora::EsploraClient::with_base(base_url.clone());
     let tip = client.tip_hash().await.context("fetch tip hash")?;
     eprintln!("tip: {tip}");

@@ -110,7 +110,14 @@ trait.
 hashu oracle ping                                            # Esplora @ blockstream.info
 hashu oracle ping --source luxor                             # needs LUXOR_API_KEY
 hashu oracle ping --base-url https://my-esplora.example.com/api
+hashu oracle ping --network testnet4                         # Esplora @ mempool.space/testnet4
 ```
+
+`--network` picks the public Esplora for `bitcoin` (default),
+`testnet4`, `testnet` (Testnet3) or `signet`. Testnet coins are
+worthless and Testnet4 allows difficulty-1 blocks, so only mainnet
+gives an economic hashprice; price THH from mainnet even when the demo
+settles on Testnet4.
 
 ### 5. Run the Stratum V1 proxy
 
