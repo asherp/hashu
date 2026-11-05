@@ -27,11 +27,15 @@ mint daemon are still ahead.
 | Hashprice oracle trait + interpolating buffer | done | `hashu-core::hashprice` |
 | Esplora hashprice adapter (free, default) | done | `hashu-mint::oracle::esplora` |
 | Luxor hashprice adapter (paid alternative) | done | `hashu-mint::oracle::luxor` |
+| MiningRigRentals rental-floor hashprice adapter (free, Testnet4 demo) | done | `hashu-mint::oracle::mrr` |
 | Operator manifest publisher (kind 0 nostr event) | done | `hashu-mint::manifest` |
 | Stratum V1 pass-through proxy + share counter | done | `hashu-proxy::stratum` |
 | `hashu` operator CLI (init, config, manifest, oracle, proxy) | done | `hashu-cli` |
 | Share commitment tree integration in the proxy | done | `hashu-proxy::stratum::{session,header,committer,compact}` |
-| `hashrate` melt method via cdk | next | — |
+| `hashrate` melt method via cdk (redemption ledger + `MintPayment` backend) | done | `hashu-core::redemption`, `hashu-mint::melt` |
+| Tether (USDT) payment rail: buy `THH` with dollars (ERC-20 over EVM JSON-RPC) | done | `hashu-mint::tether` |
+| Proxy control API (`GET /status`, demo `POST /redemptions`) | done | `hashu-proxy::control` |
+| MDK heater stack: Worker + app switching pools on redeem, thermostat | done | [`mdk/`](mdk/README.md) |
 | Per-share nostr receipts + completion certificate | planned | — |
 | Stratum V2 via SRI | fast-follow | — |
 | Lightning backend (LND/CLN via cdk) | planned | — |
@@ -68,7 +72,7 @@ hashu init
 ```
 
 Prompts for instance URL, profile fields (name / about / nip05 / lud16
-/ website — all optional), the hashprice oracle (`esplora` or `luxor`)
+/ website — all optional), the hashprice oracle (`esplora`, `luxor` or `mrr`)
 with a sensible URL default per source, and a relay list. Writes
 `~/.hashu/nostr.nsec` (mode 0600), `~/.hashu/manifest_state.json`, and
 prints the operator's `npub`.
@@ -110,7 +114,23 @@ trait.
 hashu oracle ping                                            # Esplora @ blockstream.info
 hashu oracle ping --source luxor                             # needs LUXOR_API_KEY
 hashu oracle ping --base-url https://my-esplora.example.com/api
+hashu oracle ping --network testnet4                         # Esplora @ mempool.space/testnet4
+hashu oracle ping --source mrr --network testnet4            # MRR rental floor + Testnet4 cost per block
 ```
+
+`--network` picks the public Esplora for `bitcoin` (default),
+`testnet4`, `testnet` (Testnet3) or `signet`. Esplora pings also print
+the chain's real difficulty and the THH one expected block costs; on
+Testnet4 that skips BIP 94 difficulty-1 blocks (≈1.04e9 real difficulty
+≈ 1,240 THH per block on 2026-11-05).
+
+For a Testnet4 mint, price THH with `--source mrr`: the
+MiningRigRentals SHA-256 rental floor (BTC/PH/day, public, no key) is
+what the hashrate actually costs, whichever chain it mines. Combined
+with Testnet4's real difficulty it gives the BTC cost of one expected
+block (≈0.00045 BTC/PH/day × 1.24 PH-hours ≈ $1.76 on 2026-11-05, as
+read by `fx-faucet`'s `btc-rent.py market`). The Esplora hashprice on a
+testnet is in test sats.
 
 ### 5. Run the Stratum V1 proxy
 
@@ -125,7 +145,9 @@ the proxy maintains a per-connection [share commitment tree
 its 80-byte block header, packaged into a `ShareLeaf`, and appended.
 On disconnect the final root + leaf count is logged. Periodic metric
 snapshots (including `shares_committed`) are logged via `tracing`.
-Redemption-driven upstream redirection lands in a follow-up commit.
+With `--control-bind 127.0.0.1:3334` the proxy also serves a small HTTP
+control API (`GET /status`: redemptions and progress) that the
+[MDK heater app](mdk/README.md) polls to switch miners onto the proxy.
 
 ## Workspace layout
 

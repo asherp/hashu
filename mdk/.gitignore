@@ -1,0 +1,4 @@
+node_modules/
+.mdk/
+# `mdk create dashboard` copies the MDK dashboard here (scripts/demo.sh does it on first run)
+apps/dashboard/

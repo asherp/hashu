@@ -25,8 +25,10 @@ can run a Hashu instance and start issuing vouchers backed by it.
 Spiritually closer to `fedimintd` or `cashu-mintd` than to a centralized
 hashrate marketplace. Each Hashu instance is a single trust domain: one
 operator, one mint, one pool of hashrate. Vouchers from different
-operators interoperate through standard Cashu and Lightning rails
-(swap, BOLT11 melt) but are issued under separate trust assumptions.
+operators interoperate through standard Cashu swaps but are issued
+under separate trust assumptions. A Hashu mint sells computation and
+never pays out bitcoin: `THH` is redeemed only for hashrate, never
+melted back to sats.
 
 ## 2. Core actors
 
@@ -107,6 +109,14 @@ inbound Stratum connections it is authorized to direct.
   flow down; share submissions go to the redeemer's pool. On
   redemption end, Hashu reopens the default-pool connection and
   resumes passthrough.
+  *Prototype mechanics:* a connection's upstream is fixed for its
+  lifetime. To switch, the proxy closes the miner's connection and the
+  miner reconnects (every Stratum V1 miner does this unprompted); the
+  router then picks the current route. While routed to a redemption the
+  proxy rewrites the worker name in `mining.authorize` and
+  `mining.submit` to the redeemer's. This avoids `mining.set_extranonce`,
+  which many miners don't support. If the redeemer's pool is
+  unreachable the connection falls back to the default pool for 60 s.
 
 ### 4.3 Voucher accounting
 
@@ -149,10 +159,57 @@ inbound Stratum connections it is authorized to direct.
   abstraction — both are already supported.
 - Holds incoming sats from voucher purchases. **Funds in this wallet
   are operator liability**, not user funds proper — see trust model.
+- Mint-only: the node sells `THH` over bolt11 mint quotes and is never
+  used to pay out. `hashu-mint` wraps the node's cdk backend in a
+  `ThhIssuer` (`payment.rs`), which prices a quote for `N` THH in sats via
+  `SatsPerThhFromHashprice` (`pricing.rs`: hashprice × 3600 s × (1 +
+  markup)), bills that invoice, and reports the payment back to cdk in
+  `THH`. `add_lightning_issuance` (`lightning.rs`) registers it and
+  withdraws bolt11 from the advertised melt methods.
+
+#### 4.5.1 Tether (USDT) payment rail
+
+Buyers can also pay in dollars: **USD -> `THH` -> hashrate -> BTC**,
+with no exchange in the path. The buyer pays USDT, holds `THH`, and
+redeems it as hashrate pointed at their own pool, which pays them in
+bitcoin. The mint only receives USDT and never pays anything out, so
+a Hashu operator is selling computation, not moving money.
+
+- **Rail: USDT as an ERC-20 on an EVM chain**, watched over plain
+  JSON-RPC (`eth_blockNumber` + `eth_getLogs` for `Transfer` logs into
+  the operator's deposit address). One code path covers Ethereum,
+  Arbitrum, Plasma and the USDT0 chains. The Testnet4 demo uses
+  **Sepolia** with a 6-decimal test USDT token, since no chain has an
+  official test USDT and Sepolia is the testnet every wallet supports.
+- **cdk wiring:** `hashu_mint::tether::TetherPayments` is a
+  `MintPayment` backend for `(THH, Custom("usdt"))`. A mint quote is
+  requested in `THH`; a `ThhPricer` (shared with the Lightning rail,
+  `hashu_mint::pricing`) prices it in micro-USDT. When the transfer
+  confirms the backend emits `PaymentReceived` in `THH`.
+- **Matching without per-quote addresses:** the price is rounded up to
+  whole cents and a random tag (1 to 9,999 micro-USDT, under one cent)
+  makes each open quote's amount unique. A confirmed transfer of
+  exactly that amount settles the quote. Transfers that match nothing
+  are logged for a manual refund.
+- **Quote format:** the quote's `request` is an EIP-681 URI
+  (`ethereum:<token>@<chain>/transfer?address=<to>&uint256=<amount>`)
+  that wallets can scan; the same fields are spelled out alongside it.
+- **Pricing:** `FixedUsdtPrice` for demos, or `SatsToUsdt`, which
+  converts the hashprice sats pricer at a BTC/USD rate so both rails
+  sell the same hashrate at the same price.
+- **Prototype limits:** open quotes live in memory (a restart forgets
+  them), the RPC endpoint is trusted, and the BTC/USD rate is operator
+  config. A bitcoin-native follow-up is USDT on Lightning via Taproot
+  Assets, which would reuse the Lightning rail.
 
 ### 4.6 Pool routing controller
 
 - Receives "redirect" intents from voucher accounting.
+- *Prototype:* dedicated assignment (below) is what ships first: each
+  new connection goes to the active redemption with the fewest
+  connections, oldest first. With one miner, redemptions are served in
+  melt order. The router polls the ledger for new redemptions and wakes
+  on the share crediter's completion signal.
 - Maintains a per-redemption allocation. Strategy v0: proportional —
   every connected hashrate source contributes a slice weighted by its
   hashrate EMA, so concurrent redemptions progress at roughly equal
@@ -210,7 +267,7 @@ machine-readable manifest:
       {"id": "<keyset-id-0>", "status": "retired", "retired_at": <unix>}
     ],
     "supported_units":  ["THH"],
-    "supported_melts":  ["bolt11", "hashrate", "hashrate-sats"],
+    "supported_melts":  ["hashrate", "hashrate-sats"],
     "hashprice_oracle": "luxor",
     "manifest_version": 1,
     "issued_at":        <unix>
@@ -402,13 +459,6 @@ Redeem (melt method "hashrate-sats"):
     Mint   ──▶ marks redemption complete when integral ≥ target_sats
 ```
 
-### 5.3 Lightning melt (escape hatch)
-
-Standard NUT-05 BOLT11 melt, denominated by hashprice at melt time.
-Lets holders bail out to sats without ever redeeming hashrate. This is
-important: it makes `THH` tokens *fungible with sats* and lets the
-secondary market price them.
-
 ## 6. Trust model
 
 This is **a custodial mint** like every Cashu mint today. Trust
@@ -504,8 +554,7 @@ Resolved 2026-05-07:
   is managed outside Hashu.
 - ~~Q4 — redemption SLA:~~ on proxy outage or unfillable redemption,
   the unredeemed portion of `THH` is **re-issued as fresh blinded
-  signatures back to the holder**. Holder can re-redeem, hold, or melt
-  to BOLT11.
+  signatures back to the holder**. Holder can re-redeem or hold.
 - ~~Q7 — miner registration UX:~~ **out of scope** (no third-party
   miners connect to a stranger's Hashu under this model).
 
@@ -541,7 +590,6 @@ Open:
 
 **Phase 3 — Sats-equivalent + secondary market**
 - `hashrate-sats` melt method.
-- Lightning melt for bailout (NUT-05 standard).
 - Public token spec so other wallets can hold `THH`.
 
 **Phase 4 — Stratum V2**

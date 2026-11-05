@@ -29,6 +29,21 @@ use serde::Deserialize;
 /// Default Blockstream-hosted Esplora base URL.
 pub const DEFAULT_BASE_URL: &str = "https://blockstream.info/api";
 
+/// Public Esplora base URL for Bitcoin Testnet4 (BIP 94), hosted by
+/// mempool.space. Blockstream does not host a Testnet4 Esplora instance.
+///
+/// Testnet4 is mined by real rented SHA-256 hashrate, so its *real*
+/// difficulty (see [`real_difficulty`]) sets how much work an expected block
+/// costs. BIP 94's 20-minute rule also lets difficulty-1 blocks in; those are
+/// excluded by [`compute_hashprice`] and [`real_difficulty`].
+pub const TESTNET4_BASE_URL: &str = "https://mempool.space/testnet4/api";
+
+/// Public Esplora base URL for Bitcoin Testnet3 (Blockstream-hosted).
+pub const TESTNET3_BASE_URL: &str = "https://blockstream.info/testnet/api";
+
+/// Public Esplora base URL for the default Bitcoin Signet (mempool.space).
+pub const SIGNET_BASE_URL: &str = "https://mempool.space/signet/api";
+
 /// Default fee/work averaging window. 24 blocks ≈ 4 hours of network history;
 /// long enough to smooth fee volatility without making startup expensive.
 pub const DEFAULT_WINDOW_BLOCKS: usize = 24;
@@ -42,6 +57,45 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(300);
 /// Derivation: `Diff = MaxTarget / Target` with `MaxTarget = 65_535 × 2^208`.
 /// Expected hashes per block = `2^256 / (Target + 1) ≈ Diff × 2^48 / 65_535`.
 pub const HASHES_PER_DIFFICULTY: f64 = 4_295_032_833.0;
+
+/// Hashes in one terahash-hour (`THH`): 1 TH/s × 3,600 s.
+pub const HASHES_PER_THH: f64 = 3.6e15;
+
+/// Difficulty of a BIP 94 / testnet min-difficulty block (target = powLimit).
+/// Blocks at or below this are excluded when measuring real difficulty.
+pub const MIN_DIFFICULTY: f64 = 1.0;
+
+fn is_min_difficulty(b: &BlockSummary) -> bool {
+    b.difficulty <= MIN_DIFFICULTY
+}
+
+/// Drop min-difficulty blocks unless the window has nothing else (e.g. a
+/// fresh regtest chain), so testnet windows reflect real difficulty.
+fn real_blocks(window: &[BlockSummary]) -> Vec<&BlockSummary> {
+    let real: Vec<&BlockSummary> = window.iter().filter(|b| !is_min_difficulty(b)).collect();
+    if real.is_empty() {
+        window.iter().collect()
+    } else {
+        real
+    }
+}
+
+/// Real (non-min-difficulty) difficulty at the most recent such block in the
+/// window. On mainnet this is just the tip's difficulty; on Testnet4 it skips
+/// BIP 94 difficulty-1 blocks. `None` if the window has no real blocks.
+pub fn real_difficulty(window: &[BlockSummary]) -> Option<f64> {
+    window
+        .iter()
+        .filter(|b| !is_min_difficulty(b))
+        .max_by_key(|b| b.height)
+        .map(|b| b.difficulty)
+}
+
+/// Expected work to find one block at `difficulty`, in `THH`
+/// (terahash-hours). E.g. Testnet4 at 1.04e9 ≈ 1,240 THH (1.24 PH-hours).
+pub fn thh_per_expected_block(difficulty: f64) -> f64 {
+    difficulty * HASHES_PER_DIFFICULTY / HASHES_PER_THH
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum EsploraError {
@@ -171,10 +225,15 @@ pub struct BlockSummary {
 
 /// Pure hashprice computation from a window of block summaries.
 /// Returns a sample timestamped at the most recent block.
+///
+/// Min-difficulty blocks (BIP 94 / testnet 20-minute rule) are excluded when
+/// the window contains any real-difficulty blocks, since their coinbase is
+/// earned for almost no work and would inflate the result.
 pub fn compute_hashprice(window: &[BlockSummary]) -> Option<HashpriceSample> {
     if window.is_empty() {
         return None;
     }
+    let window = real_blocks(window);
     let total_rev: u128 = window.iter().map(|b| b.coinbase_total_sats as u128).sum();
     let total_work: f64 = window
         .iter()
@@ -277,6 +336,28 @@ async fn fetch_window(
     Ok(summaries)
 }
 
+/// Walk back from the tip to the most recent real-difficulty block (skipping
+/// BIP 94 / testnet difficulty-1 blocks) and return its difficulty and
+/// height. Gives up after `max_blocks`; real Testnet4 blocks have gone ~18
+/// hours apart, i.e. ~55 min-difficulty blocks.
+pub async fn fetch_real_difficulty(
+    client: &EsploraClient,
+    max_blocks: usize,
+) -> Result<Option<(f64, u32)>, EsploraError> {
+    let mut hash = client.tip_hash().await?;
+    for _ in 0..max_blocks {
+        let b = client.block(&hash).await?;
+        if !is_min_difficulty(&b) {
+            return Ok(Some((b.difficulty, b.height)));
+        }
+        match b.previousblockhash {
+            Some(p) => hash = p,
+            None => break,
+        }
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,6 +379,46 @@ mod tests {
 
     fn approx_eq(a: f64, b: f64, eps: f64) -> bool {
         (a - b).abs() < eps
+    }
+
+    #[test]
+    fn min_difficulty_blocks_are_excluded() {
+        // Testnet4-style window: two real blocks at 1.04e9 with a BIP 94
+        // difficulty-1 block between them.
+        let real_only = vec![
+            block(159_236, 1_700_000_000, 1.04e9, 5_000_000_000),
+            block(159_238, 1_700_002_400, 1.04e9, 5_000_000_000),
+        ];
+        let mut mixed = real_only.clone();
+        mixed.insert(1, block(159_237, 1_700_001_200, 1.0, 5_000_000_000));
+        let a = compute_hashprice(&real_only).unwrap();
+        let b = compute_hashprice(&mixed).unwrap();
+        assert!(approx_eq(a.sats_per_ths, b.sats_per_ths, 1e-12));
+        assert_eq!(real_difficulty(&mixed), Some(1.04e9));
+    }
+
+    #[test]
+    fn all_min_difficulty_window_still_computes() {
+        let w = vec![block(1, 1_700_000_000, 1.0, 5_000_000_000)];
+        assert!(compute_hashprice(&w).is_some());
+        assert_eq!(real_difficulty(&w), None);
+    }
+
+    #[test]
+    fn real_difficulty_uses_latest_real_block() {
+        let w = vec![
+            block(10, 1_700_000_000, 2e9, 0),
+            block(12, 1_700_002_000, 1.0, 0),
+            block(11, 1_700_001_000, 1.04e9, 0),
+        ];
+        assert_eq!(real_difficulty(&w), Some(1.04e9));
+    }
+
+    #[test]
+    fn testnet4_block_costs_about_1240_thh() {
+        // Matches the 2026-11-05 live read: 1.04e9 → 1.24 PH-hours.
+        let thh = thh_per_expected_block(1.04e9);
+        assert!((1_235.0..1_245.0).contains(&thh), "got {thh}");
     }
 
     #[test]
