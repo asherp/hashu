@@ -159,6 +159,41 @@ inbound Stratum connections it is authorized to direct.
   `THH`. `add_lightning_issuance` (`lightning.rs`) registers it and
   withdraws bolt11 from the advertised melt methods.
 
+#### 4.5.1 Tether (USDT) payment rail
+
+Buyers can also pay in dollars: **USD -> `THH` -> hashrate -> BTC**,
+with no exchange in the path. The buyer pays USDT, holds `THH`, and
+redeems it as hashrate pointed at their own pool, which pays them in
+bitcoin. The mint only receives USDT and never pays anything out, so
+a Hashu operator is selling computation, not moving money.
+
+- **Rail: USDT as an ERC-20 on an EVM chain**, watched over plain
+  JSON-RPC (`eth_blockNumber` + `eth_getLogs` for `Transfer` logs into
+  the operator's deposit address). One code path covers Ethereum,
+  Arbitrum, Plasma and the USDT0 chains. The Testnet4 demo uses
+  **Sepolia** with a 6-decimal test USDT token, since no chain has an
+  official test USDT and Sepolia is the testnet every wallet supports.
+- **cdk wiring:** `hashu_mint::tether::TetherPayments` is a
+  `MintPayment` backend for `(THH, Custom("usdt"))`. A mint quote is
+  requested in `THH`; a `ThhPricer` (shared with the Lightning rail,
+  `hashu_mint::pricing`) prices it in micro-USDT. When the transfer
+  confirms the backend emits `PaymentReceived` in `THH`.
+- **Matching without per-quote addresses:** the price is rounded up to
+  whole cents and a random tag (1 to 9,999 micro-USDT, under one cent)
+  makes each open quote's amount unique. A confirmed transfer of
+  exactly that amount settles the quote. Transfers that match nothing
+  are logged for a manual refund.
+- **Quote format:** the quote's `request` is an EIP-681 URI
+  (`ethereum:<token>@<chain>/transfer?address=<to>&uint256=<amount>`)
+  that wallets can scan; the same fields are spelled out alongside it.
+- **Pricing:** `FixedUsdtPrice` for demos, or `SatsToUsdt`, which
+  converts the hashprice sats pricer at a BTC/USD rate so both rails
+  sell the same hashrate at the same price.
+- **Prototype limits:** open quotes live in memory (a restart forgets
+  them), the RPC endpoint is trusted, and the BTC/USD rate is operator
+  config. A bitcoin-native follow-up is USDT on Lightning via Taproot
+  Assets, which would reuse the Lightning rail.
+
 ### 4.6 Pool routing controller
 
 - Receives "redirect" intents from voucher accounting.

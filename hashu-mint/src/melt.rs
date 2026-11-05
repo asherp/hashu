@@ -96,9 +96,11 @@ impl HashrateMelter {
         self
     }
 
-    /// The unit this backend accepts.
+    /// The unit this backend accepts. Lowercase, because cdk lowercases
+    /// custom units whenever it serialises them (mint info, database,
+    /// wire): a wallet's `THH` arrives as `Custom("thh")`.
     pub fn unit() -> CurrencyUnit {
-        CurrencyUnit::Custom(THH.to_string())
+        CurrencyUnit::Custom(THH.to_lowercase())
     }
 
     fn check_unit(&self, unit: &CurrencyUnit) -> Result<(), Error> {
@@ -454,6 +456,16 @@ mod tests {
         let method = PaymentMethod::Custom(METHOD.to_string());
         assert!(info.nuts.nut04.methods.iter().any(|m| m.method == method));
         assert!(info.nuts.nut05.methods.iter().any(|m| m.method == method));
+    }
+
+    #[test]
+    fn unit_matches_what_cdk_deserialises() {
+        // cdk serialises units lowercase, so any unit that crossed the wire
+        // or the database comes back as `thh`.
+        let json = serde_json::to_string(&HashrateMelter::unit()).unwrap();
+        assert_eq!(json, "\"thh\"");
+        let roundtrip: CurrencyUnit = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtrip, HashrateMelter::unit());
     }
 
     #[tokio::test]
