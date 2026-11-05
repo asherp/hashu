@@ -1,6 +1,6 @@
 # Hashu slides
 
-Four-slide [Slidev](https://sli.dev) deck introducing Hashu: why it sells computation rather than money, the USD → hashrate → BTC flow, share accounting, and the path to the Testnet4 demo.
+Five-slide [Slidev](https://sli.dev) deck introducing Hashu: why it sells computation rather than money, the USD → hashrate → BTC flow, share accounting, the Hashu Heater on Tether MDK, and the path to the Testnet4 demo.
 
 ```bash
 cd slides

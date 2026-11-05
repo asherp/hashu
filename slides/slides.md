@@ -3,7 +3,7 @@ theme: default
 title: Hashu — ecash for computation, not money
 info: |
   Hashu: a hashrate proxy fused with a Cashu (CDK) mint.
-  Four-slide overview of the Testnet4 prototype.
+  Five-slide overview of the Testnet4 prototype.
 class: text-left
 drawings:
   persist: false
@@ -158,6 +158,52 @@ credit the right redemption. When the total crosses the target, the crediter
 broadcasts completion once: the router moves hashrate back to the default pool and
 the mint's hashrate melt quote flips to PAID (#13; the redemption id is derived
 from the melt request, so cdk can look it up and nobody pays twice).
+-->
+
+---
+
+# Hashrate at Home, on Tether MDK
+
+<div class="grid grid-cols-[1.05fr_1fr] gap-6 text-sm mt-1">
+<div>
+
+**A home heater that sells its hashrate as THH**
+
+1. Someone redeems THH; the proxy opens a redemption
+2. The **Hashu Heater app** sees it on the proxy's control API and sends `setupPools` through the MDK Kernel: home pool → Hashu proxy
+3. Shares go to the redeemer's pool and are credited
+4. Filled → `setupPools` back to the home pool
+
+<div class="text-xs mt-3 leading-snug">
+
+- **Heater Worker** speaks the Bitaxe AxeOS API: hashrate, power, temperature, pool, heat level (`setPowerMode`)
+- **Thermostat** with a hard ceiling: pauses even mid-redemption, then resumes
+- **Fail-safe:** proxy unreachable → heater goes back home
+- Heatbit firmware is closed, so it stays pointed at the proxy
+
+</div>
+</div>
+<div>
+
+<img src="/mdk-heater.png" class="rounded shadow" />
+
+<div class="text-xs mt-2 leading-snug">
+
+**~62 sats per kWh of heat** at demo pricing (32.4 J/TH), against 0 for an electric heater with the same output.
+
+Demo with no hardware: `cd mdk && ./scripts/demo.sh`
+
+</div>
+</div>
+</div>
+
+<!--
+Built for the bitcoin++ Seoul Hashrate at Home award, which requires Tether's MDK (#12).
+Every watt a miner draws ends up as heat, just like an electric heater; this one also
+earns by selling THH. The mock heater is 40 TH/s, 1300 W and really mines over Stratum,
+so a 1 THH redemption fills through the proxy in about 90 s with no hardware.
+The app's policy is pure and unit tested: redemption open → Hashu proxy, otherwise home;
+thermostat with hysteresis plus a ceiling; manual override per heater.
 -->
 
 ---
