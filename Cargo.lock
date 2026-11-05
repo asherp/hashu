@@ -1427,6 +1427,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "cdk",
  "cdk-fake-wallet",
  "cdk-sqlite",
@@ -1444,6 +1445,7 @@ dependencies = [
  "thiserror 1.0.69",
  "time",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "wiremock",
 ]
