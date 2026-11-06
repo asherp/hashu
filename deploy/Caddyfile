@@ -7,6 +7,18 @@
 {$HASHU_DOMAIN} {$HASHU_EXTRA_DOMAINS} {
 	encode gzip
 
+	# Hashu project splash page (site/, built into the caddy image) at / on
+	# the extra domains (hashu.io, www). The mint's own host keeps the mint
+	# landing page at /; every other path behaves the same on all hosts.
+	@splash {
+		path /
+		not host {$HASHU_DOMAIN}
+	}
+	handle @splash {
+		root * /srv/site
+		file_server
+	}
+
 	# Slidev deck, built with --base /slides/ into the caddy image.
 	redir /slides /slides/
 	handle_path /slides/* {

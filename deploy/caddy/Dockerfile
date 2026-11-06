@@ -11,3 +11,5 @@ RUN npx slidev build --base /slides/ --out /out
 
 FROM caddy:2
 COPY --from=slides /out /srv/slides
+# Hashu project splash page, served at / on hashu.io and www (see Caddyfile).
+COPY site/ /srv/site/
