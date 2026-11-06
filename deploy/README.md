@@ -169,13 +169,11 @@ End to end with the example wallet (from a checkout of the repo):
 
 ```bash
 cargo run -p hashu-cli --example buy_and_redeem -- \
-  https://mint.hashu.io bolt11 2 stratum+tcp://216.230.225.61:3333 yourname.worker1
+  https://mint.hashu.io bolt11 2 stratum+tcp://stratum.braiins.com:3333 <braiins-user>.redeem
 ```
 
-It prints the invoice; pay it from any Lightning wallet, then it redeems.
-On the devbox the redemption pool in that command is ckpool on the same
-machine, so redeemed hashrate goes proxy → ckpool without leaving the box.
-Point a miner (Bitaxe, or the Heatbit via the MDK app) at
+It prints the invoice; pay it from any Lightning wallet, then it redeems
+to that mainnet pool and worker. Point a miner (Bitaxe, or the Heatbit via the MDK app) at
 `stratum+tcp://mint.hashu.io:3335` and watch the redemption fill in the
 operator GUI at `https://mint.hashu.io/operator/`.
 
@@ -200,12 +198,16 @@ from the Caddyfile and reach 3334 over an SSH tunnel instead.
 ## 8. Rented hashrate from MiningRigRentals
 
 With no Bitaxe at hand, rent SHA-256 hashrate on MiningRigRentals (MRR)
-and point it at the **Hashu proxy**, not at ckpool. Only shares that pass
+and point it at the **Hashu proxy**, not at the pool directly. Only shares that pass
 through the proxy are seen, committed and credited to redemptions; a rig
-pointed straight at ckpool mines fine but Hashu never knows.
+pointed straight at the pool mines fine but Hashu never knows.
+
+The demo mines **mainnet**: MRR rigs refuse Testnet4 jobs (Testnet4's
+future-stamped `ntime`), so the idle route is a mainnet pool (Braiins,
+`HASHU_UPSTREAM`) and redemptions go to mainnet pools too.
 
 ```
-MRR rig ──stratum+tcp://mint.hashu.io:3335──► hashu proxy ──► ckpool :3333 (default)
+MRR rig ──stratum+tcp://mint.hashu.io:3335──► hashu proxy ──► braiins (default, mainnet)
                                                          └──► redeemer's pool (while a redemption is open)
 ```
 
@@ -217,11 +219,11 @@ renting):
 | Algorithm | SHA256 |
 | Pool host | `stratum+tcp://mint.hashu.io` |
 | Port | `3335` |
-| Worker / username | any label, e.g. `asher.mrr` (ckpool on Testnet4 takes any name) |
+| Worker / username | `<braiins-user>.mrr`: on the idle route this name reaches Braiins unchanged, so it must be a Braiins account |
 | Password | `x` |
 
 Don't append NiceHash's `#xnsub` to the URL. Hold off on a backup pool
-that goes straight to ckpool: MRR fails over to it whenever the proxy
+that goes straight to the pool: MRR fails over to it whenever the proxy
 drops the rig (see below), and those shares bypass Hashu. If you want a
 backup, add the same proxy URL again.
 
@@ -237,18 +239,17 @@ proxy, one upstream connection per miner connection):
 
 - `mining.subscribe`/`configure` (version rolling), `extranonce`
   handling and `mining.set_difficulty` are forwarded unchanged, so
-  difficulty is whatever ckpool's vardiff sets. A big rig floods a low
-  start difficulty for its first minute; raising `startdiff` in ckpool's
-  config (e.g. 10000+ for 100 TH/s and up) avoids that. Crediting is by
+  difficulty is whatever the upstream pool's vardiff sets (Braiins handles
+  big rigs fine). Crediting is by
   share difficulty (`difficulty × 2^32` hashes), so a THH is a THH at any
   difficulty.
 - When a redemption opens or fills, the proxy **closes the rig's
   connection** so it reconnects to the new route, with the worker name
   rewritten to the redeemer's. MRR rigs reconnect in seconds; the MRR
   rental page may briefly show the pool as down. That is expected.
-- The redemption pool in the demo is ckpool on the same box
-  (`stratum+tcp://216.230.225.61:3333`): the container reaches it through
-  the box's public IP.
+- The redemption pool in the demo is Braiins too, under a different
+  worker (`<braiins-user>.redeem`), so the Braiins dashboard shows the
+  redeemed hashrate as its own worker.
 
 **Confirm hashrate is arriving:**
 
@@ -262,7 +263,47 @@ proxy, one upstream connection per miner connection):
    graph tracks the rented TH/s (averaged over `--hashrate-window`,
    default 60 s). Open a redemption (e.g. `buy_and_redeem` above): the
    rig reconnects, `shares_credited` starts rising and the cumulative THH
-   graph climbs to the target, then the rig goes back to ckpool.
+   graph climbs to the target, then the rig goes back to the idle route.
+
+## 9. Demo script (mainnet)
+
+Price check: the MRR floor is about 0.00045 BTC/PH/day, i.e. ~2 sats per
+THH. Check the live price with a 1 THH quote:
+
+```bash
+curl -s -X POST https://mint.hashu.io/v1/mint/quote/bolt11 \
+  -H 'content-type: application/json' -d '{"amount":1,"unit":"thh"}' | jq .request
+```
+
+(decode the invoice amount in any wallet). Sizes below assume a 100 TH/s rental; scale with R/60 THH
+per minute.
+
+Before going on stage (~15 min early):
+
+1. MRR rental running against `stratum+tcp://mint.hashu.io:3335`, user
+   `<braiins-user>.mrr`. Braiins dashboard shows worker `mrr` hashing,
+   operator GUI shows the live hashrate.
+2. The phoenixd channel is open (section 5). Do one tiny rehearsal buy.
+
+On stage:
+
+1. **Buy.** Open `https://mint.hashu.io/checkout/` (or run the wallet
+   example) for **5 THH**; pay the ~10 sat invoice from a phone wallet.
+   The tokens appear.
+2. **Redeem.** Melt 5 THH with method `hashrate` to
+   `stratum+tcp://stratum.braiins.com:3333`, worker `<braiins-user>.redeem`:
+
+   ```bash
+   cargo run -p hashu-cli --example buy_and_redeem -- \
+     https://mint.hashu.io bolt11 5 stratum+tcp://stratum.braiins.com:3333 <braiins-user>.redeem
+   ```
+
+   (does buy + redeem in one go: it prints the invoice, waits for payment,
+   then redeems).
+3. **Watch it fill.** Operator GUI: the rig reconnects within seconds, the
+   cumulative THH graph climbs to 5 over ~3 minutes, the melt turns
+   `PAID`, and the rig goes back to the idle route. On Braiins the
+   `redeem` worker appears with ~100 TH/s for those minutes.
 
 ## Operations
 
