@@ -9,6 +9,8 @@
 #                        -> GET /control/status (read-only, for the MDK app)
 #                        -> slide deck at /slides/ (built into the caddy image)
 #                        also answers for $HASHU_EXTRA_DOMAINS (hashu.io)
+#                        -> /mdk redirects to the MDK dashboard demo at
+#                           https://$HASHU_MDK_DOMAIN/ (mdk:3030, mock heater)
 #   3335    Stratum proxy, raw TCP, straight to the hashu container
 #           (3333 on the devbox is already taken by ckpool)
 # Private (compose network only, never published on the host):
@@ -86,15 +88,54 @@ services:
     networks: [backend, edge]
     restart: unless-stopped
 
+  # MDK demo (Hashrate at Home): the Hashu Heater app and a mock heater in
+  # the MDK stack, with the MDK dashboard. All mock: it uses its own demo
+  # mint (mdk-hashu) and fake pools, never the live mint or a real pool.
+  mdk:
+    build:
+      context: ..
+      dockerfile: deploy/mdk/Dockerfile
+    image: hashu/mdk:latest
+    environment:
+      MDK_DEMO_USER: ${MDK_DEMO_USER:-demo@hashu.io}
+      MDK_DEMO_PASSWORD: ${MDK_DEMO_PASSWORD:-hashu-demo-2026}
+    networks: [mdk, edge]
+    restart: unless-stopped
+
+  # The demo's own Hashu mint + proxy: fake Lightning, fixed price, upstream
+  # is the fake home pool. POST /redemptions is on so the dashboard's Redeem
+  # button works; it is reachable only from the mdk network.
+  mdk-hashu:
+    # Same image as `hashu` (built by that service, not pulled).
+    image: hashu/hashu:latest
+    pull_policy: never
+    depends_on: [hashu]
+    command:
+      - mint
+      - run
+      - --listen=0.0.0.0:8085
+      - --data-dir=/tmp/mdk-demo-mint
+      - --lightning=fake
+      - --price=fixed
+      - --sats-per-thh=40
+      - --stratum-bind=0.0.0.0:3333
+      - --upstream=mdk:3340
+      - --control-bind=0.0.0.0:3334
+      - --control-allow-open
+    networks: [mdk]
+    restart: unless-stopped
+
   caddy:
     # caddy:2 plus the Slidev deck (slides/) built at /srv/slides.
     build:
       context: ..
       dockerfile: deploy/caddy/Dockerfile
     image: hashu/caddy:latest
-    depends_on: [hashu]
+    depends_on: [hashu, mdk]
     environment:
       HASHU_DOMAIN: ${HASHU_DOMAIN}
+      # MDK dashboard demo host (needs to resolve here; sslip.io works as-is).
+      HASHU_MDK_DOMAIN: ${HASHU_MDK_DOMAIN:-mdk.216-230-225-61.sslip.io}
       # Extra names that serve the same site (needs A records on this machine).
       HASHU_EXTRA_DOMAINS: ${HASHU_EXTRA_DOMAINS-hashu.io www.hashu.io}
       OPERATOR_USER: ${OPERATOR_USER:-operator}
@@ -113,6 +154,7 @@ services:
 networks:
   backend: {}
   edge: {}
+  mdk: {}
 
 volumes:
   phoenixd_data: {}

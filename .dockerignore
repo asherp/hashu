@@ -10,3 +10,6 @@ hashu-data
 .env.*
 slides/dist
 slides/.slidev
+!deploy/mdk
+mdk/apps/dashboard
+mdk/.mdk

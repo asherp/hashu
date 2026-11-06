@@ -27,6 +27,11 @@
 		file_server
 	}
 
+	# MDK demo: the dashboard runs on its own host because the MDK shell
+	# serves from / (its /auth, /apps and /app-ui paths are absolute).
+	redir /mdk https://{$HASHU_MDK_DOMAIN}/ 302
+	redir /mdk/ https://{$HASHU_MDK_DOMAIN}/ 302
+
 	# Operator GUI (served by the control API). Password protected: its
 	# POST api/controls pauses issuance and changes the markup.
 	redir /operator /operator/
@@ -57,4 +62,12 @@
 	handle {
 		reverse_proxy hashu:8085
 	}
+}
+
+# MDK dashboard demo (Hashu Heater app on a mock heater). serve.js in the mdk
+# container serves the built dashboard and forwards /auth, /apps, ... to the
+# MDK Gateway.
+{$HASHU_MDK_DOMAIN} {
+	encode gzip
+	reverse_proxy mdk:3030
 }
