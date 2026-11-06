@@ -8,6 +8,7 @@ pub mod connection;
 pub mod header;
 pub mod listener;
 pub mod observe;
+pub mod replay;
 pub mod session;
 
 pub use connection::{proxy_connection, proxy_connection_with, proxy_routed_connection};
