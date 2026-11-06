@@ -1,7 +1,8 @@
 //! ckpool sends `set_difficulty` + `mining.notify` before answering
 //! `mining.authorize`. A rental relay (MiningRigRentals) that sends
 //! `mining.configure` first and only takes work after authorize must still
-//! get a job right after the authorize result, or it drops the session.
+//! get no work before the authorize result and a job right after it, or
+//! it drops the session.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -60,7 +61,7 @@ async fn read(br: &mut BufReader<tokio::net::tcp::OwnedReadHalf>) -> Value {
 }
 
 #[tokio::test]
-async fn job_is_resent_after_authorize_result() {
+async fn work_is_held_until_authorize_result() {
     let pool = ckpool_like().await;
     let router = Arc::new(Router::new(pool, Arc::new(RedemptionLedger::new())));
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -86,8 +87,15 @@ async fn job_is_resent_after_authorize_result() {
     }
     assert_eq!(read(&mut br).await["id"], 1); // configure
     assert_eq!(read(&mut br).await["id"], 2); // subscribe
-    assert_eq!(read(&mut br).await["method"], "mining.set_difficulty");
-    assert_eq!(read(&mut br).await["method"], "mining.notify");
+                                              // ckpool already pushed difficulty + job; the proxy holds them, so the
+                                              // miner sees no work before its authorize result.
+    let mut s = String::new();
+    assert!(
+        timeout(Duration::from_millis(300), br.read_line(&mut s))
+            .await
+            .is_err(),
+        "no work may reach the miner before authorize, got {s:?}"
+    );
 
     w.write_all(b"{\"id\":3,\"method\":\"mining.authorize\",\"params\":[\"asher.rig\",\"x\"]}\n")
         .await

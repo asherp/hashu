@@ -29,7 +29,7 @@ use super::committer::ShareCommitter;
 use super::compact::target_bits_from_difficulty;
 use super::header::{build_block_header, SubmitFields};
 use super::observe::{observe_line, Direction, PendingSubmits};
-use super::replay::JobReplay;
+use super::replay::{JobGate, PoolLine};
 use super::session::{SessionEvent, SessionState};
 use crate::credit::{ConnectionId, CreditContext, ShareEvidence};
 use crate::router::{Route, Router};
@@ -44,8 +44,9 @@ struct ConnectionState {
     /// Redemption each in-flight `mining.submit` was sent for, keyed by
     /// request id. Sampled from the binding at submit time.
     submit_bindings: HashMap<i64, Option<RedemptionId>>,
-    /// Re-sends the pre-authorize job after the authorize result.
-    replay: JobReplay,
+    /// Holds pool work until the miner's authorize result (see
+    /// [`super::replay`]).
+    gate: JobGate,
 }
 
 /// Per-connection identity and crediting hooks shared by both forward
@@ -261,30 +262,32 @@ where
         }
         observe_line(&line, direction.into(), &pending, &metrics);
         update_session(&line, direction, &state, &ctx, &metrics);
-        let replay = match state.lock() {
-            Ok(mut g) => match direction {
-                ForwardDirection::Miner2Pool => {
-                    g.replay.on_miner_line(&line);
-                    Vec::new()
+        let to_write: Vec<String> = match direction {
+            ForwardDirection::Miner2Pool => {
+                if let Ok(mut g) = state.lock() {
+                    g.gate.on_miner_line(&line);
                 }
-                ForwardDirection::Pool2Miner => g.replay.on_pool_line(&line),
-            },
-            Err(_) => Vec::new(),
-        };
-        let rewritten = match direction {
-            ForwardDirection::Miner2Pool => ctx.route.rewrite_miner_line(&line),
-            ForwardDirection::Pool2Miner => None,
-        };
-        let out = rewritten.as_deref().unwrap_or(&line);
-        writer.write_all(out.as_bytes()).await?;
-        if !replay.is_empty() {
-            tracing::info!(
-                conn = %ctx.conn,
-                "authorized; re-sending current difficulty and job (pool sent them before the authorize result)",
-            );
-            for l in &replay {
-                writer.write_all(l.as_bytes()).await?;
+                vec![ctx
+                    .route
+                    .rewrite_miner_line(&line)
+                    .unwrap_or_else(|| line.clone())]
             }
+            ForwardDirection::Pool2Miner => {
+                let decision = match state.lock() {
+                    Ok(mut g) => g.gate.on_pool_line(&line),
+                    Err(_) => PoolLine::Write(vec![line.clone()]),
+                };
+                match decision {
+                    PoolLine::Write(lines) => lines,
+                    PoolLine::Held => {
+                        tracing::debug!(conn = %ctx.conn, "holding pool message until authorize result");
+                        Vec::new()
+                    }
+                }
+            }
+        };
+        for l in &to_write {
+            writer.write_all(l.as_bytes()).await?;
         }
         writer.flush().await?;
     }
