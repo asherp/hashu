@@ -74,6 +74,23 @@ Start Caddy only after that: Let's Encrypt checks the name over port 80,
 and repeated failures hit its rate limit. If Squarespace says the domain
 uses external nameservers, add the same A record at that DNS provider instead.
 
+**hashu.io and www.hashu.io (slides at https://hashu.io/slides/).** Caddy
+also answers for `$HASHU_EXTRA_DOMAINS` (default `hashu.io www.hashu.io`),
+serving the same site. To point them here, in the same DNS settings:
+
+- Delete the Squarespace defaults for the apex and `www` (the `@` A records
+  to 198.185.159.x / 198.49.23.x and the `www` CNAME to `ext-cust.squarespace.com`).
+  Squarespace may first ask you to disconnect the domain from a Squarespace site.
+- Add Host `@`, Type `A`, Data `216.230.225.61`.
+- Add Host `www`, Type `A`, Data `216.230.225.61` (or a CNAME to `mint.hashu.io`).
+
+Until those resolve, Caddy simply keeps retrying their certificates and
+`https://mint.hashu.io/slides/` works. To stop it trying, set
+`HASHU_EXTRA_DOMAINS=` (empty) in `.env`.
+
+The deck is built from `slides/` into the caddy image (`deploy/caddy/Dockerfile`),
+so `docker compose up -d --build` republishes it.
+
 ## 2. Configure
 
 ```bash
