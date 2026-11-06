@@ -47,6 +47,16 @@ button.act:disabled { opacity: 0.5; cursor: default; }
 .price { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
 .price b { font-size: 26px; font-variant-numeric: tabular-nums; }
 .note { color: var(--ink-3); font-size: 13px; margin: 0; }
+.tok { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-radius: 10px; background: var(--good-bg); border: 1px solid var(--good); }
+.tok .amt { font-size: 26px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.tok .amt small { font-size: 15px; font-weight: 600; color: var(--ink-2); }
+.tok .sub { font-size: 13px; color: var(--ink-2); }
+.tok button { border: 0; background: none; color: var(--ink-2); text-decoration: underline; cursor: pointer; font: inherit; font-size: 13px; padding: 4px; white-space: nowrap; }
+.tok-msg { font-size: 13px; margin: 0; }
+.tok-msg.bad { color: var(--bad); }
+.tok-msg.busy { color: var(--ink-3); }
+textarea.bad { border-color: var(--bad); }
+button.act:disabled { opacity: 0.45; cursor: not-allowed; }
 .qr { align-self: center; background: #fff; padding: 8px; border-radius: 10px; line-height: 0; }
 .qr svg { width: 240px; height: 240px; display: block; }
 .qr[hidden] { display: none; }
@@ -121,10 +131,17 @@ button.act:disabled { opacity: 0.5; cursor: default; }
   <!-- 4. redeem -->
   <section class="card" id="s-redeem">
     <h2>Redeem THH as hashrate</h2>
-    <label class="f">Cashu token
-      <textarea id="r-token" placeholder="cashuB…"></textarea>
-    </label>
-    <div class="row"><button class="act" type="button" id="btn-scan">Scan token QR</button><span class="note">From Cashu.me's send screen, or any Cashu wallet.</span></div>
+    <div class="tok" id="r-token-card" hidden>
+      <div><div class="amt" id="r-token-amt"></div><div class="sub" id="r-token-sub"></div></div>
+      <button type="button" id="btn-change-token">Change token</button>
+    </div>
+    <div id="r-token-entry" style="display:flex;flex-direction:column;gap:8px">
+      <label class="f">Cashu token
+        <textarea id="r-token" placeholder="cashuB…"></textarea>
+      </label>
+      <p class="tok-msg" id="r-token-msg" hidden></p>
+      <div class="row"><button class="act" type="button" id="btn-scan">Scan token QR</button><span class="note">From Cashu.me's send screen, or any Cashu wallet.</span></div>
+    </div>
     <label class="f">Your pool
       <input type="text" id="r-pool" placeholder="stratum+tcp://pool.example:3333">
     </label>
@@ -295,6 +312,7 @@ function showToken () {
   $('token').value = c.token
   $('token-amt').textContent = `${c.amount_thh} THH`
   $('r-token').value = c.token
+  checkToken()
   playQr($('token-qr'), $('token-qr-note'), c.token_qr)
   step('token')
   $('s-token').scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -306,7 +324,7 @@ $('btn-goto-redeem').addEventListener('click', () => { step('redeem'); $('s-rede
 // Reads a token from a QR code (plain or animated) with the camera. The
 // scanner script is bundled with the mint and loaded on first use.
 function scanToken (into) {
-  const go = () => window.HashuScan.openScanner({ onToken: (t) => { into.value = t; alertMsg('') } })
+  const go = () => window.HashuScan.openScanner({ onToken: (t) => { into.value = t; alertMsg(''); into.dispatchEvent(new Event('input')) } })
   if (window.HashuScan) return go()
   const s = document.createElement('script')
   s.src = 'scan.js'
@@ -315,6 +333,63 @@ function scanToken (into) {
   document.head.appendChild(s)
 }
 $('btn-scan').addEventListener('click', () => scanToken($('r-token')))
+
+// Checks the pasted token with the mint (nothing is spent). A valid one
+// replaces the box with its amount; an invalid one keeps the box and says
+// why, and Redeem stays off until there is something to redeem.
+let tokSeq = 0
+let tokTimer = null
+function tokMsg (text, cls) {
+  const m = $('r-token-msg')
+  m.textContent = text || ''
+  m.className = `tok-msg ${cls || ''}`
+  m.hidden = !text
+  $('r-token').classList.toggle('bad', cls === 'bad')
+}
+function showTokenCard (on) {
+  $('r-token-card').hidden = !on
+  $('r-token-entry').style.display = on ? 'none' : 'flex'
+}
+async function checkToken () {
+  clearTimeout(tokTimer)
+  const seq = ++tokSeq
+  const text = $('r-token').value.trim()
+  st.tokenOk = false
+  $('btn-redeem').disabled = true
+  showTokenCard(false)
+  if (!text) { tokMsg(''); return }
+  tokMsg('Checking token with the mint…', 'busy')
+  try {
+    const r = await post('api/token', { token: text })
+    if (seq !== tokSeq) return
+    if (!r.redeemable) {
+      tokMsg(`This token holds ${r.amount_thh} THH, but the minimum redemption is ${r.min_redeem_thh} THH.`, 'bad')
+      return
+    }
+    $('r-token-amt').innerHTML = `${r.amount_thh} <small>THH ready to redeem</small>`
+    $('r-token-sub').textContent = r.spent_thh > 0
+      ? `${r.spent_thh} of the token's ${r.total_thh} THH is already spent; the rest redeems.`
+      : (etaText(r.amount_thh) || 'Checked with the mint.')
+    tokMsg('')
+    showTokenCard(true)
+    st.tokenOk = true
+    $('btn-redeem').disabled = false
+  } catch (e) {
+    if (seq !== tokSeq) return
+    tokMsg(e.message, 'bad')
+  }
+}
+$('r-token').addEventListener('input', () => { clearTimeout(tokTimer); tokTimer = setTimeout(checkToken, 350) })
+$('btn-change-token').addEventListener('click', () => {
+  tokSeq++
+  st.tokenOk = false
+  $('btn-redeem').disabled = true
+  $('r-token').value = ''
+  tokMsg('')
+  showTokenCard(false)
+  $('r-token').focus()
+})
+$('btn-redeem').disabled = true
 $('btn-redeem').addEventListener('click', async () => {
   $('btn-redeem').disabled = true
   try {
@@ -324,7 +399,13 @@ $('btn-redeem').addEventListener('click', async () => {
     history.replaceState(null, '', `#redemption=${r.redemption_id}`)
     step('redeem')
     pollRedemption()
-  } catch (e) { if (e.body && e.body.refund_token) $('r-token').value = e.body.refund_token; alertMsg(e.message) } finally { $('btn-redeem').disabled = false }
+    st.tokenOk = false
+    $('r-token-sub').textContent = 'Redemption opened: progress below.'
+  } catch (e) {
+    if (e.body && e.body.refund_token) $('r-token').value = e.body.refund_token
+    alertMsg(e.message)
+    checkToken()
+  } finally { $('btn-redeem').disabled = !st.tokenOk }
 })
 
 // ---- 5. progress --------------------------------------------------------

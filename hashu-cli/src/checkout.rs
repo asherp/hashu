@@ -33,7 +33,7 @@ use axum::Json;
 use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::KnownMethod;
-use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, Token};
+use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, State as ProofSpentState, Token};
 use cdk::wallet::{KeysetFilter, MeltOutcome, ReceiveOptions, Wallet};
 use cdk::Amount;
 use hashu_core::redemption::{RedemptionId, RedemptionLedger, RedemptionState, HASHES_PER_THH};
@@ -255,6 +255,7 @@ pub fn router(state: Arc<CheckoutState>) -> axum::Router {
         .route("/checkout/api/info", get(info))
         .route("/checkout/api/buy", post(buy))
         .route("/checkout/api/buy/{id}", get(buy_status))
+        .route("/checkout/api/token", post(check_token))
         .route("/checkout/api/redeem", post(redeem))
         .route("/checkout/api/redemption/{id}", get(redemption))
         .with_state(state)
@@ -569,37 +570,27 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
     if worker.is_empty() {
         return err(StatusCode::BAD_REQUEST, "worker name is required");
     }
-    let Some(token) = extract_token(raw_token) else {
-        return err(
-            StatusCode::BAD_REQUEST,
-            "no Cashu token found: paste the cashuB… text from your wallet",
-        );
+    let wallet = match fresh_wallet(&s.internal_url).await {
+        Ok(w) => w,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
     };
-    let token = match Token::from_str(&token) {
-        Ok(t) => t,
-        Err(e) => return err(StatusCode::BAD_REQUEST, format!("not a Cashu token: {e}")),
-    };
-    if !token.unit().as_ref().is_some_and(is_thh) {
-        return err(StatusCode::BAD_REQUEST, "token is not THH");
-    }
     // Refuse a token we can't redeem before taking it: once its proofs are
     // received they belong to a throwaway wallet, so a later refusal would
     // lose the buyer's THH.
-    let amount = match token.value() {
-        Ok(a) => u64::from(a),
-        Err(e) => return err(StatusCode::BAD_REQUEST, format!("not a Cashu token: {e}")),
+    let checked = match inspect_token(&wallet, raw_token).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
     };
+    let amount = checked.unspent_thh;
+    if amount == 0 {
+        return TokenProblem::new(TokenIssue::Spent).into_response();
+    }
     if amount < s.min_redeem_thh {
         return err(
             StatusCode::BAD_REQUEST,
             format!("redeem at least {} THH", s.min_redeem_thh),
         );
     }
-
-    let wallet = match fresh_wallet(&s.internal_url).await {
-        Ok(w) => w,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
-    };
 
     let mut request = json!({
         "pool_url": pool_url,
@@ -627,17 +618,9 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
         Err(e) => return err(StatusCode::BAD_GATEWAY, format!("redeem quote failed: {e}")),
     };
 
-    // The token names the mint's public URL; take its proofs and receive
-    // them over loopback. Short keyset ids resolve against every keyset,
-    // not just the active ones, so a token from before a rotation works.
-    let keysets = match wallet.get_mint_keysets(KeysetFilter::All).await {
-        Ok(k) => k,
-        Err(e) => return err(StatusCode::BAD_GATEWAY, e),
-    };
-    let proofs = match token.proofs(&keysets) {
-        Ok(p) => p,
-        Err(_) => return err(StatusCode::BAD_REQUEST, "token is not from this mint"),
-    };
+    // Receive only the proofs the mint still counts as unspent, so a
+    // partly spent token redeems what is left of it.
+    let proofs = checked.unspent;
     let received = match wallet
         .receive_proofs(proofs, ReceiveOptions::default(), None, None)
         .await
@@ -673,6 +656,155 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
     }
     tracing::info!(redemption = %rid, amount_thh = amount, %pool_url, "checkout redemption opened");
     Json(json!({ "redemption_id": rid.to_string(), "amount_thh": amount })).into_response()
+}
+
+/// Why a pasted token can't be redeemed. `code` is stable for the page;
+/// `message` is shown to the person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TokenIssue {
+    Empty,
+    NotToken,
+    NotThh,
+    WrongMint,
+    Spent,
+    Pending,
+}
+
+impl TokenIssue {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::NotToken => "not_token",
+            Self::NotThh => "not_thh",
+            Self::WrongMint => "wrong_mint",
+            Self::Spent => "spent",
+            Self::Pending => "pending",
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Empty => "Paste or scan a Cashu token.",
+            Self::NotToken => "That isn't a Cashu token. Copy the cashuB… text from your wallet's send screen.",
+            Self::NotThh => "This token isn't THH, so it can't be redeemed for hashrate here.",
+            Self::WrongMint => "This token is from a different mint.",
+            Self::Spent => "This token is already spent. If your wallet claimed it, send a fresh token from the wallet.",
+            Self::Pending => "This token is in the middle of another redemption. Try again in a moment.",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct TokenProblem {
+    issue: TokenIssue,
+    detail: Option<String>,
+}
+
+impl TokenProblem {
+    fn new(issue: TokenIssue) -> Self {
+        Self { issue, detail: None }
+    }
+}
+
+impl IntoResponse for TokenProblem {
+    fn into_response(self) -> Response {
+        let error = match &self.detail {
+            Some(d) => format!("{} ({d})", self.issue.message()),
+            None => self.issue.message().to_string(),
+        };
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": error, "code": self.issue.code() })),
+        )
+            .into_response()
+    }
+}
+
+/// A token checked against the mint without spending it.
+pub(crate) struct CheckedToken {
+    pub total_thh: u64,
+    pub unspent_thh: u64,
+    pub unspent: cdk::nuts::Proofs,
+    pub memo: Option<String>,
+}
+
+/// Parse a pasted token and ask the mint (NUT-07) which of its proofs are
+/// still unspent. Nothing is spent. Errors other than a bad token (the mint
+/// unreachable) come back as `Err` with a 502.
+pub(crate) async fn inspect_token(wallet: &Wallet, raw: &str) -> Result<CheckedToken, Response> {
+    let problem = |i| Err(TokenProblem::new(i).into_response());
+    if raw.trim().is_empty() {
+        return problem(TokenIssue::Empty);
+    }
+    let Some(text) = extract_token(raw) else {
+        return problem(TokenIssue::NotToken);
+    };
+    let token = match Token::from_str(&text) {
+        Ok(t) => t,
+        Err(_) => return problem(TokenIssue::NotToken),
+    };
+    if !token.unit().as_ref().is_some_and(is_thh) {
+        return problem(TokenIssue::NotThh);
+    }
+    // The token names the mint's public URL; resolve its proofs against our
+    // keysets over loopback. Every keyset, not just the active ones, so a
+    // token from before a rotation works.
+    let keysets = wallet
+        .get_mint_keysets(KeysetFilter::All)
+        .await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
+    let Ok(proofs) = token.proofs(&keysets) else {
+        return problem(TokenIssue::WrongMint);
+    };
+    let states = wallet
+        .check_proofs_spent(proofs.clone())
+        .await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("mint check failed: {e}")))?;
+    let total_thh: u64 = proofs.iter().map(|p| u64::from(p.amount)).sum();
+    let mut pending = false;
+    let unspent: cdk::nuts::Proofs = proofs
+        .into_iter()
+        .zip(states)
+        .filter(|(_, st)| {
+            pending |= matches!(st.state, ProofSpentState::Pending);
+            matches!(st.state, ProofSpentState::Unspent)
+        })
+        .map(|(p, _)| p)
+        .collect();
+    let unspent_thh = unspent.iter().map(|p| u64::from(p.amount)).sum();
+    if unspent_thh == 0 {
+        return problem(if pending { TokenIssue::Pending } else { TokenIssue::Spent });
+    }
+    Ok(CheckedToken {
+        total_thh,
+        unspent_thh,
+        unspent,
+        memo: token.memo().clone(),
+    })
+}
+
+/// `POST /checkout/api/token` `{ token }`: what a pasted token is worth
+/// here, checked with the mint but not spent.
+pub(crate) async fn check_token(State(s): State<Arc<CheckoutState>>, body: Bytes) -> Response {
+    let v: Value = serde_json::from_slice(&body).unwrap_or_default();
+    let wallet = match fresh_wallet(&s.internal_url).await {
+        Ok(w) => w,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let c = match inspect_token(&wallet, v["token"].as_str().unwrap_or_default()).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let below_min = c.unspent_thh < s.min_redeem_thh;
+    Json(json!({
+        "amount_thh": c.unspent_thh,
+        "total_thh": c.total_thh,
+        "spent_thh": c.total_thh - c.unspent_thh,
+        "memo": c.memo,
+        "min_redeem_thh": s.min_redeem_thh,
+        "redeemable": !below_min,
+    }))
+    .into_response()
 }
 
 /// Pull a Cashu token out of whatever was pasted or scanned: a bare
