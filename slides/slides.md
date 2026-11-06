@@ -1,6 +1,6 @@
 ---
 theme: default
-title: Hashu — ecash for computation, not money
+title: Hashu — Layer-0 privacy through hashrate ecash
 info: |
   Hashu: a hashrate proxy fused with a Cashu (CDK) mint.
   Six-slide overview of the live mainnet demo at mint.hashu.io.
@@ -13,40 +13,42 @@ mdc: true
 
 # Hashu
 
-### An ecash mint that sells computation, not money
+### Layer-0 privacy: swap any payment for freshly mined coins
 
 <div class="mt-6 grid grid-cols-2 gap-10 text-left text-sm">
 <div>
 
 **The problem**
 
-- A Cashu mint holds bitcoin and issues IOUs redeemable for bitcoin
-- Accepting value and paying it back out to someone else looks like **money transmission**
-- So operators face licensing and KYC risk, or stay small and hidden
+- Exchange data leaks tie bitcoin holders to names and addresses, which makes them **targets**
+- Every coin you buy carries its **history**, and KYC'd coins carry your identity
+- Cashu mints that hold and pay out bitcoin operate as **money service businesses**, which exposes their operators to jurisdictional risk
 
 </div>
 <div>
 
 **Hashu's answer**
 
-- Hashu tokens (**THH**) are backed **only by miners' hashrate**, not by bitcoin
-- **1 THH = 1 TH/s × 3,600 s** of hashing pointed where the holder chooses
-- Redeeming a token returns **work**, never coins
-- Running a Hashu mint means **selling computation**, not custodying or sending bitcoin
-- **Hashrate at Home:** a home heater can sell its hashrate as THH (Tether MDK)
+- **Mining is Layer-0 privacy**: a freshly mined coin has no history at all
+- Miners run a self-hosted proxy that mints **hashrate-backed Cashu tokens (THH)**, 1 THH = 1 TH/s × 1 h
+- Pay with **USDT or Lightning**, even with KYC'd sats. Redeem THH and the hashrate is pointed at **your** pool, which pays you freshly mined coins
+- No exchange, and the mint never touches your bitcoin: it **sells computation**, not money
 
 </div>
 </div>
 
-<div class="abs-bl m-6 text-sm opacity-60">hashu.io · built on CDK · Rust · MIT / Apache-2.0</div>
+<div class="abs-bl m-6 text-sm opacity-60">hashu.io · built on the Cashu Development Kit and Tether's Mining Development Kit</div>
 
 <!--
-Framing: most Cashu mints custody BTC and pay it out on request, which is the
-shape regulators call money transmission. Hashu changes what backs the token.
-A THH token is a claim on hashing work from the operator's miners. The operator
-never holds or sends the holder's bitcoin; it sells time on its machines, like
-a cloud provider sells CPU-hours.
-(This is our positioning, not a legal opinion.)
+Privacy first: coins bought on an exchange carry a KYC trail, and exchange data
+leaks have turned that trail into a physical-security problem for holders.
+Mining is the one way to get bitcoin with no prior history ("Layer 0").
+Hashu lets anyone get there: pay any way you like (USDT, Lightning, even KYC'd
+sats), receive THH ecash (blind-signed, so the mint cannot link buyer to redeemer),
+and redeem it as hashrate pointed at your own pool. The pool pays you new coins.
+The mint only ever sells hashing time, so it is not custodying or transmitting
+bitcoin. (Our positioning, not a legal opinion. Your pool account is still your
+pool's business: pick one whose payout policy fits your privacy needs.)
 -->
 
 ---
