@@ -68,6 +68,9 @@ button.act:disabled { opacity: 0.5; cursor: default; }
 .chart .target-label { fill: var(--ink-2); font-size: 11px; }
 .chart .cross { stroke: var(--ink-3); }
 .chart .dot { fill: var(--brand); stroke: var(--surface); stroke-width: 2; }
+.chart .proj { fill: none; stroke: var(--brand); stroke-width: 1.5; stroke-dasharray: 3 4; opacity: 0.8; }
+.chart .eta-dot { fill: var(--surface); stroke: var(--brand); stroke-width: 2; }
+.chart .eta-label { fill: var(--ink); font-size: 11.5px; font-weight: 600; }
 .chart .empty { fill: var(--ink-3); font-size: 13px; }
 .tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--bg); border-radius: 6px; padding: 6px 8px; font-size: 12px; white-space: nowrap; transform: translate(-50%, -110%); display: none; }
 [hidden] { display: none !important; }
@@ -335,7 +338,11 @@ function niceTicks (max, n) {
   if (t[t.length - 1] < max) t.push(t[t.length - 1] + s)
   return t
 }
-function drawChart (el, pts, x0, x1, target) {
+// pj: optional projected finish { t, v, label }, drawn as a dashed line.
+function drawChart (el, pts, x0, x1, target, pj) {
+  // Widen the time axis to the ETA unless that would squash the real curve.
+  const far = pj && pj.t - x0 > 4 * Math.max(x1 - x0, 60000)
+  if (pj && !far) x1 = Math.max(x1, pj.t + (pj.t - x0) * 0.04)
   const W = Math.max(280, el.clientWidth), H = el.clientHeight, m = { l: 58, r: 12, t: 12, b: 24 }
   let svg = el.querySelector('svg'), tip = el.querySelector('.tip')
   if (!svg) {
@@ -354,7 +361,14 @@ function drawChart (el, pts, x0, x1, target) {
   s += '</g>'
   const line = pts.map((p, i) => `${i ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join('')
   s += `<path class="area" d="${line}L${X(pts[pts.length - 1][0])},${Y(0)}L${X(pts[0][0])},${Y(0)}Z"/>`
-  s += `<line class="target" x1="${m.l}" x2="${W - m.r}" y1="${Y(target)}" y2="${Y(target)}"/><text class="target-label" x="${W - m.r}" y="${Y(target) - 6}" text-anchor="end">${target} THH</text>`
+  s += `<line class="target" x1="${m.l}" x2="${W - m.r}" y1="${Y(target)}" y2="${Y(target)}"/><text class="target-label" x="${pj ? m.l + 6 : W - m.r}" y="${Y(target) - 6}" text-anchor="${pj ? 'start' : 'end'}">${target} THH</text>`
+  const lp = pts[pts.length - 1]
+  if (pj && pj.t > lp[0]) {
+    const tEnd = far ? x1 : pj.t, vEnd = lp[1] + (pj.v - lp[1]) * (tEnd - lp[0]) / (pj.t - lp[0]), ex = X(tEnd), ey = Y(vEnd)
+    s += `<path class="proj" d="M${X(lp[0]).toFixed(1)},${Y(lp[1]).toFixed(1)}L${ex.toFixed(1)},${ey.toFixed(1)}"/>`
+    if (!far) s += `<circle class="eta-dot" r="4" cx="${ex}" cy="${ey}"/>`
+    s += `<text class="eta-label" x="${Math.min(ex, W - m.r)}" y="${Math.max(m.t + 11, ey - 12)}" text-anchor="${ex > W - m.r - 110 ? 'end' : ex < m.l + 110 ? 'start' : 'middle'}">${esc(pj.label)}</text>`
+  }
   s += `<path class="series" d="${line}"/><circle class="dot" r="4" cx="${X(pts[pts.length - 1][0])}" cy="${Y(pts[pts.length - 1][1])}"/>`
   s += `<g class="hover" style="display:none"><line class="cross" y1="${m.t}" y2="${H - m.b}"/><circle class="dot" r="5"/></g><rect x="${m.l}" y="${m.t}" width="${W - m.l - m.r}" height="${H - m.t - m.b}" fill="transparent"/>`
   svg.innerHTML = s
@@ -386,7 +400,13 @@ async function pollRedemption () {
       const rate = end > base[0] ? (last[1] - base[1]) * 1000 / (end - base[0]) : 0
       const remaining = (r.amount_thh - r.filled_thh) * HASHES_PER_THH
       $('p-rate').textContent = r.state === 'completed' ? `done in ${fmtDur((t.completed_ms - t.opened_ms) / 1000)}` : `${fmtRate(rate)}${rate > 0 ? ` · about ${fmtDur(remaining / rate)} left` : ''}`
-      drawChart($('c-red'), pts, t.opened_ms, Math.max(end, t.opened_ms + 60000), r.amount_thh)
+      let pj = null
+      if (r.state !== 'completed' && rate > 0 && remaining > 0) {
+        const secs = remaining / rate, eta = end + secs * 1000
+        const clock = new Date(eta).toLocaleTimeString([], secs > 86400 ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' } : { hour: '2-digit', minute: '2-digit' })
+        pj = { t: eta, v: r.amount_thh, label: `ETA ${clock} · ~${fmtDur(secs)} left` }
+      }
+      drawChart($('c-red'), pts, t.opened_ms, Math.max(end, t.opened_ms + 60000), r.amount_thh, pj)
     }
     if (r.state === 'completed') return
   } catch (e) { alertMsg(e.message) }

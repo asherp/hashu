@@ -56,6 +56,9 @@ h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacin
 .chart .cross { stroke: var(--ink-3); stroke-width: 1; }
 .chart .dot { fill: var(--brand); stroke: var(--surface); stroke-width: 2; }
 .chart .empty { fill: var(--ink-3); font-size: 13px; }
+.chart .proj { fill: none; stroke: var(--brand); stroke-width: 1.5; stroke-dasharray: 3 4; opacity: 0.8; }
+.chart .eta-dot { fill: var(--surface); stroke: var(--brand); stroke-width: 2; }
+.chart .eta-label { fill: var(--ink); font-size: 11.5px; font-weight: 600; }
 .tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--bg); border-radius: 6px; padding: 6px 8px; font-size: 12px; white-space: nowrap; transform: translate(-50%, -110%); display: none; font-variant-numeric: tabular-nums; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .seg button { border: 0; background: transparent; color: var(--ink-2); padding: 4px 10px; cursor: pointer; font: inherit; font-size: 12px; }
@@ -298,7 +301,13 @@ function drawChart (el, cfg) {
     svg.onmousemove = null
     return
   }
-  const x0 = cfg.xMin, x1 = Math.max(cfg.xMax, x0 + 1)
+  const x0 = cfg.xMin
+  // A projection (the redemption ETA) widens the time axis to reach it,
+  // unless it is so far out that the real curve would shrink to a sliver;
+  // then the dashed line runs to the right edge and the label says when.
+  const pj = cfg.projection
+  const far = pj && pj.t - x0 > 4 * Math.max(cfg.xMax - x0, 60000)
+  const x1 = Math.max(cfg.xMax, x0 + 1, pj && !far ? pj.t + (pj.t - x0) * 0.04 : 0)
   const yMax = Math.max(cfg.yFloor || 0, cfg.target || 0, ...pts.map((p) => p[1])) * 1.05
   const ticks = niceTicks(yMax, 4), y1 = ticks[ticks.length - 1]
   const X = (t) => m.l + ((t - x0) / (x1 - x0)) * (W - m.l - m.r)
@@ -313,9 +322,18 @@ function drawChart (el, cfg) {
   s += '</g>'
   const line = pts.map((p, i) => `${i ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join('')
   s += `<path class="area" d="${line}L${X(pts[pts.length - 1][0]).toFixed(1)},${Y(0)}L${X(pts[0][0]).toFixed(1)},${Y(0)}Z"/>`
-  if (cfg.target) s += `<line class="target" x1="${m.l}" x2="${W - m.r}" y1="${Y(cfg.target)}" y2="${Y(cfg.target)}"/><text class="target-label" x="${W - m.r}" y="${Y(cfg.target) - 6}" text-anchor="end">${esc(cfg.targetLabel)}</text>`
-  s += `<path class="series" d="${line}"/>`
+  if (cfg.target) s += `<line class="target" x1="${m.l}" x2="${W - m.r}" y1="${Y(cfg.target)}" y2="${Y(cfg.target)}"/><text class="target-label" x="${pj ? m.l + 6 : W - m.r}" y="${Y(cfg.target) - 6}" text-anchor="${pj ? 'start' : 'end'}">${esc(cfg.targetLabel)}</text>`
   const last = pts[pts.length - 1]
+  if (pj && pj.t > last[0]) {
+    const tEnd = far ? x1 : pj.t
+    const vEnd = last[1] + (pj.v - last[1]) * (tEnd - last[0]) / (pj.t - last[0])
+    const ex = X(tEnd), ey = Y(vEnd)
+    s += `<path class="proj" d="M${X(last[0]).toFixed(1)},${Y(last[1]).toFixed(1)}L${ex.toFixed(1)},${ey.toFixed(1)}"/>`
+    if (!far) s += `<circle class="eta-dot" r="4" cx="${ex}" cy="${ey}"/>`
+    const anchor = ex > W - m.r - 120 ? 'end' : ex < m.l + 120 ? 'start' : 'middle'
+    s += `<text class="eta-label" x="${Math.min(ex, W - m.r)}" y="${Math.max(m.t + 11, ey - 12)}" text-anchor="${anchor}">${esc(pj.label)}</text>`
+  }
+  s += `<path class="series" d="${line}"/>`
   s += `<circle class="dot" r="4" cx="${X(last[0])}" cy="${Y(last[1])}"/>`
   s += '<g class="hover" style="display:none"><line class="cross" y1="' + m.t + '" y2="' + (H - m.b) + '"/><circle class="dot" r="5"/></g>'
   s += `<rect x="${m.l}" y="${m.t}" width="${W - m.l - m.r}" height="${H - m.t - m.b}" fill="transparent"/>`
@@ -375,14 +393,29 @@ function drawRedemption () {
   const end = t.completed_ms || (state.op ? state.op.now_ms : Date.now())
   const pts = t.points.map((p) => [p[0], p[1] / HASHES_PER_THH])
   if (!t.completed_ms && pts.length) pts.push([end, pts[pts.length - 1][1]])
+  // Projected finish at the rate of the last minute.
+  const rate = trackRate(t)
+  const done = pts.length ? pts[pts.length - 1][1] : 0
+  const projection = !t.completed_ms && rate > 0 && done < t.amount_thh
+    ? etaProjection(end, done, t.amount_thh, rate)
+    : null
   drawChart($('c-red'), {
-    points: pts, xMin: t.opened_ms, xMax: Math.max(end, t.opened_ms + 60000),
+    points: pts, xMin: t.opened_ms, xMax: Math.max(end, t.opened_ms + 60000), projection,
     target: t.amount_thh, targetLabel: `target ${fmtThh(t.amount_thh, 0)} THH`,
     empty: 'Waiting for shares…',
     yFmt: (v) => `${fmtThh(v, v < 10 ? 2 : 0)} THH`,
     xFmt: (ms) => `+${fmtDur((ms - t.opened_ms) / 1000)}`,
     tip: (p) => `<b>${fmtThh(p[1])} THH</b> of ${fmtThh(t.amount_thh, 0)} · +${fmtDur((p[0] - t.opened_ms) / 1000)}`
   })
+}
+
+// Where the THH curve reaches the target at `rate` H/s: a point and a label
+// like "ETA 14:32 · ~5m left".
+function etaProjection (nowMs, doneThh, targetThh, rate) {
+  const secs = ((targetThh - doneThh) * HASHES_PER_THH) / rate
+  const t = nowMs + secs * 1000
+  const clock = new Date(t).toLocaleTimeString([], secs > 86400 ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' } : { hour: '2-digit', minute: '2-digit' })
+  return { t, v: targetThh, label: `ETA ${clock} · ~${fmtDur(secs)} left` }
 }
 
 // Rate into one redemption over its last minute of points.
