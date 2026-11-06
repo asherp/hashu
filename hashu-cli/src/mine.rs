@@ -106,7 +106,8 @@ pub async fn run(args: MineArgs) -> Result<()> {
     // Subscribe (id=1) + Authorize (id=2). The reader task will populate
     // state when responses come back; we wait briefly for extranonce1.
     tx.send(
-        json!({"id": 1, "method": "mining.subscribe", "params": ["hashu-mine/0.1"]}).to_string(),
+        json!({"id": 1, "method": "mining.subscribe", "params": ["hashu-mine/0.1"]})
+            .to_string(),
     )
     .await
     .map_err(|e| anyhow!("send subscribe: {e}"))?;
@@ -247,7 +248,8 @@ async fn handle_pool_message(v: &Value, state: &Mutex<MinerState>, metrics: &Min
                     }
                 }
                 _ => {
-                    let accepted = matches!(v.get("result").and_then(|r| r.as_bool()), Some(true));
+                    let accepted =
+                        matches!(v.get("result").and_then(|r| r.as_bool()), Some(true));
                     if accepted {
                         metrics.shares_accepted.fetch_add(1, Ordering::Relaxed);
                         tracing::info!(id, "share accepted by pool");
@@ -271,10 +273,7 @@ async fn absorb_subscribe(v: &Value, state: &Mutex<MinerState>) {
         }
     };
     if result.len() != 3 {
-        tracing::warn!(
-            len = result.len(),
-            "subscribe response result has unexpected length"
-        );
+        tracing::warn!(len = result.len(), "subscribe response result has unexpected length");
         return;
     }
     let en1 = match result[1].as_str().and_then(|s| hex::decode(s).ok()) {
