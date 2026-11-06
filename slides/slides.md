@@ -3,7 +3,7 @@ theme: default
 title: Hashu — ecash for computation, not money
 info: |
   Hashu: a hashrate proxy fused with a Cashu (CDK) mint.
-  Five-slide overview of the Testnet4 prototype.
+  Six-slide overview of the live mainnet demo at mint.hashu.io.
 class: text-left
 drawings:
   persist: false
@@ -51,7 +51,7 @@ a cloud provider sells CPU-hours.
 
 ---
 
-# Dollars → hashrate → bitcoin, no exchange
+# Pay → hashrate → bitcoin, no exchange
 
 ```mermaid {scale: 0.55}
 %%{init: {'sequence': {'mirrorActors': false, 'messageMargin': 22}}}%%
@@ -60,12 +60,12 @@ sequenceDiagram
   participant M as Hashu mint (CDK, unit THH)
   participant P as Stratum proxy
   participant L as Buyer's pool
-  B->>M: pay in Tether (USDT) or Lightning
-  M-->>B: blinded THH ecash, priced by hashprice oracle
-  Note over B: hold or transfer like any Cashu token
-  B->>M: redeem THH {pool_url, worker}
-  M->>P: schedule redemption
-  P->>L: redirect miners' hashrate to the buyer's pool
+  B->>M: pay with Lightning (or USDT)
+  M-->>B: blinded THH ecash, priced at the MiningRigRentals market
+  Note over B: hold in Cashu.me, pass on as a QR code
+  B->>M: redeem THH {pool, worker, password}
+  M->>P: queue redemption (first come, first served)
+  P->>L: redirect rented hashrate to the buyer's pool
   L-->>B: pool pays the buyer newly mined BTC
   P-->>M: accepted shares credited + Merkle-committed
 ```
@@ -73,13 +73,12 @@ sequenceDiagram
 <div class="grid grid-cols-3 gap-6 text-xs mt-1">
 <div>
 
-**In: dollars** · pay with USDT; price locks in today's hashprice:
-`N · hashprice · 1h + fee`
+**In: sats or dollars** · mainnet Lightning via phoenixd, tested live. The USDT rail is built but not yet tested live
 
 </div>
 <div>
 
-**Middle: computation** · THH is a bearer claim on hashing work, private by Cashu's blind signatures
+**Middle: computation** · THH is a bearer Cashu token for hashing work, private by blind signatures. Sales are capped at rented capacity
 
 </div>
 <div>
@@ -93,8 +92,10 @@ sequenceDiagram
 The on-ramp without an exchange: USD stablecoin in, hashrate out, and the
 bitcoin comes from mining, paid by the buyer's chosen pool. Hashu never
 custodies or transmits the mined sats; it only routes Stratum traffic.
+Live: Lightning buys on mainnet (small buys held as phoenixd fee credit; the
+mint absorbs the LSP fee). USDT code exists but has not been run live.
 Each accepted share is credited to the redemption and committed to a
-per-connection RFC 6962 Merkle tree (nostr receipts are next).
+per-redemption RFC 6962 Merkle tree (signed nostr receipts are roadmap).
 -->
 
 ---
@@ -142,8 +143,10 @@ Completion is broadcast once: the router sends hashrate back to the default pool
 
 **Proof of work routed**
 
-- Each accepted share is rebuilt into its 80-byte block header and appended to a per-connection **RFC 6962 Merkle tree**
-- Root and leaf count are logged today; next, publish them as signed nostr receipts the holder checks against their pool
+- Each accepted share is rebuilt into its 80-byte block header and appended to a per-redemption **RFC 6962 Merkle tree**
+- The audit API serves the root and an inclusion proof per share: `/redemptions/{id}/root`, `/proof/{n}`
+- Redemptions persist across restarts (journaled ledger + share trees)
+- Roadmap: publish roots as signed nostr receipts
 
 </div>
 </div>
@@ -208,61 +211,80 @@ thermostat with hysteresis plus a ceiling; manual override per heater.
 
 ---
 
-# From scaffold to demo, in one day
+# What works today
 
-<style>
-.journey li { line-height: 1.4; margin-top: 0.15rem; margin-bottom: 0.15rem; }
-.journey p { margin-top: 0.2rem; margin-bottom: 0.4rem; }
-</style>
+<div class="grid grid-cols-2 gap-8 text-sm mt-2">
+<div>
 
-<div class="journey grid grid-cols-[1fr_1.6fr_1fr] gap-5 text-sm mt-2">
-<div class="p-3 rounded bg-gray-500/10">
+**Live on mainnet at mint.hashu.io**
 
-**This morning**
-
-- Stratum V1 proxy + share Merkle tree
-- Hashprice oracles (Esplora, Luxor)
-- Nostr operator manifest, `hashu` CLI
-- ❌ No minting, no payments
-- ❌ No Testnet4, no Tether
-- ❌ No redemption or redirection
+- ✅ CDK mint, unit **THH**, works in the **Cashu.me** wallet
+- ✅ Buy with **mainnet Lightning** (phoenixd), tested end to end; the mint absorbs LSP fees on small buys
+- ✅ Tokens move as QR codes, animated for long tokens
+- ✅ Redeem to **any pool + worker**, optional worker password. Redeeming live to our Braiins account now
+- ✅ Hashrate from **MiningRigRentals**: 413 TH/s, 70/70 shares accepted at Braiins
+- ✅ Sales capped at rented capacity; redemptions first come, first served
+- ✅ Redemptions survive restarts; per-redemption Merkle root + inclusion proofs
+- ✅ Operator page: hashrate graphs, test mint, redeem. Checkout shows delivery time
 
 </div>
 <div>
 
-**What we tackled** (tracking issue #3)
+**Hashrate at Home**
 
-- ✅ #2 &nbsp;`hashrate` melt method + redemption ledger (CDK)
-- ✅ #4 &nbsp;Dropped the Lightning melt: a Hashu mint never pays out BTC
-- ✅ #5 &nbsp;Testnet4 + MiningRigRentals hashprice oracle
-- ✅ #6 &nbsp;Lightning rail: buy THH with bolt11
-- ✅ #8 &nbsp;Tether rail: buy THH with USDT
-- ✅ #7 &nbsp;Proxy credits shares to the redemption
-- ✅ #9 &nbsp;Redirect hashrate to the redeemer's pool
-- ✅ #12 &nbsp;Hashu Heater on Tether MDK (Bitaxe Worker)
-- 🚧 #11 &nbsp;Mainnet Lightning via phoenixd
-- 🚧 #13 &nbsp;`hashu mint run`: mint + rails + proxy, one process
+- ✅ Hashu Heater app on Tether MDK switches the heater's pool on redeem and back when filled (mock 40 TH/s heater mines for real)
 
-</div>
-<div class="p-3 rounded bg-green-500/10">
+**Built, not yet proven live**
 
-**The demo**
+- 🧪 USDT rail (Sepolia test USDT)
+- 🧪 A physical heater run (Bitaxe / Heatbit)
 
-1. Pay USDT or Lightning
-2. Mint THH, blind-signed
-3. Melt `hashrate` to your pool
-4. MDK app moves the heater to the Hashu proxy
-5. Shares land on the Testnet4 pool; heater goes home when filled
+**Roadmap**
+
+- 🔜 Nostr-signed Merkle roots and completion certificates
+- 🔜 More hashrate sources than one rental market
 
 </div>
 </div>
 
 <!--
-Walk the arc: this morning the repo was plumbing only (proxy, oracles, manifest).
-Every row in the middle is a merged or in-review PR toward the demo milestone (#3).
-#4 matters for the pitch: we removed the cash-out path so the mint only ever
-receives payment and delivers work, which is the "selling computation" argument.
-#12 is the Hashrate at Home angle: a home heater sells its hashrate as THH, and the
-MDK app switches it to the redeemer's pool only while a redemption is open.
-Still open: phoenixd mainnet (#11), the one-process daemon (#13), a real Bitaxe run.
+Everything in the left column runs on the devbox behind mint.hashu.io right now.
+The rigs are rented on MiningRigRentals and pointed at the Hashu proxy; when nobody
+is redeeming they mine on Braiins. We moved the demo from Testnet4 to mainnet
+because MRR's relay rejects Testnet4 jobs (future-stamped ntime).
+Be explicit about the right column: USDT code exists and is unit tested but has not
+taken a live payment; nostr attestation (attestation.rs) is not built.
+-->
+
+---
+
+# Live demo
+
+<div class="grid grid-cols-2 gap-10 text-sm mt-4">
+<div>
+
+**Try it**
+
+- Buy THH: **[mint.hashu.io/checkout/](https://mint.hashu.io/checkout/)**
+- Mint URL for Cashu.me: `https://mint.hashu.io`
+- Code: **[github.com/asherp/hashu](https://github.com/asherp/hashu)** (Rust, MIT / Apache-2.0)
+- These slides: hashu.io/slides
+
+</div>
+<div>
+
+**What we'll show**
+
+1. Pay a Lightning invoice, get a THH token as a QR
+2. Scan it into Cashu.me
+3. Redeem to a Braiins worker
+4. Watch the rented hashrate move on the operator graph
+5. Shares land at the pool; the redemption fills and hashrate goes home
+
+</div>
+</div>
+
+<!--
+Have the operator page open in a second tab. Keep the buy small so it fills during the talk;
+checkout shows the delivery-time estimate before you pay.
 -->
