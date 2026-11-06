@@ -18,6 +18,12 @@
 //!   payment and return the token, to rehearse a redemption on a live mint.
 //!   It counts as issued ecash (an obligation) like any other THH.
 //! - `POST /api/test-redeem` `{ token, pool_url, worker_name }`: redeem it.
+//! - `GET /api/capacity`: rented hashrate, THH it can still deliver, THH
+//!   owed and THH available to sell (see `hashu_mint::capacity`).
+//! - `POST /api/capacity`: `{ "rentals": [{ "ths", "hours" | "end_ms",
+//!   "label"?, "id"? }], "limit": bool | null }`, either field optional.
+//!   `rentals` replaces the operator's list (MRR rentals sync on their
+//!   own); `limit: null` goes back to automatic (on once a rental is set).
 //!
 //! The controls change what the mint sells, so like `POST /redemptions` they
 //! trust whoever can reach the port: keep `--control-bind` on loopback.
@@ -35,7 +41,8 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Json;
 use cdk::mint::Mint;
-use hashu_core::redemption::{RedemptionState, HASHES_PER_THH};
+use hashu_core::redemption::{RedemptionLedger, RedemptionState, HASHES_PER_THH};
+use hashu_mint::capacity::{rental_from_json, CapacityBook};
 use hashu_mint::payment::thh_unit;
 use hashu_mint::pricing::{PricingError, ThhPricer};
 use hashu_proxy::control::{route as control_route, ControlState};
@@ -56,13 +63,19 @@ pub const MAX_MARKUP_BPS: i64 = 100_000;
 pub struct MintControls {
     issuance_paused: AtomicBool,
     markup_bps: AtomicI64,
+    /// Rented hashrate and what is owed against it: caps issuance.
+    pub capacity: Arc<CapacityBook>,
 }
 
 impl MintControls {
     pub fn new(markup_bps: i64) -> Self {
+        Self::with_capacity(markup_bps, Arc::new(CapacityBook::new()))
+    }
+    pub fn with_capacity(markup_bps: i64, capacity: Arc<CapacityBook>) -> Self {
         Self {
             issuance_paused: AtomicBool::new(false),
             markup_bps: AtomicI64::new(markup_bps.clamp(MIN_MARKUP_BPS, MAX_MARKUP_BPS)),
+            capacity,
         }
     }
     pub fn issuance_paused(&self) -> bool {
@@ -86,7 +99,8 @@ impl MintControls {
 }
 
 /// A rail's pricer under operator control: refuses while issuance is
-/// paused, and applies the live markup on top of the base price.
+/// paused or the amount exceeds the THH the rented hashrate can still
+/// deliver, and applies the live markup on top of the base price.
 pub struct ControlledPricer {
     inner: Arc<dyn ThhPricer>,
     controls: Arc<MintControls>,
@@ -124,6 +138,7 @@ impl ThhPricer for ControlledPricer {
         if self.controls.issuance_paused() {
             return Err(PricingError::Paused);
         }
+        self.controls.capacity.check(amount_thh, now_ms())?;
         self.quote(amount_thh)
     }
 }
@@ -168,6 +183,7 @@ pub fn router(state: Arc<OperatorState>) -> axum::Router {
         .route("/api/controls", post(set_controls))
         .route("/api/test-mint", post(test_mint))
         .route("/api/test-redeem", post(test_redeem))
+        .route("/api/capacity", get(capacity).post(set_capacity))
         .fallback(proxy_control)
         .with_state(state)
 }
@@ -276,6 +292,48 @@ async fn test_redeem(State(s): State<Arc<OperatorState>>, body: Bytes) -> Respon
     checkout::redeem(State(s.checkout.clone()), body).await
 }
 
+async fn capacity(State(s): State<Arc<OperatorState>>) -> Json<Value> {
+    Json(json!(s.controls.capacity.snapshot(now_ms())))
+}
+
+async fn set_capacity(State(s): State<Arc<OperatorState>>, body: Bytes) -> Response {
+    let v: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return bad(format!("invalid JSON: {e}")),
+    };
+    let now = now_ms();
+    if let Some(list) = v.get("rentals").filter(|x| !x.is_null()) {
+        let Some(list) = list.as_array() else {
+            return bad("rentals must be a list".into());
+        };
+        let rentals = match list.iter().map(|r| rental_from_json(r, now)).collect() {
+            Ok(r) => r,
+            Err(e) => return bad(e),
+        };
+        s.controls.capacity.set_manual(rentals);
+    }
+    if let Some(l) = v.get("limit") {
+        let limit = match l {
+            Value::Null => None,
+            Value::Bool(b) => Some(*b),
+            _ => return bad("limit must be true, false or null".into()),
+        };
+        s.controls.capacity.set_limit(limit);
+    }
+    // Owed may have moved since the last refresh; recount before answering.
+    if let Ok(o) = obligations(&s.mint, &s.control.ledger).await {
+        s.controls.capacity.set_owed(o.total_owed(), now_ms());
+    }
+    let snap = s.controls.capacity.snapshot(now_ms());
+    tracing::info!(
+        rented_ths = snap.rented_ths,
+        capacity_thh = snap.capacity_thh,
+        available_thh = ?snap.available_thh,
+        "operator changed capacity"
+    );
+    Json(json!(snap)).into_response()
+}
+
 fn bad(msg: String) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response()
 }
@@ -305,21 +363,42 @@ async fn operator(State(s): State<Arc<OperatorState>>) -> Response {
     }
 }
 
-async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
-    // ---- supply -------------------------------------------------------
+/// THH the mint owes: ecash out, paid-but-unminted quotes, and the
+/// undelivered rest of open redemptions.
+#[derive(Debug, Default)]
+pub struct Obligations {
+    pub signed: u64,
+    pub spent: u64,
+    pub melting: u64,
+    pub in_circulation: u64,
+    pub sold: BTreeMap<String, u64>,
+    pub paid_not_minted: u64,
+    pub quotes_open: u64,
+    /// THH minted by the operator's test mint, all time.
+    pub test_minted: u64,
+    pub open_count: u64,
+    pub open_remaining_thh: f64,
+}
+
+impl Obligations {
+    pub fn total_owed(&self) -> f64 {
+        self.in_circulation as f64 + self.paid_not_minted as f64 + self.open_remaining_thh
+    }
+}
+
+pub async fn obligations(mint: &Mint, ledger: &RedemptionLedger) -> anyhow::Result<Obligations> {
     // keyset_amounts counts every signature and every spent proof, swaps
     // included; swaps add equally to both, so the difference is the THH
     // ecash still in holders' hands.
-    let thh_keysets: Vec<_> = s
-        .mint
+    let thh_keysets: Vec<_> = mint
         .keysets()
         .keysets
         .into_iter()
         .filter(|k| k.unit == thh_unit())
         .map(|k| k.id)
         .collect();
-    let issued = s.mint.total_issued().await?;
-    let redeemed = s.mint.total_redeemed().await?;
+    let issued = mint.total_issued().await?;
+    let redeemed = mint.total_redeemed().await?;
     let sum = |m: &std::collections::HashMap<_, cdk::Amount>| -> u64 {
         thh_keysets
             .iter()
@@ -331,8 +410,7 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
     // A hashrate melt stays pending until its redemption is filled, and its
     // inputs only count as spent then. Those THH are owed as an open
     // redemption, so take them out of circulation to avoid counting twice.
-    let melting: u64 = s
-        .mint
+    let melting: u64 = mint
         .melt_quotes()
         .await?
         .iter()
@@ -346,7 +424,7 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
     let mut paid_not_minted = 0u64;
     let mut quotes_open = 0u64;
     let mut test_minted = 0u64;
-    for q in s.mint.mint_quotes().await? {
+    for q in mint.mint_quotes().await? {
         if q.unit != thh_unit() {
             continue;
         }
@@ -367,12 +445,54 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
             quotes_open += 1;
         }
     }
-    let sold_total: u64 = sold.values().sum();
+
+    let mut open_count = 0;
+    let mut open_remaining_thh = 0.0;
+    for r in ledger.all() {
+        if r.state != RedemptionState::Completed {
+            let filled = r.accumulated_hashes as f64 / HASHES_PER_THH as f64;
+            open_remaining_thh += (r.amount_thh as f64 - filled).max(0.0);
+            open_count += 1;
+        }
+    }
+    Ok(Obligations {
+        signed,
+        spent,
+        melting,
+        in_circulation,
+        sold,
+        paid_not_minted,
+        quotes_open,
+        test_minted,
+        open_count,
+        open_remaining_thh,
+    })
+}
+
+/// Keep the capacity book's "owed" current so quotes are capped against it.
+pub async fn run_owed_refresher(
+    mint: Arc<Mint>,
+    ledger: Arc<RedemptionLedger>,
+    capacity: Arc<CapacityBook>,
+    every: std::time::Duration,
+) {
+    let mut tick = tokio::time::interval(every);
+    loop {
+        tick.tick().await;
+        match obligations(&mint, &ledger).await {
+            Ok(o) => capacity.set_owed(o.total_owed(), now_ms()),
+            Err(e) => tracing::warn!(error = %e, "could not count obligations"),
+        }
+    }
+}
+
+async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
+    let o = obligations(&s.mint, &s.control.ledger).await?;
+    s.controls.capacity.set_owed(o.total_owed(), now_ms());
+    let sold_total: u64 = o.sold.values().sum();
 
     // ---- redemptions --------------------------------------------------
     let tracks = s.meter.tracks();
-    let mut open_remaining_thh = 0.0;
-    let mut open_count = 0;
     let redemptions: Vec<Value> = s
         .control
         .ledger
@@ -382,10 +502,6 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
             let id = r.id.to_string();
             let filled = r.accumulated_hashes as f64 / HASHES_PER_THH as f64;
             let remaining = (r.amount_thh as f64 - filled).max(0.0);
-            if r.state != RedemptionState::Completed {
-                open_remaining_thh += remaining;
-                open_count += 1;
-            }
             let t = tracks.iter().find(|t| t.id == id);
             json!({
                 "id": id,
@@ -436,18 +552,19 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
         },
         "obligations": {
             "thh_sold": sold_total,
-            "test_minted_thh": test_minted,
-            "sold_by_rail": sold,
-            "paid_not_minted_thh": paid_not_minted,
-            "unpaid_quotes": quotes_open,
-            "thh_in_circulation": in_circulation,
-            "open_redemptions": open_count,
-            "open_redemption_remaining_thh": open_remaining_thh,
-            "total_thh_owed": in_circulation as f64 + paid_not_minted as f64 + open_remaining_thh,
-            "signed_thh": signed,
-            "spent_thh": spent,
-            "melting_thh": melting,
+            "test_minted_thh": o.test_minted,
+            "sold_by_rail": o.sold,
+            "paid_not_minted_thh": o.paid_not_minted,
+            "unpaid_quotes": o.quotes_open,
+            "thh_in_circulation": o.in_circulation,
+            "open_redemptions": o.open_count,
+            "open_redemption_remaining_thh": o.open_remaining_thh,
+            "total_thh_owed": o.total_owed(),
+            "signed_thh": o.signed,
+            "spent_thh": o.spent,
+            "melting_thh": o.melting,
         },
+        "capacity": s.controls.capacity.snapshot(now_ms()),
         "proxy": {
             "stratum_bind": s.info.stratum_bind,
             "default_upstream": s.control.default_upstream,
@@ -492,6 +609,30 @@ mod tests {
         assert_eq!(p.quote(2).unwrap(), 100);
         c.set_issuance_paused(false);
         assert_eq!(p.price(1).unwrap(), 50);
+    }
+
+    #[test]
+    fn capacity_caps_quotes() {
+        let book = Arc::new(CapacityBook::new());
+        let c = Arc::new(MintControls::with_capacity(0, book.clone()));
+        let p = ControlledPricer::new(Arc::new(Flat(40)), c);
+        // No rentals configured: no cap.
+        assert_eq!(p.price(500).unwrap(), 20_000);
+        book.set_manual(vec![hashu_mint::capacity::Rental {
+            id: "r1".into(),
+            label: String::new(),
+            ths: 10.0,
+            end_ms: now_ms() + 3 * 3_600_000 + 60_000,
+        }]);
+        book.set_owed(5.0, now_ms());
+        assert_eq!(p.price(25).unwrap(), 1_000);
+        assert!(matches!(
+            p.price(26),
+            Err(PricingError::SoldOut {
+                requested: 26,
+                available: 25
+            })
+        ));
     }
 
     #[test]

@@ -9,13 +9,19 @@
 //! contents so the redeemer can re-derive and re-hash it.
 //!
 //! Leaves carry PoW evidence only (block header, target, ntime, seq): no
-//! pool URL or worker name. Kept in memory, like the ledger.
+//! pool URL or worker name. Kept in memory, and, when built with
+//! [`ShareAudit::persistent`], journaled to disk one leaf per line so the
+//! trees survive a restart alongside the ledger.
 
 use std::collections::HashMap;
+use std::io;
+use std::path::Path;
 use std::sync::Mutex;
 
+use hashu_core::journal::Journal;
 use hashu_core::redemption::RedemptionId;
 use hashu_core::share::{Hash, InclusionProof, MerkleTree, ShareLeaf};
+use serde::{Deserialize, Serialize};
 
 /// One redemption's tree plus the leaves behind it.
 #[derive(Debug, Default)]
@@ -41,10 +47,21 @@ pub struct LeafProof {
     pub proof: InclusionProof,
 }
 
+/// One journaled leaf. `seq` is implied by line order per redemption.
+#[derive(Debug, Serialize, Deserialize)]
+struct LeafRecord {
+    id: RedemptionId,
+    /// Hex.
+    preimage: String,
+    target_bits: u32,
+    ntime: u32,
+}
+
 /// All redemptions' trees, shared by every connection and the control API.
 #[derive(Debug, Default)]
 pub struct ShareAudit {
     trees: Mutex<HashMap<RedemptionId, RedemptionTree>>,
+    journal: Option<Journal>,
 }
 
 impl ShareAudit {
@@ -52,21 +69,50 @@ impl ShareAudit {
         Self::default()
     }
 
+    /// Trees backed by the journal at `path`: rebuilt from it now, and
+    /// every later leaf appended to it.
+    pub fn persistent(path: &Path) -> io::Result<Self> {
+        let (journal, records, skipped) = Journal::open::<LeafRecord>(path)?;
+        if skipped > 0 {
+            tracing::warn!(?path, skipped, "skipped unreadable share audit lines");
+        }
+        let audit = Self::new();
+        let mut leaves = 0usize;
+        for r in records {
+            let Ok(preimage) = hex::decode(&r.preimage) else {
+                continue;
+            };
+            audit.push(r.id, preimage, r.target_bits, r.ntime);
+            leaves += 1;
+        }
+        tracing::info!(?path, leaves, "restored share audit trees");
+        Ok(Self {
+            journal: Some(journal),
+            ..audit
+        })
+    }
+
     /// Append one credited share to `id`'s tree. `seq` is assigned here
     /// (0, 1, 2, … per redemption) and returned.
     pub fn append(&self, id: RedemptionId, preimage: Vec<u8>, target_bits: u32, ntime: u32) -> u64 {
         let mut trees = self.lock();
-        let t = trees.entry(id).or_default();
-        let seq = t.leaves.len() as u64;
-        let leaf = ShareLeaf {
-            preimage,
-            target_bits,
-            ntime,
-            seq,
-        };
-        t.tree.push(&leaf);
-        t.leaves.push(leaf);
-        seq
+        if let Some(j) = &self.journal {
+            // Written under the tree lock, so file order = seq order.
+            let record = LeafRecord {
+                id,
+                preimage: hex::encode(&preimage),
+                target_bits,
+                ntime,
+            };
+            if let Err(e) = j.append(&record) {
+                tracing::error!(error = %e, path = ?j.path(), "share audit journal write failed");
+            }
+        }
+        push(&mut trees, id, preimage, target_bits, ntime)
+    }
+
+    fn push(&self, id: RedemptionId, preimage: Vec<u8>, target_bits: u32, ntime: u32) -> u64 {
+        push(&mut self.lock(), id, preimage, target_bits, ntime)
     }
 
     /// Root and leaf count for `id`. A redemption with no credited shares
@@ -102,6 +148,26 @@ impl ShareAudit {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<RedemptionId, RedemptionTree>> {
         self.trees.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+fn push(
+    trees: &mut HashMap<RedemptionId, RedemptionTree>,
+    id: RedemptionId,
+    preimage: Vec<u8>,
+    target_bits: u32,
+    ntime: u32,
+) -> u64 {
+    let t = trees.entry(id).or_default();
+    let seq = t.leaves.len() as u64;
+    let leaf = ShareLeaf {
+        preimage,
+        target_bits,
+        ntime,
+        seq,
+    };
+    t.tree.push(&leaf);
+    t.leaves.push(leaf);
+    seq
 }
 
 #[cfg(test)]
@@ -152,5 +218,30 @@ mod tests {
             assert!(verify_inclusion(&p.leaf_hash, &p.proof, &root));
         }
         assert!(a.proof(&id(1), 7).is_none());
+    }
+
+    #[test]
+    fn persistent_trees_survive_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("share-audit.jsonl");
+        let root = {
+            let a = ShareAudit::persistent(&path).unwrap();
+            for i in 0..5u8 {
+                a.append(id(1), vec![i; 80], 0x1d00_ffff, u32::from(i));
+            }
+            a.append(id(2), vec![9; 80], 0x1d00_ffff, 1);
+            a.head(&id(1)).root.unwrap()
+        };
+        let a = ShareAudit::persistent(&path).unwrap();
+        assert_eq!(a.head(&id(1)).root, Some(root));
+        assert_eq!(a.head(&id(1)).leaf_count, 5);
+        assert_eq!(a.head(&id(2)).leaf_count, 1);
+        // Appends continue the sequence.
+        assert_eq!(a.append(id(1), vec![7; 80], 0x1d00_ffff, 7), 5);
+        drop(a);
+        let a = ShareAudit::persistent(&path).unwrap();
+        let p = a.proof(&id(1), 5).unwrap();
+        assert_eq!(p.leaf.seq, 5);
+        assert!(verify_inclusion(&p.leaf_hash, &p.proof, &p.root));
     }
 }

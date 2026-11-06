@@ -61,6 +61,8 @@ h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacin
 button.act { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 6px; padding: 6px 14px; cursor: pointer; font: inherit; }
 button.act.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
 button.act.danger { border-color: var(--bad); color: var(--bad); }
+input[type=text] { width: 120px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; }
+button.x { border: 0; background: transparent; color: var(--ink-3); cursor: pointer; font: inherit; padding: 0 4px; }
 input[type=number] { width: 96px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; }
 .bar { height: 8px; background: var(--grid); border-radius: 4px; overflow: hidden; }
 .bar > div { height: 100%; background: var(--brand); transition: width 0.5s; }
@@ -93,6 +95,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 
   <section class="tiles" aria-label="Summary">
     <div class="tile"><label>Hashrate now</label><b id="t-rate">—</b><small id="t-rate-sub">through the proxy</small></div>
+    <div class="tile"><label>THH available</label><b id="t-avail">—</b><small id="t-avail-sub">no capacity set</small></div>
     <div class="tile"><label>THH owed</label><b id="t-owed">—</b><small>ecash out + open redemptions</small></div>
     <div class="tile"><label>Redemption remaining</label><b id="t-open">—</b><small id="t-open-sub">no open redemption</small></div>
     <div class="tile"><label>THH sold</label><b id="t-sold">—</b><small id="t-sold-sub">—</small></div>
@@ -148,6 +151,27 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
           <button class="act" id="btn-markup">Apply</button>
         </div>
         <p class="note" id="price-note">Applied to every rail's base price. Redemptions and the proxy keep running while issuance is paused.</p>
+      </section>
+
+      <section class="card" aria-labelledby="h-cap">
+        <div class="card-head">
+          <h2 id="h-cap">Hashrate capacity</h2>
+          <div class="seg" id="cap-limit"><button data-v="auto">Auto</button><button data-v="on">Cap on</button><button data-v="off">Off</button></div>
+        </div>
+        <dl class="kv" id="cap"></dl>
+        <div class="scroll">
+          <table>
+            <thead><tr><th>Rental</th><th>TH/s</th><th>Left</th><th>THH</th><th></th></tr></thead>
+            <tbody id="cap-rows"></tbody>
+          </table>
+        </div>
+        <div class="row">
+          <input type="number" id="cap-ths" step="any" min="0" placeholder="TH/s" aria-label="TH/s">
+          <input type="number" id="cap-hours" step="any" min="0" placeholder="hours" aria-label="Hours left">
+          <input type="text" id="cap-label" placeholder="label (optional)" aria-label="Label">
+          <button class="act primary" id="btn-cap">Add rental</button>
+        </div>
+        <p class="note" id="cap-note">Capacity = rented TH/s × hours left. Mint quotes beyond capacity minus THH owed are refused.</p>
       </section>
 
       <section class="card" aria-labelledby="h-test">
@@ -378,6 +402,31 @@ function render () {
     ['Unpaid mint quotes', o.unpaid_quotes],
     ['Test THH minted without payment (all time)', fmtThh(o.test_minted_thh || 0, 0)]
   ])
+  const cap = op.capacity
+  if (cap) {
+    $('t-avail').textContent = cap.available_thh != null ? fmtThh(cap.available_thh, 0) : '∞'
+    $('t-avail-sub').textContent = cap.limit
+      ? `${fmtThh(cap.rented_ths, 1)} TH/s rented${cap.ends_ms ? ` · ends in ${fmtDur((cap.ends_ms - op.now_ms) / 1000)}` : ''}`
+      : 'sales not capped'
+    $('cap').innerHTML = kv([
+      ['Rented now', `${fmtThh(cap.rented_ths, 2)} TH/s`],
+      ['Capacity left (TH/s × hours)', fmtThh(cap.capacity_thh)],
+      ['THH owed', fmtThh(cap.owed_thh)],
+      [cap.headroom_thh < 0 ? 'Oversold by' : 'Available to sell', cap.limit ? fmtThh(Math.abs(cap.headroom_thh)) : `${fmtThh(Math.max(cap.headroom_thh, 0))} (not enforced)`, 'total'],
+      ...(cap.mrr_enabled ? [['MRR sync', cap.mrr_error ? `<span style="color:var(--bad)">${esc(cap.mrr_error)}</span>` : cap.mrr_synced_ms ? `${fmtDur((op.now_ms - cap.mrr_synced_ms) / 1000)} ago` : 'waiting…']] : [])
+    ])
+    const mode = cap.limit_explicit ? (cap.limit ? 'on' : 'off') : 'auto'
+    for (const b of $('cap-limit').querySelectorAll('button')) b.classList.toggle('on', b.dataset.v === mode)
+    $('cap-rows').innerHTML = cap.rentals.length ? cap.rentals.map((r, i) => `
+      <tr style="cursor:default${r.hours_left <= 0 ? ';opacity:0.5' : ''}">
+        <td>${esc(r.label || r.id || 'rental')}<br><span class="sub">${r.source === 'mrr' ? `MRR ${esc(r.id)}` : 'manual'}</span></td>
+        <td>${fmtThh(r.ths, 2)}</td>
+        <td>${r.hours_left > 0 ? fmtDur(r.hours_left * 3600) : 'ended'}</td>
+        <td>${fmtThh(r.thh_left)}</td>
+        <td>${r.source === 'manual' ? `<button class="x" data-del="${i}" title="Remove">✕</button>` : ''}</td>
+      </tr>`).join('') : '<tr><td colspan="5" class="sub">No rentals. Add the rented TH/s and how many hours it has left.</td></tr>'
+  }
+
   const mm = px.metrics
   $('proxy').innerHTML = kv([
     ['Stratum', `<span class="mono">${esc(px.stratum_bind)}</span>`],
@@ -501,6 +550,33 @@ $('btn-test-redeem').addEventListener('click', async () => {
     state.selected = r.redemption_id; state.pinned = true
     alertMsg('')
   } catch (e) { alertMsg(e.message) } finally { b.disabled = false; poll() }
+})
+// ---- capacity ---------------------------------------------------------
+async function setCapacity (body) {
+  try {
+    await api('api/capacity', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    alertMsg('')
+  } catch (e) { alertMsg(e.message) }
+  poll()
+}
+const manualRentals = () => ((state.op && state.op.capacity && state.op.capacity.rentals) || [])
+  .filter((r) => r.source === 'manual').map((r) => ({ id: r.id, label: r.label, ths: r.ths, end_ms: r.end_ms }))
+$('btn-cap').addEventListener('click', () => {
+  const ths = Number($('cap-ths').value), hours = Number($('cap-hours').value)
+  if (!(ths > 0) || !(hours > 0)) return alertMsg('Enter the rented TH/s and the hours it has left')
+  const label = $('cap-label').value.trim()
+  setCapacity({ rentals: [...manualRentals(), { ths, hours, label }] })
+  $('cap-ths').value = ''; $('cap-hours').value = ''; $('cap-label').value = ''
+})
+$('cap-rows').addEventListener('click', (ev) => {
+  const b = ev.target.closest('button[data-del]'); if (!b) return
+  // Manual rentals come first in the list, so the row index is theirs.
+  const i = Number(b.dataset.del)
+  setCapacity({ rentals: manualRentals().filter((_, j) => j !== i) })
+})
+$('cap-limit').addEventListener('click', (ev) => {
+  const b = ev.target.closest('button'); if (!b) return
+  setCapacity({ limit: b.dataset.v === 'auto' ? null : b.dataset.v === 'on' })
 })
 window.addEventListener('resize', () => { drawRate(); drawRedemption() })
 

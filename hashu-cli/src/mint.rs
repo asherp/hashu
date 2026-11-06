@@ -6,8 +6,10 @@
 //!   the payment-method routes);
 //! - **payment rails** that sell `THH`: Lightning over phoenixd (mainnet
 //!   sats, receive-only) and/or Tether (USDT on Sepolia by default);
-//! - the **`hashrate` melt method**, which opens redemptions in an in-memory
-//!   [`RedemptionLedger`];
+//! - the **`hashrate` melt method**, which opens redemptions in a
+//!   [`RedemptionLedger`] journaled to `<data-dir>/redemptions.jsonl`, so
+//!   open redemptions (and their share trees, `share-audit.jsonl`) resume
+//!   after a restart;
 //! - the **Stratum V1 proxy**, sharing that ledger: while a redemption is
 //!   open, miners are routed to the redeemer's pool and accepted shares
 //!   credit it, so the melt completes;
@@ -32,8 +34,9 @@ use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use clap::{Args, Subcommand, ValueEnum};
 use hashu_core::hashprice::{HashpriceOracle, HashpriceSample};
 use hashu_core::redemption::RedemptionLedger;
+use hashu_mint::capacity::{CapacityBook, Rental};
 use hashu_mint::lightning::add_lightning_issuance;
-use hashu_mint::melt::{HashrateMelter, METHOD as HASHRATE};
+use hashu_mint::melt::{reopen_pending_quotes, HashrateMelter, METHOD as HASHRATE};
 use hashu_mint::oracle::{esplora, mrr};
 use hashu_mint::payment::{thh_unit, ThhIssuer};
 use hashu_mint::phoenixd::{Phoenixd, PhoenixdConfig};
@@ -42,6 +45,7 @@ use hashu_mint::tether::{
     EvmRpcSource, FixedUsdtPrice, SatsToUsdt, TetherPayments, UsdtRail, METHOD as USDT,
     MICRO_PER_USDT,
 };
+use hashu_proxy::audit::ShareAudit;
 use hashu_proxy::control::ControlState;
 use hashu_proxy::credit::{CreditContext, ShareCrediter};
 use hashu_proxy::meter::HashrateMeter;
@@ -210,6 +214,26 @@ pub struct RunArgs {
     /// (seconds). Shares are sparse, so short windows are noisy.
     #[arg(long, default_value_t = 60)]
     pub hashrate_window: u64,
+
+    // ---- capacity ---------------------------------------------------
+    /// MiningRigRentals API key. With `--mrr-api-secret`, the mint reads the
+    /// account's active rentals (hashrate and end time) as the capacity it
+    /// can sell. Without it, set rentals in the operator GUI or
+    /// `POST /api/capacity`.
+    #[arg(long, env = "MRR_API_KEY", hide_env_values = true)]
+    pub mrr_api_key: Option<String>,
+    #[arg(long, env = "MRR_API_SECRET", hide_env_values = true)]
+    pub mrr_api_secret: Option<String>,
+    /// Only count these MRR rental ids (comma separated), e.g. when other
+    /// rentals on the account mine somewhere other than this proxy.
+    #[arg(long, env = "HASHU_MRR_RENTAL_IDS", value_delimiter = ',')]
+    pub mrr_rental_ids: Vec<String>,
+    /// MRR API base URL (for a test double).
+    #[arg(long, env = "MRR_API_BASE", default_value = mrr::DEFAULT_BASE_URL)]
+    pub mrr_api_base: String,
+    /// Seconds between MRR rental syncs.
+    #[arg(long, default_value_t = 60)]
+    pub mrr_refresh_secs: u64,
 }
 
 pub async fn run(cmd: MintCmd) -> Result<()> {
@@ -432,22 +456,93 @@ fn usdt_pricer(
     bail!("the Tether rail needs a price: pass --usdt-per-thh or --usd-per-btc")
 }
 
+/// Poll MRR for the account's active rentals, if a key is configured.
+fn spawn_mrr_sync(args: &RunArgs, capacity: &Arc<CapacityBook>) {
+    let (Some(key), Some(secret)) = (
+        args.mrr_api_key.clone().filter(|k| !k.trim().is_empty()),
+        args.mrr_api_secret.clone().filter(|k| !k.trim().is_empty()),
+    ) else {
+        return;
+    };
+    capacity.enable_mrr();
+    let ids: Vec<String> = args
+        .mrr_rental_ids
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let account = mrr::MrrAccount::with_base(
+        args.mrr_api_base.clone(),
+        mrr::DEFAULT_ALGO.into(),
+        key,
+        secret,
+    );
+    let capacity = capacity.clone();
+    let every = Duration::from_secs(args.mrr_refresh_secs.max(15));
+    tracing::info!(rental_ids = ?ids, "capacity from MRR active rentals");
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(every);
+        loop {
+            tick.tick().await;
+            let result = account
+                .active_rentals()
+                .await
+                .map(|list| {
+                    list.into_iter()
+                        .filter(|r| ids.is_empty() || ids.contains(&r.id))
+                        .map(|r| Rental {
+                            id: r.id,
+                            label: r.rig_name,
+                            ths: r.ths,
+                            end_ms: (r.end_unix * 1000.0).max(0.0) as u64,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .map_err(|e| e.to_string());
+            match &result {
+                Ok(r) => tracing::debug!(rentals = r.len(), "mrr rentals synced"),
+                Err(e) => tracing::warn!(error = %e, "mrr rental sync failed"),
+            }
+            capacity.set_mrr(result, hashu_mint::capacity::now_ms());
+        }
+    });
+}
+
 async fn run_daemon(args: RunArgs) -> Result<()> {
     // ---- shared state -------------------------------------------------
     let upstream = strip_stratum_prefix(&args.upstream).to_string();
     if !upstream.contains(':') {
         bail!("--upstream must include a port (got {upstream})");
     }
-    let ledger = Arc::new(RedemptionLedger::new());
+    std::fs::create_dir_all(&args.data_dir)
+        .with_context(|| format!("create {:?}", args.data_dir))?;
+    let ledger_path = args.data_dir.join("redemptions.jsonl");
+    let ledger = Arc::new(
+        RedemptionLedger::persistent(&ledger_path)
+            .with_context(|| format!("open redemption ledger {ledger_path:?}"))?,
+    );
+    let audit_path = args.data_dir.join("share-audit.jsonl");
+    let audit = Arc::new(
+        ShareAudit::persistent(&audit_path)
+            .with_context(|| format!("open share audit {audit_path:?}"))?,
+    );
     let oracle = build_oracle(&args).await?;
     let limits = MintMeltLimits::new(1, args.max_thh);
     let started_ms = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or_default();
+    std::fs::create_dir_all(&args.data_dir)
+        .with_context(|| format!("create {:?}", args.data_dir))?;
+    // Rented hashrate: what the mint can still sell (operator GUI / MRR).
+    let capacity = Arc::new(CapacityBook::load(args.data_dir.join("capacity.json"))?);
+    spawn_mrr_sync(&args, &capacity);
     // Live operator settings. Rails price at the base rate and the
     // controlled pricer adds the markup, so the GUI can change it.
-    let controls = Arc::new(MintControls::new(args.markup_bps.unwrap_or(0) as i64));
+    let controls = Arc::new(MintControls::with_capacity(
+        args.markup_bps.unwrap_or(0) as i64,
+        capacity.clone(),
+    ));
     let sats_controlled = Arc::new(ControlledPricer::new(
         Arc::new(sats_pricer(&oracle, None)),
         controls.clone(),
@@ -455,8 +550,6 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let mut usdt_controlled = None;
 
     // ---- mint ---------------------------------------------------------
-    std::fs::create_dir_all(&args.data_dir)
-        .with_context(|| format!("create {:?}", args.data_dir))?;
     let seed = load_or_create_seed(&args.data_dir)?;
     let db_path = args.data_dir.join("mint.sqlite");
     let db = Arc::new(
@@ -464,6 +557,17 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             .await
             .with_context(|| format!("open {db_path:?}"))?,
     );
+    // Keep the ledger consistent with cdk's melt quotes: any redemption the
+    // mint still holds proofs pending for must exist before `mint.start()`
+    // re-checks it.
+    {
+        use cdk::cdk_database::MintQuotesDatabase;
+        let quotes = db
+            .get_melt_quotes()
+            .await
+            .map_err(|e| anyhow::anyhow!("read melt quotes: {e}"))?;
+        reopen_pending_quotes(&ledger, &quotes);
+    }
 
     let mut builder = MintBuilder::new(db.clone())
         .with_name(args.name.clone())
@@ -552,6 +656,26 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     );
     refresh_stored_mint_info(&mint, info).await?;
     mint.start().await.context("start mint")?;
+    // Count what is owed before the first quote, then keep it current.
+    match operator::obligations(&mint, &ledger).await {
+        Ok(o) => capacity.set_owed(o.total_owed(), hashu_mint::capacity::now_ms()),
+        Err(e) => tracing::warn!(error = %e, "could not count obligations"),
+    }
+    tokio::spawn(operator::run_owed_refresher(
+        mint.clone(),
+        ledger.clone(),
+        capacity.clone(),
+        Duration::from_secs(5),
+    ));
+    let cap = capacity.snapshot(hashu_mint::capacity::now_ms());
+    tracing::info!(
+        limit = cap.limit,
+        rented_ths = cap.rented_ths,
+        capacity_thh = cap.capacity_thh,
+        owed_thh = cap.owed_thh,
+        available_thh = ?cap.available_thh,
+        "capacity"
+    );
 
     let price_now = sats_controlled.quote(1).ok();
     tracing::info!(
@@ -601,8 +725,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
 
     // ---- proxy --------------------------------------------------------
     let router = Arc::new(Router::new(upstream.clone(), ledger.clone()));
-    let crediter = Arc::new(ShareCrediter::new(ledger.clone()));
-    let audit = crediter.audit().clone();
+    let crediter = Arc::new(ShareCrediter::with_audit(ledger.clone(), audit.clone()));
     let credit = CreditContext::new(crediter, router.clone());
 
     if args.metrics_interval > 0 {

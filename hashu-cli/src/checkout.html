@@ -94,6 +94,7 @@ button.act:disabled { opacity: 0.5; cursor: default; }
     <div class="price"><span class="note" id="price-label">Price</span><b id="price">—</b></div>
     <button class="act primary" id="btn-buy">Get invoice</button>
     <p class="note" id="paused" hidden>Sales are paused by the mint operator.</p>
+    <p class="note" id="avail" hidden></p>
   </section>
 
   <!-- 2. pay -->
@@ -194,8 +195,14 @@ async function loadInfo () {
     $('methods').innerHTML = ms.map((m) => `<button data-m="${esc(m)}" class="${m === st.method ? 'on' : ''}">${esc(methodName(m))}</button>`).join('')
     $('methods-row').hidden = !ms.length
     $('paused').hidden = !st.info.issuance_paused
-    $('btn-buy').disabled = st.info.issuance_paused || !ms.length
-    $('amount').max = st.info.max_thh
+    const av = st.info.available_thh
+    $('avail').hidden = av == null
+    if (av != null) {
+      const ends = st.info.capacity_ends_ms ? `, mining for another ${Math.max(0, (st.info.capacity_ends_ms - Date.now()) / 3.6e6).toFixed(1)} h` : ''
+      $('avail').textContent = av > 0 ? `${av.toLocaleString()} THH available now (${(st.info.rented_ths || 0).toFixed(1)} TH/s rented${ends}).` : 'Sold out: no rented hashrate left to sell right now.'
+    }
+    $('btn-buy').disabled = st.info.issuance_paused || !ms.length || av === 0
+    $('amount').max = av != null ? Math.min(st.info.max_thh, av) : st.info.max_thh
     renderPrice()
   } catch (e) { alertMsg(`Cannot reach the mint: ${e.message}`) }
 }

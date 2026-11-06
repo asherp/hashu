@@ -1489,7 +1489,9 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
@@ -1505,12 +1507,14 @@ dependencies = [
  "futures",
  "hashu-core",
  "hex",
+ "hmac",
  "nostr",
  "nostr-sdk",
  "rand 0.8.6",
  "reqwest",
  "serde",
  "serde_json",
+ "sha1",
  "sha2",
  "tempfile",
  "thiserror 1.0.69",
@@ -1531,6 +1535,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

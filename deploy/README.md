@@ -305,20 +305,51 @@ On stage:
    `PAID`, and the rig goes back to the idle route. On Braiins the
    `redeem` worker appears with ~100 TH/s for those minutes.
 
+**Tell the mint how much it can sell.** The mint can only sell THH the
+rentals will still deliver: `rented TH/s × hours left − THH owed` (ecash
+held by users, paid-but-unminted quotes and the rest of open
+redemptions). Once a capacity source is set, mint quotes beyond that are
+refused on every rail, the checkout shows "N THH available" and the
+landing page shows the same number. Two ways to set it:
+
+- **Automatic, from MRR.** Put `MRR_API_KEY` / `MRR_API_SECRET` (the same
+  key `btc-rent.py` uses) in `.env`. The mint reads `GET /rental?type=active`
+  every minute and takes each rental's advertised hashrate and end time.
+  If the account also has rentals mining somewhere else (the fx-faucet),
+  list the ones on the proxy in `HASHU_MRR_RENTAL_IDS=123,456`.
+- **By hand**, in the operator GUI's *Hashrate capacity* card (TH/s and
+  hours left), or:
+
+  ```sh
+  curl -s -u operator:$OPERATOR_PASSWORD -XPOST \
+    https://mint.hashu.io/operator/api/capacity \
+    -d '{"rentals":[{"ths":100,"hours":3,"label":"MRR 123"}]}'
+  ```
+
+  `rentals` replaces the hand-entered list (`end_ms` in unix ms works
+  instead of `hours`). `{"limit": false}` stops capping, `{"limit": null}`
+  goes back to automatic. It is saved in `/data/capacity.json`.
+
+With no rentals and no MRR key, sales stay uncapped as before.
+
 ## Operations
 
 ```bash
 docker compose ps
 docker compose logs -f hashu            # mint + proxy
 docker compose logs -f phoenixd
-docker compose restart hashu            # note: open redemptions are in memory and are lost
+docker compose restart hashu            # open redemptions resume after the restart
 git pull && docker compose up -d --build hashu   # deploy a new version
 ```
 
 Caveats for the demo:
 
-- Open redemptions live in memory: restarting `hashu` mid-redemption drops
-  them (the melt never completes). Don't redeploy during the demo.
+- Open redemptions are journaled in the `hashu_data` volume
+  (`/data/redemptions.jsonl`, share trees in `/data/share-audit.jsonl`), so a
+  restart or redeploy resumes them: miners reconnect, get routed to the
+  redeemer's pool again and keep crediting. Shares submitted while `hashu`
+  is down are lost (miners are disconnected), so the redemption just takes
+  that much longer.
 - Stratum on 3335 is plaintext TCP, like most pools.
 - The mint API has no rate limiting; fine for a hackathon, not production.
 - The limited-access phoenixd password was not tested end to end before

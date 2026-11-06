@@ -284,7 +284,13 @@ fn method_of(name: &str) -> PaymentMethod {
 }
 
 async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
+    let cap = s.controls.capacity.snapshot(hashu_mint::capacity::now_ms());
     Json(json!({
+        // THH the rented hashrate can still deliver beyond what is owed;
+        // null when the mint does not cap sales.
+        "available_thh": cap.available_thh,
+        "rented_ths": cap.rented_ths,
+        "capacity_ends_ms": cap.ends_ms,
         "issuance_paused": s.controls.issuance_paused(),
         "methods": s.methods,
         "sats_per_thh": s.sats.as_ref().and_then(|p| p.quote(1).ok()),
@@ -322,6 +328,13 @@ async fn buy(State(s): State<Arc<CheckoutState>>, body: Bytes) -> Response {
             StatusCode::SERVICE_UNAVAILABLE,
             "the operator has paused sales; try again later",
         );
+    }
+    if let Err(e) = s
+        .controls
+        .capacity
+        .check(amount, hashu_mint::capacity::now_ms())
+    {
+        return err(StatusCode::CONFLICT, e);
     }
 
     let wallet = match fresh_wallet(&s.internal_url).await {

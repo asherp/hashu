@@ -8,7 +8,13 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::io;
+use std::path::Path;
 use std::sync::Mutex;
+
+use serde::{Deserialize, Serialize};
+
+use crate::journal::Journal;
 
 /// Hashes in one `THH` unit: 1 TH/s sustained for 1 hour = 10^12 × 3600.
 pub const HASHES_PER_THH: u128 = 3_600_000_000_000_000;
@@ -29,6 +35,31 @@ impl RedemptionId {
 
     pub fn as_bytes(&self) -> &[u8; 16] {
         &self.0
+    }
+}
+
+impl std::str::FromStr for RedemptionId {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bytes = hex::decode(s).map_err(|e| format!("bad redemption id: {e}"))?;
+        let bytes: [u8; 16] = bytes
+            .try_into()
+            .map_err(|_| "redemption id must be 16 bytes".to_string())?;
+        Ok(Self(bytes))
+    }
+}
+
+impl Serialize for RedemptionId {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for RedemptionId {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -83,12 +114,15 @@ impl Redemption {
     /// after crediting. Credits to a completed redemption are ignored, so
     /// shares in flight at completion do not move the total past target.
     pub fn credit_share(&mut self, difficulty: f64) -> RedemptionState {
+        self.credit_hashes(hashes_for_difficulty(difficulty))
+    }
+
+    /// Credit `hashes` directly. Same rules as [`Self::credit_share`].
+    pub fn credit_hashes(&mut self, hashes: u128) -> RedemptionState {
         if self.state == RedemptionState::Completed {
             return self.state;
         }
-        self.accumulated_hashes = self
-            .accumulated_hashes
-            .saturating_add(hashes_for_difficulty(difficulty));
+        self.accumulated_hashes = self.accumulated_hashes.saturating_add(hashes);
         self.state = if self.accumulated_hashes >= self.target_hashes {
             RedemptionState::Completed
         } else {
@@ -130,20 +164,107 @@ pub enum LedgerError {
     Unknown(RedemptionId),
 }
 
-/// In-memory store of redemptions, shared between the melt method (which
-/// opens them) and the proxy path (which credits shares). Persistence is
-/// not here yet; a restart forgets open redemptions.
+/// One line of the ledger journal. Credits record hashes, not difficulty,
+/// so replay is exact.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum LedgerRecord {
+    Open {
+        id: RedemptionId,
+        amount_thh: u64,
+        pool_url: String,
+        worker_name: String,
+    },
+    Credit {
+        id: RedemptionId,
+        /// Decimal string: u128 does not fit a JSON number portably.
+        hashes: String,
+    },
+}
+
+/// Store of redemptions, shared between the melt method (which opens
+/// them) and the proxy path (which credits shares). [`Self::new`] keeps
+/// them in memory only; [`Self::persistent`] also journals every change
+/// to disk and restores them on the next start.
 #[derive(Debug, Default)]
 pub struct RedemptionLedger {
     inner: Mutex<HashMap<RedemptionId, Redemption>>,
     /// Ids in the order they were opened, so routing can serve the oldest
     /// redemption first. Never shrinks; completed ids are skipped on read.
     order: Mutex<Vec<RedemptionId>>,
+    journal: Option<Journal>,
 }
 
 impl RedemptionLedger {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Ledger backed by the journal at `path`: replays it, compacts it to
+    /// one open + one credit record per redemption, and journals every
+    /// later open and credit. Missing file = empty ledger.
+    pub fn persistent(path: &Path) -> io::Result<Self> {
+        let (journal, records, skipped) = Journal::open::<LedgerRecord>(path)?;
+        if skipped > 0 {
+            tracing::warn!(?path, skipped, "skipped unreadable ledger journal lines");
+        }
+        let mut ledger = Self::new();
+        for record in records {
+            match record {
+                LedgerRecord::Open {
+                    id,
+                    amount_thh,
+                    pool_url,
+                    worker_name,
+                } => {
+                    // A duplicate open can only come from a hand-edited
+                    // file; keep the first.
+                    let _ = ledger.open(Redemption::new(id, amount_thh, pool_url, worker_name));
+                }
+                LedgerRecord::Credit { id, hashes } => {
+                    let Ok(hashes) = hashes.parse::<u128>() else {
+                        continue;
+                    };
+                    if let Some(r) = ledger.lock().get_mut(&id) {
+                        r.credit_hashes(hashes);
+                    }
+                }
+            }
+        }
+        let snapshot = ledger.all();
+        let compact: Vec<LedgerRecord> = snapshot
+            .iter()
+            .flat_map(|r| {
+                let open = LedgerRecord::Open {
+                    id: r.id,
+                    amount_thh: r.amount_thh,
+                    pool_url: r.pool_url.clone(),
+                    worker_name: r.worker_name.clone(),
+                };
+                let credit = (r.accumulated_hashes > 0).then(|| LedgerRecord::Credit {
+                    id: r.id,
+                    hashes: r.accumulated_hashes.to_string(),
+                });
+                std::iter::once(open).chain(credit)
+            })
+            .collect();
+        journal.rewrite(&compact)?;
+        tracing::info!(
+            path = ?journal.path(),
+            redemptions = snapshot.len(),
+            open = snapshot.iter().filter(|r| !r.is_complete()).count(),
+            "restored redemption ledger"
+        );
+        ledger.journal = Some(journal);
+        Ok(ledger)
+    }
+
+    fn record(&self, record: &LedgerRecord) {
+        if let Some(j) = &self.journal {
+            if let Err(e) = j.append(record) {
+                tracing::error!(error = %e, path = ?j.path(), "ledger journal write failed");
+            }
+        }
     }
 
     pub fn open(&self, redemption: Redemption) -> Result<(), LedgerError> {
@@ -152,6 +273,13 @@ impl RedemptionLedger {
             return Err(LedgerError::Duplicate(redemption.id));
         }
         let id = redemption.id;
+        // Journal while holding the lock so records keep apply order.
+        self.record(&LedgerRecord::Open {
+            id,
+            amount_thh: redemption.amount_thh,
+            pool_url: redemption.pool_url.clone(),
+            worker_name: redemption.worker_name.clone(),
+        });
         map.insert(id, redemption);
         // Take `order` while still holding `inner` so the two never
         // disagree about which ids exist. Lock order: inner, then order.
@@ -189,9 +317,7 @@ impl RedemptionLedger {
         id: &RedemptionId,
         difficulty: f64,
     ) -> Result<RedemptionState, LedgerError> {
-        let mut map = self.lock();
-        let redemption = map.get_mut(id).ok_or(LedgerError::Unknown(*id))?;
-        Ok(redemption.credit_share(difficulty))
+        self.credit_share_outcome(id, difficulty).map(|o| o.state)
     }
 
     /// Like [`Self::credit_share`], but also reports whether this credit is
@@ -206,7 +332,14 @@ impl RedemptionLedger {
         let mut map = self.lock();
         let redemption = map.get_mut(id).ok_or(LedgerError::Unknown(*id))?;
         let was_complete = redemption.is_complete();
-        let state = redemption.credit_share(difficulty);
+        let hashes = hashes_for_difficulty(difficulty);
+        let state = redemption.credit_hashes(hashes);
+        if !was_complete && hashes > 0 {
+            self.record(&LedgerRecord::Credit {
+                id: *id,
+                hashes: hashes.to_string(),
+            });
+        }
         Ok(CreditOutcome {
             state,
             newly_completed: !was_complete && state == RedemptionState::Completed,
@@ -348,6 +481,68 @@ mod tests {
         ledger.credit_share(&id(2), 1e9).unwrap();
         let ids: Vec<_> = ledger.active().iter().map(|r| r.id).collect();
         assert_eq!(ids, vec![id(5), id(9)]);
+    }
+
+    #[test]
+    fn persistent_ledger_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("redemptions.jsonl");
+        {
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            for n in [5u8, 2, 9] {
+                ledger
+                    .open(Redemption::new(
+                        id(n),
+                        1,
+                        "stratum+tcp://p:1".into(),
+                        format!("w{n}"),
+                    ))
+                    .unwrap();
+            }
+            ledger.credit_share(&id(5), 1.0).unwrap();
+            ledger.credit_share(&id(5), 3.0).unwrap();
+            ledger.credit_share(&id(2), 1e9).unwrap(); // completes
+            ledger.credit_share(&id(2), 1e9).unwrap(); // ignored
+        }
+        // Torn last line, as from a kill mid-write.
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(br#"{"op":"credit","id":"09"#).unwrap();
+        drop(f);
+
+        let ledger = RedemptionLedger::persistent(&path).unwrap();
+        let ids: Vec<_> = ledger.active().iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![id(5), id(9)], "order kept, completed skipped");
+        let r5 = ledger.get(&id(5)).unwrap();
+        assert_eq!(r5.accumulated_hashes, 4 * HASHES_PER_DIFF_ONE);
+        assert_eq!(r5.state, RedemptionState::Active);
+        assert_eq!(r5.worker_name, "w5");
+        assert_eq!(
+            ledger.get(&id(2)).unwrap().state,
+            RedemptionState::Completed
+        );
+        assert_eq!(ledger.get(&id(9)).unwrap().state, RedemptionState::Pending);
+
+        // Keeps journaling after restore, and a third start sees it.
+        let done = ledger.credit_share_outcome(&id(5), 1e9).unwrap();
+        assert!(done.newly_completed);
+        drop(ledger);
+        let ledger = RedemptionLedger::persistent(&path).unwrap();
+        assert_eq!(ledger.active().len(), 1);
+        assert!(ledger.get(&id(5)).unwrap().is_complete());
+    }
+
+    #[test]
+    fn redemption_id_round_trips_through_json() {
+        let json = serde_json::to_string(&id(0xab)).unwrap();
+        assert_eq!(json, format!("\"{}\"", "ab".repeat(16)));
+        assert_eq!(
+            serde_json::from_str::<RedemptionId>(&json).unwrap(),
+            id(0xab)
+        );
     }
 
     #[test]

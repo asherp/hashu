@@ -82,6 +82,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       <a href="#developers">Developers</a>
       <a href="/checkout/">Buy hashrate</a>
       <a href="https://github.com/asherp/hashu">GitHub</a>
+      <a href="https://x.com/asherp" rel="noopener">Contact</a>
     </div>
   </nav>
 
@@ -98,6 +99,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       <div class="stat"><div class="k">Price in USDT</div><div class="v" id="s-usdt">—</div></div>
       <div class="stat"><div class="k">Pay with</div><div class="v" id="s-rails">—</div></div>
       <div class="stat"><div class="k">Sales</div><div class="v" id="s-sales">—</div></div>
+      <div class="stat"><div class="k">THH available</div><div class="v" id="s-avail">—</div></div>
     </div>
   </header>
 
@@ -148,6 +150,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
 
   <footer>
     <span>Hashu · built at bitcoin++ Seoul 2026 on Tether's Mining Development Kit</span>
+    <span>Inquiries: <a href="https://x.com/asherp" rel="noopener">@asherp</a> on X · <a href="mailto:asherp.nostr@gmail.com">asherp.nostr@gmail.com</a></span>
     <span><a href="https://github.com/asherp/hashu">Source</a> · MIT / Apache-2.0</span>
   </footer>
 </div>
@@ -179,6 +182,8 @@ async function load() {
     $('s-usdt').innerHTML = i.usdt_per_thh != null ? fmt(i.usdt_per_thh, 4) + ' <small>USDT / THH</small>' : '<small>not offered</small>';
     const rails = (i.methods || []).map((m) => RAILS[m] || m);
     $('s-rails').textContent = rails.length ? rails.join(' · ') : 'none';
+    $('s-avail').innerHTML = i.available_thh == null ? '<small>uncapped</small>'
+      : fmt(i.available_thh) + ` <small>THH · ${fmt(i.rented_ths || 0, 1)} TH/s rented</small>`;
     $('s-sales').innerHTML = i.issuance_paused ? '<span class="pill no">paused</span>' : '<span class="pill ok">open</span>';
     if (i.mint_url && /^https?:\/\//.test(i.mint_url)) { mintUrl = i.mint_url.replace(/\/+$/, ''); showUrl(); }
   } catch (e) {
