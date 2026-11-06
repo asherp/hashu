@@ -177,6 +177,7 @@ pub const MAX_TEST_MINT_THH: u64 = 1_000;
 pub fn router(state: Arc<OperatorState>) -> axum::Router {
     axum::Router::new()
         .route("/", get(page))
+        .route("/scan.js", get(crate::checkout::scan_js))
         .route("/api/operator", get(operator))
         .route("/api/hashrate", get(hashrate))
         .route("/api/track", get(track))

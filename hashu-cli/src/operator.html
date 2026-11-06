@@ -189,6 +189,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
       <div id="test-qr" hidden style="align-self:center;background:#fff;padding:8px;border-radius:10px;line-height:0;width:max-content;margin:0 auto"></div>
       <p class="note" id="test-qr-note" style="text-align:center;margin:0"></p>
       <textarea id="test-token" class="mono" rows="3" placeholder="token appears here" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;resize:vertical"></textarea>
+      <div class="row"><button class="act" type="button" id="btn-test-scan">Scan token QR</button></div>
       <input type="text" id="test-pool" placeholder="stratum+tcp://pool:3333" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;font:inherit">
       <input type="text" id="test-worker" placeholder="worker name, e.g. you.rig1" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;font:inherit">
       <input type="text" id="test-password" placeholder="worker password (optional, default x)" autocomplete="off" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;font:inherit">
@@ -549,6 +550,18 @@ function playQr (box, note, frames) {
   box.innerHTML = frames[0]
   if (frames.length > 1) box._t = setInterval(() => { i = (i + 1) % frames.length; box.innerHTML = frames[i] }, 250)
 }
+// Reads a token from a QR code (plain or animated) with the camera. The
+// scanner script is bundled with the mint and loaded on first use.
+function scanToken (into) {
+  const go = () => window.HashuScan.openScanner({ onToken: (t) => { into.value = t; alertMsg('') } })
+  if (window.HashuScan) return go()
+  const s = document.createElement('script')
+  s.src = 'scan.js'
+  s.onload = go
+  s.onerror = () => alertMsg('Could not load the QR scanner.')
+  document.head.appendChild(s)
+}
+$('btn-test-scan').addEventListener('click', () => scanToken($('test-token')))
 try { $('test-pool').value = localStorage.getItem('hashu.testPool') || ''; $('test-worker').value = localStorage.getItem('hashu.testWorker') || '' } catch {}
 $('btn-test-mint').addEventListener('click', async () => {
   const b = $('btn-test-mint'); b.disabled = true
