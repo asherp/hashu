@@ -174,6 +174,19 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
         <p class="note" id="cap-note">Capacity = rented TH/s × hours left. Mint quotes beyond capacity minus THH owed are refused.</p>
       </section>
 
+      <section class="card" aria-labelledby="h-test">
+        <h2 id="h-test">Test redemption</h2>
+        <p class="note">Mint THH without a payment to rehearse a redemption. It is real ecash: it counts as owed until redeemed.</p>
+        <div class="row">
+          <input type="number" id="test-amt" min="1" max="1000" step="1" value="1"> <span>THH</span>
+          <button class="act" id="btn-test-mint">Mint test THH</button>
+        </div>
+        <textarea id="test-token" class="mono" rows="3" placeholder="token appears here" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;resize:vertical"></textarea>
+        <input type="text" id="test-pool" placeholder="stratum+tcp://pool:3333" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;font:inherit">
+        <input type="text" id="test-worker" placeholder="worker name, e.g. you.rig1" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;font:inherit">
+        <div class="row"><button class="act primary" id="btn-test-redeem">Redeem to this pool</button><span class="note" id="test-note"></span></div>
+      </section>
+
       <section class="card" aria-labelledby="h-obl">
         <h2 id="h-obl">Outstanding obligations</h2>
         <dl class="kv" id="obl"></dl>
@@ -386,7 +399,8 @@ function render () {
     ['Paid, not yet minted', fmtThh(o.paid_not_minted_thh, 0)],
     ['Open redemptions, still to deliver', fmtThh(o.open_redemption_remaining_thh)],
     ['Total THH owed', fmtThh(o.total_thh_owed), 'total'],
-    ['Unpaid mint quotes', o.unpaid_quotes]
+    ['Unpaid mint quotes', o.unpaid_quotes],
+    ['Test THH minted without payment (all time)', fmtThh(o.test_minted_thh || 0, 0)]
   ])
   const cap = op.capacity
   if (cap) {
@@ -444,23 +458,39 @@ function render () {
 }
 
 // ---- polling ----------------------------------------------------------
+// Merge new samples by timestamp: overlapping polls (the timer plus a poll
+// after a click) can fetch the same range twice, and appending both drew
+// the line back in time.
+function mergeSamples (fresh) {
+  if (!fresh.length) return
+  const byT = new Map(state.samples.map((x) => [x.t_ms, x]))
+  for (const x of fresh) byT.set(x.t_ms, x)
+  state.samples = [...byT.values()].sort((a, b) => a.t_ms - b.t_ms)
+  if (state.samples.length > 3600) state.samples.splice(0, state.samples.length - 3600)
+  state.lastT = state.samples[state.samples.length - 1].t_ms
+}
+
 async function poll () {
+  // One poll at a time; a request made meanwhile runs right after.
+  if (state.polling) { state.pollAgain = true; return }
+  state.polling = true
   try {
     const [op, hr] = await Promise.all([api('api/operator'), api(`api/hashrate?since=${state.lastT}`)])
+    // A restarted daemon starts a new series; drop the old one.
+    if (state.op && op.started_ms !== state.op.started_ms) { state.samples = []; state.lastT = 0 }
     state.op = op
-    if (hr.samples.length) {
-      state.samples.push(...hr.samples)
-      state.lastT = hr.samples[hr.samples.length - 1].t_ms
-      if (state.samples.length > 4000) state.samples.splice(0, state.samples.length - 3600)
-    }
+    mergeSamples(hr.samples)
     // Follow the current redemption unless the operator picked another.
     if (!state.pinned && op.current) state.selected = op.current.id
     if (state.selected) state.track = await api(`api/track?id=${encodeURIComponent(state.selected)}`).catch(() => null)
     alertMsg('')
   } catch (e) {
     alertMsg(`Cannot reach the mint daemon: ${e.message}`)
+  } finally {
+    state.polling = false
   }
   render(); drawRate(); drawRedemption()
+  if (state.pollAgain) { state.pollAgain = false; poll() }
 }
 
 $('red-rows').addEventListener('click', (ev) => {
@@ -496,6 +526,30 @@ $('btn-markup').addEventListener('click', () => {
   if (!Number.isFinite(pct)) return alertMsg('Markup must be a number')
   state.markupDirty = false
   setControls({ markup_bps: Math.round(pct * 100) })
+})
+async function postJson (path, body) {
+  return api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+}
+try { $('test-pool').value = localStorage.getItem('hashu.testPool') || ''; $('test-worker').value = localStorage.getItem('hashu.testWorker') || '' } catch {}
+$('btn-test-mint').addEventListener('click', async () => {
+  const b = $('btn-test-mint'); b.disabled = true
+  try {
+    const r = await postJson('api/test-mint', { amount_thh: Math.floor(Number($('test-amt').value)) })
+    $('test-token').value = r.token
+    $('test-note').textContent = `Minted ${r.amount_thh} test THH.`
+    alertMsg('')
+  } catch (e) { alertMsg(e.message) } finally { b.disabled = false; poll() }
+})
+$('btn-test-redeem').addEventListener('click', async () => {
+  const b = $('btn-test-redeem'); b.disabled = true
+  try {
+    try { localStorage.setItem('hashu.testPool', $('test-pool').value); localStorage.setItem('hashu.testWorker', $('test-worker').value) } catch {}
+    const r = await postJson('api/test-redeem', { token: $('test-token').value, pool_url: $('test-pool').value, worker_name: $('test-worker').value })
+    $('test-note').textContent = `Redemption ${r.redemption_id.slice(0, 8)} open for ${r.amount_thh} THH.`
+    $('test-token').value = ''
+    state.selected = r.redemption_id; state.pinned = true
+    alertMsg('')
+  } catch (e) { alertMsg(e.message) } finally { b.disabled = false; poll() }
 })
 // ---- capacity ---------------------------------------------------------
 async function setCapacity (body) {

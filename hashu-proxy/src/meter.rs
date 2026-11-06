@@ -189,6 +189,22 @@ impl HashrateMeter {
             .collect()
     }
 
+    /// Average hashrate over the trailing `window`, from the cumulative
+    /// work (steadier than the per-tick rate). `None` before two samples.
+    pub fn rate_over(&self, window: Duration) -> Option<f64> {
+        let inner = self.inner.lock().unwrap();
+        let last = *inner.samples.back()?;
+        let since = last.t_ms.saturating_sub(window.as_millis() as u64);
+        let first = *inner.samples.iter().find(|x| x.t_ms >= since)?;
+        if last.t_ms <= first.t_ms {
+            return None;
+        }
+        Some(
+            (last.total_hashes - first.total_hashes).max(0.0) * 1000.0
+                / (last.t_ms - first.t_ms) as f64,
+        )
+    }
+
     /// The latest sample, if any.
     pub fn latest(&self) -> Option<Sample> {
         self.inner.lock().unwrap().samples.back().copied()
@@ -265,6 +281,17 @@ mod tests {
         h.sample_at(20_000);
         h.sample_at(30_000);
         assert_eq!(h.latest().unwrap().hashrate_hs, 0.0);
+    }
+
+    #[test]
+    fn rate_over_averages_the_window() {
+        let (m, _, h) = meter();
+        assert_eq!(h.rate_over(Duration::from_secs(60)), None);
+        h.sample_at(0);
+        m.add_accepted_work(1.0);
+        h.sample_at(1_000);
+        let r = h.rate_over(Duration::from_secs(60)).unwrap();
+        assert_eq!(r, HASHES_PER_DIFF_ONE as f64);
     }
 
     #[test]

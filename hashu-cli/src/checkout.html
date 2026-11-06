@@ -91,6 +91,7 @@ button.act:disabled { opacity: 0.5; cursor: default; }
     <div class="row chips" id="chips"><button data-v="1">1</button><button data-v="10">10</button><button data-v="100">100</button><button data-v="1000">1,000</button></div>
     <div class="row" id="methods-row"><span class="note">Pay with</span><div class="seg" id="methods"></div></div>
     <p class="note" id="equiv"></p>
+    <p class="note" id="eta"></p>
     <div class="price"><span class="note" id="price-label">Price</span><b id="price">—</b></div>
     <button class="act primary" id="btn-buy">Get invoice</button>
     <p class="note" id="paused" hidden>Sales are paused by the mint operator.</p>
@@ -179,6 +180,7 @@ function renderPrice () {
   const n = Math.max(1, Math.floor(Number($('amount').value) || 0))
   const hours = n
   $('equiv').textContent = `${n.toLocaleString()} THH = ${hours < 48 ? `1 TH/s for ${hours} h` : `${(n / 24).toFixed(1)} TH/s for a day`}, or ${(n * HASHES_PER_THH).toExponential(2)} hashes.`
+  $('eta').textContent = etaText(n)
   if (st.method === 'usdt' && i.usdt_per_thh != null) {
     $('price-label').textContent = `${(i.usdt_per_thh).toFixed(4)} USDT per THH`
     $('price').textContent = `${(n * i.usdt_per_thh).toFixed(2)} USDT`
@@ -186,6 +188,21 @@ function renderPrice () {
     $('price-label').textContent = `${i.sats_per_thh.toLocaleString()} sats per THH`
     $('price').textContent = `${(n * i.sats_per_thh).toLocaleString()} sats`
   } else { $('price').textContent = '—' }
+}
+// Delivery estimate: redemptions are served oldest first, so this order
+// waits for the THH still owed to open ones, then fills at the proxy's
+// current hashrate (5-minute average).
+function etaText (n) {
+  const d = st.info && st.info.delivery
+  if (!d) return ''
+  const hs = d.hashrate_hs || 0
+  if (!(hs > 0)) return 'Delivery estimate: no hashrate on the mint right now, so delivery starts when its miners are back.'
+  const total = (d.queue_thh + n) * HASHES_PER_THH / hs
+  const ahead = d.queue_thh > 0.0005 ? `, after ${fmtThh(d.queue_thh)} THH still owed to ${d.open_redemptions} earlier redemption${d.open_redemptions === 1 ? '' : 's'}` : ''
+  let t = `Delivery estimate if you redeem now: about ${fmtDur(total)} at ${fmtRate(hs)}${ahead}.`
+  const i = st.info
+  if (i.capacity_ends_ms && Date.now() + total * 1000 > i.capacity_ends_ms) t += ' That runs past the mint\'s current hashrate rental.'
+  return t
 }
 async function loadInfo () {
   try {
@@ -351,7 +368,7 @@ loadInfo().then(() => {
   else if (h.get('redemption')) { st.redemption = h.get('redemption'); step('redeem'); pollRedemption() }
   else step('buy')
 })
-setInterval(() => { if (!st.checkout) loadInfo() }, 15000)
+setInterval(() => { if (!st.checkout) loadInfo() }, 10000)
 window.addEventListener('resize', () => { if (st.redemption) pollRedemption() })
 </script>
 </body>

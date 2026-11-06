@@ -141,7 +141,11 @@ pub struct UsdtPaymentRequest {
     pub chain_id: u64,
     pub token: String,
     pub to: String,
-    /// Exact amount to send, as a decimal USDT string.
+    /// Exact amount to send, as a decimal USDT string. Serialized as
+    /// `amount_usdt`: cdk flattens `extra_json` into the NUT-04 quote,
+    /// whose own `amount` is the THH amount, and a second `amount` key made
+    /// cdk wallets fail to parse the quote.
+    #[serde(rename = "amount_usdt", alias = "amount")]
     pub amount: String,
     /// Exact amount to send, in micro-USDT (the token's base unit).
     pub amount_micro: u64,
@@ -675,6 +679,26 @@ mod tests {
                 Ok((b.remove(0), next))
             }
         }
+    }
+
+    #[test]
+    fn quote_extra_does_not_shadow_the_thh_amount() {
+        // cdk flattens extra_json into the NUT-04 response, which has its
+        // own `amount` (THH); a second `amount` broke wallets.
+        let req = UsdtPaymentRequest {
+            chain_id: 1,
+            token: "t".into(),
+            to: "a".into(),
+            amount: "0.050000".into(),
+            amount_micro: 50_000,
+            amount_thh: 1,
+            expiry: 0,
+        };
+        let v = serde_json::to_value(&req).unwrap();
+        assert!(v.get("amount").is_none());
+        assert_eq!(v["amount_usdt"], "0.050000");
+        let back: UsdtPaymentRequest = serde_json::from_value(v).unwrap();
+        assert_eq!(back, req);
     }
 
     fn rail() -> UsdtRail {
