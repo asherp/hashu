@@ -10,12 +10,14 @@
 //!   hashu mint run       — run mint + proxy in one process (done)
 //!   hashu redemptions    — list active redemptions
 
+pub mod checkout;
 pub mod config;
 pub mod init;
 pub mod manifest;
 pub mod mine;
 pub mod mint;
 pub mod network;
+pub mod operator;
 pub mod oracle;
 pub mod proxy;
 pub mod wallet;

@@ -320,6 +320,11 @@ fn update_session(
                 ntime: submit.ntime,
             };
             metrics.shares_committed.fetch_add(1, Ordering::Relaxed);
+            metrics.add_accepted_work(
+                submit
+                    .difficulty_at_submit
+                    .unwrap_or(crate::credit::DEFAULT_SHARE_DIFFICULTY),
+            );
 
             // Credit only shares that made it into the commitment tree, so
             // every credited hash has a leaf behind it (§4.7.2).

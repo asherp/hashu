@@ -38,6 +38,9 @@ pub enum PricingError {
     Overflow(u64),
     #[error("amount must be at least 1 THH")]
     ZeroAmount,
+    /// The operator has paused issuance.
+    #[error("issuance is paused by the mint operator")]
+    Paused,
 }
 
 /// Prices `THH` in one payment rail's base unit.

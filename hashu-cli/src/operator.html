@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hashu mint operator</title>
+<style>
+:root {
+  --bg: #f6f6f4; --surface: #ffffff; --ink: #1b1b1a; --ink-2: #55534f; --ink-3: #8a8782;
+  --line: rgba(27,27,26,0.12); --grid: rgba(27,27,26,0.08);
+  --brand: #e8850c; --brand-fill: rgba(232,133,12,0.14); --brand-ink: #111;
+  --target: #6b6964; --good: #2f8a57; --good-bg: rgba(47,138,87,0.14);
+  --bad: #c2403a; --bad-bg: rgba(194,64,58,0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111110; --surface: #1a1a19; --ink: #f1efea; --ink-2: #b5b2ab; --ink-3: #85827c;
+    --line: rgba(241,239,234,0.14); --grid: rgba(241,239,234,0.08);
+    --brand: #f7931a; --brand-fill: rgba(247,147,26,0.18);
+    --target: #a19e97; --good: #5cc28a; --good-bg: rgba(92,194,138,0.16);
+    --bad: #e06c6c; --bad-bg: rgba(224,108,108,0.14);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px; display: flex; flex-direction: column; gap: 16px; }
+header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+h1 span { color: var(--brand); }
+h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-2); margin: 0; }
+.sub { color: var(--ink-3); font-size: 13px; }
+.pill { border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.pill.on { background: var(--good-bg); color: var(--good); }
+.pill.off { background: var(--bad-bg); color: var(--bad); }
+.pill.rail { border: 1px solid var(--line); color: var(--ink-2); font-weight: 500; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.card-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+.tile label { display: block; font-size: 12px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.04em; }
+.tile b { display: block; font-size: 24px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.tile small { color: var(--ink-3); overflow-wrap: anywhere; }
+.cols { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: start; }
+@media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
+.chart { position: relative; width: 100%; height: 240px; }
+.chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.chart .axis text { fill: var(--ink-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart .gridline { stroke: var(--grid); stroke-width: 1; }
+.chart .series { fill: none; stroke: var(--brand); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .area { fill: var(--brand-fill); stroke: none; }
+.chart .target { stroke: var(--target); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.chart .target-label { fill: var(--ink-2); font-size: 11px; }
+.chart .cross { stroke: var(--ink-3); stroke-width: 1; }
+.chart .dot { fill: var(--brand); stroke: var(--surface); stroke-width: 2; }
+.chart .empty { fill: var(--ink-3); font-size: 13px; }
+.tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--bg); border-radius: 6px; padding: 6px 8px; font-size: 12px; white-space: nowrap; transform: translate(-50%, -110%); display: none; font-variant-numeric: tabular-nums; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; background: transparent; color: var(--ink-2); padding: 4px 10px; cursor: pointer; font: inherit; font-size: 12px; }
+.seg button.on { background: var(--brand); color: var(--brand-ink); }
+button.act { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 6px; padding: 6px 14px; cursor: pointer; font: inherit; }
+button.act.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
+button.act.danger { border-color: var(--bad); color: var(--bad); }
+input[type=number] { width: 96px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; }
+.bar { height: 8px; background: var(--grid); border-radius: 4px; overflow: hidden; }
+.bar > div { height: 100%; background: var(--brand); transition: width 0.5s; }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; font-variant-numeric: tabular-nums; }
+.kv dt { color: var(--ink-2); }
+.kv dd { margin: 0; text-align: right; font-weight: 600; }
+.kv .total { border-top: 1px solid var(--line); padding-top: 6px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+th { text-align: left; font-weight: 600; color: var(--ink-3); font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+tr.sel td { background: var(--brand-fill); }
+tbody tr { cursor: pointer; }
+td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.alert { border: 1px solid var(--bad); background: var(--bad-bg); color: var(--ink); border-radius: 8px; padding: 10px 14px; display: none; }
+.note { color: var(--ink-3); font-size: 12px; margin: 0; }
+.scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1><span>Hashu</span> mint operator</h1>
+      <div class="sub" id="sub">connecting…</div>
+    </div>
+    <div class="row" id="badges"></div>
+  </header>
+
+  <div class="alert" id="alert"></div>
+
+  <section class="tiles" aria-label="Summary">
+    <div class="tile"><label>Hashrate now</label><b id="t-rate">—</b><small id="t-rate-sub">through the proxy</small></div>
+    <div class="tile"><label>THH owed</label><b id="t-owed">—</b><small>ecash out + open redemptions</small></div>
+    <div class="tile"><label>Redemption remaining</label><b id="t-open">—</b><small id="t-open-sub">no open redemption</small></div>
+    <div class="tile"><label>THH sold</label><b id="t-sold">—</b><small id="t-sold-sub">—</small></div>
+    <div class="tile"><label>Price</label><b id="t-price">—</b><small id="t-price-sub">sats per THH</small></div>
+  </section>
+
+  <section class="card" aria-labelledby="h-rate">
+    <div class="card-head">
+      <h2 id="h-rate">Real-time hashrate</h2>
+      <div class="row">
+        <span class="note">Average</span>
+        <div class="seg" id="avg"><button data-v="60" class="on">1 min</button><button data-v="300">5 min</button></div>
+        <span class="note">Span</span>
+        <div class="seg" id="span"><button data-v="300">5 min</button><button data-v="900" class="on">15 min</button><button data-v="3600">1 h</button></div>
+      </div>
+    </div>
+    <div class="chart" id="c-rate"></div>
+    <p class="note">Estimated from accepted shares: each share of difficulty D is D × 2<sup>32</sup> hashes. Includes hashrate sent to the default pool and to redeemers.</p>
+  </section>
+
+  <section class="card" aria-labelledby="h-red">
+    <div class="card-head">
+      <h2 id="h-red">Hashrate delivered to the redemption</h2>
+      <span class="pill rail" id="red-state">—</span>
+    </div>
+    <div class="row sub" id="red-meta">No redemption yet. A holder redeems by melting THH with the <span class="mono">hashrate</span> method.</div>
+    <div class="bar"><div id="red-bar" style="width:0%"></div></div>
+    <div class="chart" id="c-red"></div>
+    <p class="note">Hashrate integrated since the redemption opened: the THH the redeemer's pool has received (1 THH = 3.6 × 10<sup>15</sup> hashes). The dashed line is the amount redeemed.</p>
+  </section>
+
+  <div class="cols">
+    <section class="card" aria-labelledby="h-list">
+      <h2 id="h-list">Redemptions</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Opened</th><th>Pool / worker</th><th>THH</th><th style="width:28%">Progress</th><th>State</th></tr></thead>
+          <tbody id="red-rows"><tr><td colspan="5" class="sub">None yet.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div style="display:flex;flex-direction:column;gap:16px;min-width:0">
+      <section class="card" aria-labelledby="h-ctl">
+        <h2 id="h-ctl">Mint controls</h2>
+        <div class="row">
+          <button class="act" id="btn-pause">…</button>
+          <span class="note" id="pause-note"></span>
+        </div>
+        <div class="row">
+          <label for="markup">Markup</label>
+          <input type="number" id="markup" step="0.5" min="-90" max="1000"> <span>%</span>
+          <button class="act" id="btn-markup">Apply</button>
+        </div>
+        <p class="note" id="price-note">Applied to every rail's base price. Redemptions and the proxy keep running while issuance is paused.</p>
+      </section>
+
+      <section class="card" aria-labelledby="h-obl">
+        <h2 id="h-obl">Outstanding obligations</h2>
+        <dl class="kv" id="obl"></dl>
+      </section>
+
+      <section class="card" aria-labelledby="h-proxy">
+        <h2 id="h-proxy">Proxy</h2>
+        <dl class="kv" id="proxy"></dl>
+      </section>
+    </div>
+  </div>
+</main>
+
+<script>
+'use strict'
+// All URLs are relative, so the page also works behind a path prefix.
+const $ = (id) => document.getElementById(id)
+const HASHES_PER_THH = 3.6e15
+const state = { op: null, samples: [], lastT: 0, selected: null, track: null, avg: 60, span: 900, markupDirty: false }
+
+const fmtRate = (hs) => {
+  if (!Number.isFinite(hs) || hs <= 0) return '0 H/s'
+  const u = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s', 'EH/s']
+  let i = 0
+  while (hs >= 1000 && i < u.length - 1) { hs /= 1000; i++ }
+  return `${hs >= 100 ? hs.toFixed(0) : hs >= 10 ? hs.toFixed(1) : hs.toFixed(2)} ${u[i]}`
+}
+const fmtThh = (x, d) => {
+  if (!Number.isFinite(x)) return '—'
+  if (d === undefined) d = x === 0 ? 0 : x < 10 ? 3 : x < 1000 ? 2 : 0
+  return x.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })
+}
+const fmtDur = (s) => {
+  if (!Number.isFinite(s) || s < 0) return '—'
+  s = Math.round(s)
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
+  const h = Math.floor(s / 3600); return `${h}h ${Math.floor((s % 3600) / 60)}m`
+}
+const fmtTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+const shortId = (id) => (id || '').slice(0, 8)
+const hostOf = (u) => (u || '').replace(/^stratum\+tcp:\/\//, '')
+
+async function api (path, opts) {
+  const r = await fetch(path, opts)
+  const body = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`)
+  return body
+}
+function alertMsg (msg) { const a = $('alert'); a.textContent = msg || ''; a.style.display = msg ? 'block' : 'none' }
+
+// ---- charts -----------------------------------------------------------
+// A small SVG line/area chart with a crosshair tooltip. Single series, one
+// y-axis; an optional dashed reference line (the redemption target).
+function niceTicks (max, n) {
+  if (!(max > 0)) return [0, 1]
+  const raw = max / n, p = Math.pow(10, Math.floor(Math.log10(raw)))
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * p).find((s) => s >= raw)
+  const ticks = []
+  for (let v = 0; v <= max + step * 0.001; v += step) ticks.push(v)
+  if (ticks[ticks.length - 1] < max) ticks.push(ticks[ticks.length - 1] + step)
+  return ticks
+}
+
+function drawChart (el, cfg) {
+  const W = Math.max(280, el.clientWidth), H = el.clientHeight
+  const m = { l: 64, r: 16, t: 12, b: 24 }
+  const pts = cfg.points
+  const svgNS = 'http://www.w3.org/2000/svg'
+  let svg = el.querySelector('svg'), tip = el.querySelector('.tip')
+  if (!svg) {
+    svg = document.createElementNS(svgNS, 'svg'); el.appendChild(svg)
+    tip = document.createElement('div'); tip.className = 'tip'; el.appendChild(tip)
+    svg.addEventListener('mouseleave', () => { tip.style.display = 'none'; const g = svg.querySelector('.hover'); if (g) g.style.display = 'none' })
+  }
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`)
+  if (!pts.length) {
+    svg.innerHTML = `<text class="empty" x="${W / 2}" y="${H / 2}" text-anchor="middle">${esc(cfg.empty)}</text>`
+    svg.onmousemove = null
+    return
+  }
+  const x0 = cfg.xMin, x1 = Math.max(cfg.xMax, x0 + 1)
+  const yMax = Math.max(cfg.yFloor || 0, cfg.target || 0, ...pts.map((p) => p[1])) * 1.05
+  const ticks = niceTicks(yMax, 4), y1 = ticks[ticks.length - 1]
+  const X = (t) => m.l + ((t - x0) / (x1 - x0)) * (W - m.l - m.r)
+  const Y = (v) => H - m.b - (v / y1) * (H - m.t - m.b)
+  let s = '<g class="axis">'
+  for (const v of ticks) s += `<line class="gridline" x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${m.l - 8}" y="${Y(v) + 4}" text-anchor="end">${esc(cfg.yFmt(v))}</text>`
+  const nx = Math.max(2, Math.floor((W - m.l - m.r) / 110))
+  for (let i = 0; i <= nx; i++) {
+    const t = x0 + ((x1 - x0) * i) / nx
+    s += `<text x="${X(t)}" y="${H - 6}" text-anchor="${i === 0 ? 'start' : i === nx ? 'end' : 'middle'}">${esc(cfg.xFmt(t))}</text>`
+  }
+  s += '</g>'
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join('')
+  s += `<path class="area" d="${line}L${X(pts[pts.length - 1][0]).toFixed(1)},${Y(0)}L${X(pts[0][0]).toFixed(1)},${Y(0)}Z"/>`
+  if (cfg.target) s += `<line class="target" x1="${m.l}" x2="${W - m.r}" y1="${Y(cfg.target)}" y2="${Y(cfg.target)}"/><text class="target-label" x="${W - m.r}" y="${Y(cfg.target) - 6}" text-anchor="end">${esc(cfg.targetLabel)}</text>`
+  s += `<path class="series" d="${line}"/>`
+  const last = pts[pts.length - 1]
+  s += `<circle class="dot" r="4" cx="${X(last[0])}" cy="${Y(last[1])}"/>`
+  s += '<g class="hover" style="display:none"><line class="cross" y1="' + m.t + '" y2="' + (H - m.b) + '"/><circle class="dot" r="5"/></g>'
+  s += `<rect x="${m.l}" y="${m.t}" width="${W - m.l - m.r}" height="${H - m.t - m.b}" fill="transparent"/>`
+  svg.innerHTML = s
+  const g = svg.querySelector('.hover'), cross = g.querySelector('line'), dot = g.querySelector('circle')
+  svg.onmousemove = (ev) => {
+    const r = svg.getBoundingClientRect()
+    const px = ((ev.clientX - r.left) / r.width) * W
+    const t = x0 + ((px - m.l) / (W - m.l - m.r)) * (x1 - x0)
+    let best = pts[0]
+    for (const p of pts) if (Math.abs(p[0] - t) < Math.abs(best[0] - t)) best = p
+    const cx = X(best[0]), cy = Y(best[1])
+    g.style.display = ''
+    cross.setAttribute('x1', cx); cross.setAttribute('x2', cx)
+    dot.setAttribute('cx', cx); dot.setAttribute('cy', cy)
+    tip.innerHTML = cfg.tip(best)
+    tip.style.display = 'block'
+    tip.style.left = `${(cx / W) * r.width}px`
+    tip.style.top = `${(cy / H) * r.height}px`
+  }
+}
+
+// Hashrate over a trailing window, from the cumulative work series.
+function rateSeries (samples, avgS) {
+  const out = []
+  let j = 0
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i]
+    while (j < i && samples[j].t_ms < s.t_ms - avgS * 1000) j++
+    const b = samples[j]
+    if (b && s.t_ms > b.t_ms) out.push([s.t_ms, Math.max(0, s.total_hashes - b.total_hashes) * 1000 / (s.t_ms - b.t_ms)])
+    else if (i > 0) out.push([s.t_ms, 0])
+  }
+  return out
+}
+
+function drawRate () {
+  const now = state.samples.length ? state.samples[state.samples.length - 1].t_ms : Date.now()
+  // Start the axis at the first sample when there is less data than the span.
+  const first = state.samples.length ? state.samples[0].t_ms : now
+  const from = Math.max(now - state.span * 1000, Math.min(first, now - 60000))
+  const pts = rateSeries(state.samples, state.avg).filter((p) => p[0] >= from)
+  drawChart($('c-rate'), {
+    points: pts, xMin: from, xMax: now, yFloor: 1e12,
+    empty: 'Waiting for samples…',
+    yFmt: fmtRate, xFmt: (t) => fmtTime(t).replace(/:\d\d$/, (x) => state.span <= 900 ? x : ''),
+    tip: (p) => `<b>${fmtRate(p[1])}</b> · ${fmtTime(p[0])}`
+  })
+}
+
+function drawRedemption () {
+  const t = state.track
+  if (!t) {
+    drawChart($('c-red'), { points: [], empty: 'No redemption yet' })
+    return
+  }
+  const end = t.completed_ms || (state.op ? state.op.now_ms : Date.now())
+  const pts = t.points.map((p) => [p[0], p[1] / HASHES_PER_THH])
+  if (!t.completed_ms && pts.length) pts.push([end, pts[pts.length - 1][1]])
+  drawChart($('c-red'), {
+    points: pts, xMin: t.opened_ms, xMax: Math.max(end, t.opened_ms + 60000),
+    target: t.amount_thh, targetLabel: `target ${fmtThh(t.amount_thh, 0)} THH`,
+    empty: 'Waiting for shares…',
+    yFmt: (v) => `${fmtThh(v, v < 10 ? 2 : 0)} THH`,
+    xFmt: (ms) => `+${fmtDur((ms - t.opened_ms) / 1000)}`,
+    tip: (p) => `<b>${fmtThh(p[1])} THH</b> of ${fmtThh(t.amount_thh, 0)} · +${fmtDur((p[0] - t.opened_ms) / 1000)}`
+  })
+}
+
+// Rate into one redemption over its last minute of points.
+function trackRate (t) {
+  if (!t || t.points.length < 2) return 0
+  const last = t.points[t.points.length - 1]
+  const end = t.completed_ms || (state.op ? state.op.now_ms : last[0])
+  let base = t.points[0]
+  for (const p of t.points) if (p[0] <= end - 60000) base = p
+  return end > base[0] ? (last[1] - base[1]) * 1000 / (end - base[0]) : 0
+}
+
+// ---- panels -----------------------------------------------------------
+function render () {
+  const op = state.op
+  if (!op) return
+  const o = op.obligations, mint = op.mint, px = op.proxy, ctl = mint.controls
+  $('sub').textContent = `${mint.name} · mint ${mint.url || mint.listen} · up ${fmtDur((op.now_ms - op.started_ms) / 1000)}`
+  $('badges').innerHTML = `<span class="pill ${ctl.issuance_paused ? 'off' : 'on'}">${ctl.issuance_paused ? 'Issuance paused' : 'Issuing THH'}</span>` +
+    (mint.rails.length ? mint.rails : ['no payment rail']).map((r) => `<span class="pill rail">${esc(r)}</span>`).join('')
+
+  const rate = rateSeries(state.samples.slice(-Math.ceil(state.avg) - 2), state.avg)
+  $('t-rate').textContent = fmtRate(rate.length ? rate[rate.length - 1][1] : px.hashrate_hs)
+  $('t-rate-sub').textContent = `${state.avg === 60 ? '1' : '5'}-min average · ${px.metrics.shares_accepted} shares`
+  $('t-owed').textContent = fmtThh(o.total_thh_owed)
+  $('t-open').textContent = fmtThh(o.open_redemption_remaining_thh)
+  $('t-open-sub').textContent = o.open_redemptions ? `THH across ${o.open_redemptions} open redemption${o.open_redemptions > 1 ? 's' : ''}` : 'no open redemption'
+  $('t-sold').textContent = fmtThh(o.thh_sold, 0)
+  $('t-sold-sub').textContent = Object.entries(o.sold_by_rail).map(([k, v]) => `${k} ${v}`).join(' · ') || 'none yet'
+  const p = mint.price
+  $('t-price').textContent = p.sats_per_thh != null ? `${p.sats_per_thh.toLocaleString()}` : '—'
+  $('t-price-sub').textContent = p.usdt_per_thh != null ? `sats per THH · ${p.usdt_per_thh.toFixed(4)} USDT` : 'sats per THH'
+
+  const btn = $('btn-pause')
+  btn.textContent = ctl.issuance_paused ? 'Resume issuance' : 'Pause issuance'
+  btn.className = ctl.issuance_paused ? 'act primary' : 'act danger'
+  $('pause-note').textContent = ctl.issuance_paused ? 'New mint quotes are refused.' : 'Selling THH on every rail.'
+  if (!state.markupDirty && document.activeElement !== $('markup')) $('markup').value = ctl.markup_bps / 100
+
+  const kv = (rows) => rows.map(([k, v, cls]) => `<dt class="${cls || ''}">${k}</dt><dd class="${cls || ''}">${v}</dd>`).join('')
+  $('obl').innerHTML = kv([
+    ['THH ecash held by users', fmtThh(o.thh_in_circulation, 0)],
+    ['Paid, not yet minted', fmtThh(o.paid_not_minted_thh, 0)],
+    ['Open redemptions, still to deliver', fmtThh(o.open_redemption_remaining_thh)],
+    ['Total THH owed', fmtThh(o.total_thh_owed), 'total'],
+    ['Unpaid mint quotes', o.unpaid_quotes]
+  ])
+  const mm = px.metrics
+  $('proxy').innerHTML = kv([
+    ['Stratum', `<span class="mono">${esc(px.stratum_bind)}</span>`],
+    ['Default pool', `<span class="mono">${esc(hostOf(px.default_upstream))}</span>`],
+    ['Connections', mm.connections_accepted],
+    ['Shares accepted / rejected', `${mm.shares_accepted} / ${mm.shares_rejected}`],
+    ['Shares credited to redemptions', mm.shares_credited]
+  ])
+
+  const rows = op.redemptions.slice().reverse()
+  $('red-rows').innerHTML = rows.length ? rows.map((r) => `
+    <tr data-id="${esc(r.id)}" class="${r.id === state.selected ? 'sel' : ''}">
+      <td>${r.opened_ms ? fmtTime(r.opened_ms) : '—'}<br><span class="mono sub">${esc(shortId(r.id))}</span></td>
+      <td><span class="mono">${esc(hostOf(r.pool_url))}</span><br><span class="sub">${esc(r.worker_name)}</span></td>
+      <td>${fmtThh(r.filled_thh)} / ${r.amount_thh}</td>
+      <td><div class="bar"><div style="width:${(r.progress * 100).toFixed(1)}%"></div></div></td>
+      <td><span class="pill ${r.state === 'completed' ? 'on' : 'rail'}">${r.state}</span></td>
+    </tr>`).join('') : '<tr><td colspan="5" class="sub">None yet. Holders redeem by melting THH with the hashrate method.</td></tr>'
+
+  const sel = op.redemptions.find((r) => r.id === state.selected)
+  if (sel) {
+    const tr = trackRate(state.track)
+    const eta = sel.state === 'completed' ? 'done' : tr > 0 ? `ETA ${fmtDur((sel.remaining_thh * HASHES_PER_THH) / tr)}` : 'waiting for shares'
+    $('red-meta').innerHTML = `<span class="mono">${esc(shortId(sel.id))}</span> → <span class="mono">${esc(hostOf(sel.pool_url))}</span> as <b>${esc(sel.worker_name)}</b> · <b>${fmtThh(sel.filled_thh)}</b> of ${sel.amount_thh} THH (${(sel.progress * 100).toFixed(1)}%) · ${fmtRate(tr)} · ${eta}`
+    $('red-bar').style.width = `${(sel.progress * 100).toFixed(1)}%`
+    $('red-state').textContent = sel.state
+    $('red-state').className = `pill ${sel.state === 'completed' ? 'on' : 'rail'}`
+  }
+}
+
+// ---- polling ----------------------------------------------------------
+async function poll () {
+  try {
+    const [op, hr] = await Promise.all([api('api/operator'), api(`api/hashrate?since=${state.lastT}`)])
+    state.op = op
+    if (hr.samples.length) {
+      state.samples.push(...hr.samples)
+      state.lastT = hr.samples[hr.samples.length - 1].t_ms
+      if (state.samples.length > 4000) state.samples.splice(0, state.samples.length - 3600)
+    }
+    // Follow the current redemption unless the operator picked another.
+    if (!state.pinned && op.current) state.selected = op.current.id
+    if (state.selected) state.track = await api(`api/track?id=${encodeURIComponent(state.selected)}`).catch(() => null)
+    alertMsg('')
+  } catch (e) {
+    alertMsg(`Cannot reach the mint daemon: ${e.message}`)
+  }
+  render(); drawRate(); drawRedemption()
+}
+
+$('red-rows').addEventListener('click', (ev) => {
+  const tr = ev.target.closest('tr[data-id]')
+  if (!tr) return
+  const current = state.op && state.op.current && state.op.current.id
+  state.selected = tr.dataset.id
+  state.pinned = state.selected !== current
+  poll()
+})
+for (const [id, key] of [['avg', 'avg'], ['span', 'span']]) {
+  $(id).addEventListener('click', (ev) => {
+    const b = ev.target.closest('button'); if (!b) return
+    state[key] = Number(b.dataset.v)
+    for (const x of $(id).querySelectorAll('button')) x.classList.toggle('on', x === b)
+    render(); drawRate()
+  })
+}
+async function setControls (body) {
+  try {
+    await api('api/controls', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    alertMsg('')
+  } catch (e) { alertMsg(e.message) }
+  poll()
+}
+$('btn-pause').addEventListener('click', () => {
+  const paused = state.op && state.op.mint.controls.issuance_paused
+  setControls({ issuance_paused: !paused })
+})
+$('markup').addEventListener('input', () => { state.markupDirty = true })
+$('btn-markup').addEventListener('click', () => {
+  const pct = Number($('markup').value)
+  if (!Number.isFinite(pct)) return alertMsg('Markup must be a number')
+  state.markupDirty = false
+  setControls({ markup_bps: Math.round(pct * 100) })
+})
+window.addEventListener('resize', () => { drawRate(); drawRedemption() })
+
+poll()
+setInterval(poll, 2000)
+</script>
+</body>
+</html>
