@@ -21,4 +21,5 @@ pub mod network;
 pub mod operator;
 pub mod oracle;
 pub mod proxy;
+mod ur;
 pub mod wallet;

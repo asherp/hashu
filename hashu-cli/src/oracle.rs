@@ -108,8 +108,8 @@ async fn fetch_esplora(args: &PingArgs) -> Result<(HashpriceSample, String)> {
             None => break,
         }
     }
-    let sample = esplora::compute_hashprice(&window)
-        .context("compute hashprice from empty window")?;
+    let sample =
+        esplora::compute_hashprice(&window).context("compute hashprice from empty window")?;
     if let Some(diff) = esplora::real_difficulty(&window) {
         let thh = esplora::thh_per_expected_block(diff);
         println!("real difficulty:  {diff:.3e}");
@@ -126,7 +126,10 @@ async fn fetch_luxor(args: &PingArgs) -> Result<(HashpriceSample, String)> {
         .clone()
         .unwrap_or_else(|| luxor::DEFAULT_BASE_URL.to_string());
     let client = luxor::LuxorClient::with_base(key, base_url.clone());
-    let sample = client.fetch_latest().await.context("fetch luxor hashprice")?;
+    let sample = client
+        .fetch_latest()
+        .await
+        .context("fetch luxor hashprice")?;
     Ok((sample, base_url))
 }
 

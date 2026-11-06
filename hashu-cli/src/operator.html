@@ -81,6 +81,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 .alert { border: 1px solid var(--bad); background: var(--bad-bg); color: var(--ink); border-radius: 8px; padding: 10px 14px; display: none; }
 .note { color: var(--ink-3); font-size: 12px; margin: 0; }
 .scroll { overflow-x: auto; }
+#test-qr svg { width: 220px; height: 220px; display: block; }
 </style>
 </head>
 <body>
@@ -185,6 +186,8 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
         <input type="number" id="test-amt" min="1" max="1000" step="1" value="1"> <span>THH</span>
         <button class="act" id="btn-test-mint">Mint test THH</button>
       </div>
+      <div id="test-qr" hidden style="align-self:center;background:#fff;padding:8px;border-radius:10px;line-height:0;width:max-content;margin:0 auto"></div>
+      <p class="note" id="test-qr-note" style="text-align:center;margin:0"></p>
       <textarea id="test-token" class="mono" rows="3" placeholder="token appears here" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;resize:vertical"></textarea>
       <input type="text" id="test-pool" placeholder="stratum+tcp://pool:3333" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;font:inherit">
       <input type="text" id="test-worker" placeholder="worker name, e.g. you.rig1" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;font:inherit">
@@ -534,12 +537,25 @@ $('btn-markup').addEventListener('click', () => {
 async function postJson (path, body) {
   return api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
 }
+// One frame is a plain QR of the token; several are an animated ur:bytes
+// QR, which Cashu wallets (Cashu.me and others) scan frame by frame.
+function playQr (box, note, frames) {
+  clearInterval(box._t)
+  frames = frames || []
+  box.hidden = !frames.length
+  note.textContent = frames.length > 1 ? `Scan into Cashu.me. Animated QR: ${frames.length} parts.` : frames.length ? 'Scan into Cashu.me.' : ''
+  if (!frames.length) { box.innerHTML = ''; return }
+  let i = 0
+  box.innerHTML = frames[0]
+  if (frames.length > 1) box._t = setInterval(() => { i = (i + 1) % frames.length; box.innerHTML = frames[i] }, 250)
+}
 try { $('test-pool').value = localStorage.getItem('hashu.testPool') || ''; $('test-worker').value = localStorage.getItem('hashu.testWorker') || '' } catch {}
 $('btn-test-mint').addEventListener('click', async () => {
   const b = $('btn-test-mint'); b.disabled = true
   try {
     const r = await postJson('api/test-mint', { amount_thh: Math.floor(Number($('test-amt').value)) })
     $('test-token').value = r.token
+    playQr($('test-qr'), $('test-qr-note'), r.token_qr)
     $('test-note').textContent = `Minted ${r.amount_thh} test THH.`
     alertMsg('')
   } catch (e) { alertMsg(e.message) } finally { b.disabled = false; poll() }
@@ -551,6 +567,7 @@ $('btn-test-redeem').addEventListener('click', async () => {
     const r = await postJson('api/test-redeem', { token: $('test-token').value, pool_url: $('test-pool').value, worker_name: $('test-worker').value, worker_password: $('test-password').value })
     $('test-note').textContent = `Redemption ${r.redemption_id.slice(0, 8)} open for ${r.amount_thh} THH.`
     $('test-token').value = ''
+    playQr($('test-qr'), $('test-qr-note'), [])
     state.selected = r.redemption_id; state.pinned = true
     alertMsg('')
   } catch (e) { alertMsg(e.message) } finally { b.disabled = false; poll() }

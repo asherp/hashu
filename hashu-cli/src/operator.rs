@@ -280,7 +280,9 @@ async fn test_mint(State(s): State<Arc<OperatorState>>, body: Bytes) -> Response
     };
     match checkout::operator_test_mint(&s.checkout, &s.mint, amount).await {
         Ok((token, quote)) => {
-            Json(json!({ "token": token, "amount_thh": amount, "quote": quote })).into_response()
+            let token_qr = crate::checkout::token_qr_frames(&token);
+            Json(json!({ "token": token, "token_qr": token_qr, "amount_thh": amount, "quote": quote }))
+                .into_response()
         }
         Err((code, msg)) => (code, Json(json!({ "error": msg }))).into_response(),
     }

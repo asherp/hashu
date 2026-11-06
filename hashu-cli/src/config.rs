@@ -71,8 +71,8 @@ pub async fn run(cmd: ConfigCmd) -> Result<()> {
 fn run_show(args: ShowArgs) -> Result<()> {
     let data_dir = resolve_data_dir(args.data_dir)?;
     let path = state_path(&data_dir);
-    let state = ManifestState::load_from_path(&path)
-        .with_context(|| format!("load {}", path.display()))?;
+    let state =
+        ManifestState::load_from_path(&path).with_context(|| format!("load {}", path.display()))?;
     let json = serde_json::to_string_pretty(&state)?;
     println!("{json}");
     Ok(())
@@ -97,8 +97,8 @@ fn profile_update(v: Option<String>) -> Option<Option<String>> {
 fn run_set(args: SetArgs) -> Result<()> {
     let data_dir = resolve_data_dir(args.data_dir)?;
     let path = state_path(&data_dir);
-    let mut state = ManifestState::load_from_path(&path)
-        .with_context(|| format!("load {}", path.display()))?;
+    let mut state =
+        ManifestState::load_from_path(&path).with_context(|| format!("load {}", path.display()))?;
 
     let mut changed: Vec<String> = Vec::new();
 
