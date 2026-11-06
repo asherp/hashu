@@ -26,6 +26,7 @@ control API and operator GUI), a mainnet **phoenixd** for Lightning, and
 | 8085 | compose network only | Cashu mint API (behind Caddy) |
 | 3334 | compose network only | control API + operator GUI (behind Caddy) |
 | 9740 | compose network only | phoenixd HTTP API |
+| `mdk:3030` | behind Caddy at `https://$HASHU_MDK_DOMAIN/` | MDK dashboard demo (`/mdk` on the mint redirects there) |
 
 phoenixd never gets a host port. Hashu talks to it with phoenixd's
 **limited-access** password, which can create invoices and read payments
@@ -248,6 +249,29 @@ and the miner pool at `stratum+tcp://mint.hashu.io:3335`.
 `/control/status` lists open redemptions (pool URL, worker name,
 progress). If that should not be public, remove the `/control/*` block
 from the Caddyfile and reach 3334 over an SSH tunnel instead.
+
+### MDK dashboard on the site
+
+`docker compose up -d --build` also starts the MDK demo for judges to click
+through, with no hardware:
+
+- **`mdk`**: the MDK stack (Kernel, heater Worker with its mock heater,
+  Hashu Heater app, Gateway), two fake pools that accept every share, and
+  the built MDK dashboard, served with the Gateway behind one port (3030).
+- **`mdk-hashu`**: a separate demo mint + proxy (`--lightning fake`,
+  `--price fixed`, `--control-allow-open`, upstream = the fake home pool).
+
+Open **https://mint.hashu.io/mdk** (redirects to `https://$HASHU_MDK_DOMAIN/`,
+default `mdk.216-230-225-61.sslip.io`), sign in with `MDK_DEMO_USER` /
+`MDK_DEMO_PASSWORD` (default `demo@hashu.io` / `hashu-demo-2026`), open
+**Hashu Heater** and press **Redeem**. The heater switches to the demo
+proxy, the 1 THH fills in about 90 s, and it switches back.
+
+The dashboard needs its own host because the MDK shell serves from `/`.
+The demo is isolated on purpose: the mock heater's shares are fake, so it
+never mines on the live mint or a real pool, and the demo mint is only
+reachable on the `mdk` network. Kernel state resets on every restart. To
+use your own name, add an A record and set `HASHU_MDK_DOMAIN`.
 
 ## 8. Rented hashrate from MiningRigRentals
 

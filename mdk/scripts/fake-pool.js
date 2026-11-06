@@ -18,6 +18,8 @@ const arg = (k, d) => {
 const port = Number(arg('port', 3340))
 const name = arg('name', 'pool')
 const difficulty = Number(arg('difficulty', 10000))
+// 0.0.0.0 in the deploy container, where the demo mint dials it.
+const host = arg('host', '127.0.0.1')
 const HASH32 = '11'.repeat(32)
 const workers = {}
 
@@ -51,7 +53,7 @@ net.createServer((sock) => {
       }
     }
   })
-}).listen(port, '127.0.0.1', () => console.log(`[${name}] fake pool on 127.0.0.1:${port} (difficulty ${difficulty})`))
+}).listen(port, host, () => console.log(`[${name}] fake pool on ${host}:${port} (difficulty ${difficulty})`))
 
 http.createServer((req, res) => {
   res.writeHead(200, { 'content-type': 'application/json' })
