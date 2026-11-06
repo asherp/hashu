@@ -34,6 +34,7 @@ use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use clap::{Args, Subcommand, ValueEnum};
 use hashu_core::hashprice::{HashpriceOracle, HashpriceSample};
 use hashu_core::redemption::RedemptionLedger;
+use hashu_mint::capacity::{CapacityBook, Rental};
 use hashu_mint::lightning::add_lightning_issuance;
 use hashu_mint::melt::{reopen_pending_quotes, HashrateMelter, METHOD as HASHRATE};
 use hashu_mint::oracle::{esplora, mrr};
@@ -213,6 +214,26 @@ pub struct RunArgs {
     /// (seconds). Shares are sparse, so short windows are noisy.
     #[arg(long, default_value_t = 60)]
     pub hashrate_window: u64,
+
+    // ---- capacity ---------------------------------------------------
+    /// MiningRigRentals API key. With `--mrr-api-secret`, the mint reads the
+    /// account's active rentals (hashrate and end time) as the capacity it
+    /// can sell. Without it, set rentals in the operator GUI or
+    /// `POST /api/capacity`.
+    #[arg(long, env = "MRR_API_KEY", hide_env_values = true)]
+    pub mrr_api_key: Option<String>,
+    #[arg(long, env = "MRR_API_SECRET", hide_env_values = true)]
+    pub mrr_api_secret: Option<String>,
+    /// Only count these MRR rental ids (comma separated), e.g. when other
+    /// rentals on the account mine somewhere other than this proxy.
+    #[arg(long, env = "HASHU_MRR_RENTAL_IDS", value_delimiter = ',')]
+    pub mrr_rental_ids: Vec<String>,
+    /// MRR API base URL (for a test double).
+    #[arg(long, env = "MRR_API_BASE", default_value = mrr::DEFAULT_BASE_URL)]
+    pub mrr_api_base: String,
+    /// Seconds between MRR rental syncs.
+    #[arg(long, default_value_t = 60)]
+    pub mrr_refresh_secs: u64,
 }
 
 pub async fn run(cmd: MintCmd) -> Result<()> {
@@ -435,6 +456,58 @@ fn usdt_pricer(
     bail!("the Tether rail needs a price: pass --usdt-per-thh or --usd-per-btc")
 }
 
+/// Poll MRR for the account's active rentals, if a key is configured.
+fn spawn_mrr_sync(args: &RunArgs, capacity: &Arc<CapacityBook>) {
+    let (Some(key), Some(secret)) = (
+        args.mrr_api_key.clone().filter(|k| !k.trim().is_empty()),
+        args.mrr_api_secret.clone().filter(|k| !k.trim().is_empty()),
+    ) else {
+        return;
+    };
+    capacity.enable_mrr();
+    let ids: Vec<String> = args
+        .mrr_rental_ids
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let account = mrr::MrrAccount::with_base(
+        args.mrr_api_base.clone(),
+        mrr::DEFAULT_ALGO.into(),
+        key,
+        secret,
+    );
+    let capacity = capacity.clone();
+    let every = Duration::from_secs(args.mrr_refresh_secs.max(15));
+    tracing::info!(rental_ids = ?ids, "capacity from MRR active rentals");
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(every);
+        loop {
+            tick.tick().await;
+            let result = account
+                .active_rentals()
+                .await
+                .map(|list| {
+                    list.into_iter()
+                        .filter(|r| ids.is_empty() || ids.contains(&r.id))
+                        .map(|r| Rental {
+                            id: r.id,
+                            label: r.rig_name,
+                            ths: r.ths,
+                            end_ms: (r.end_unix * 1000.0).max(0.0) as u64,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .map_err(|e| e.to_string());
+            match &result {
+                Ok(r) => tracing::debug!(rentals = r.len(), "mrr rentals synced"),
+                Err(e) => tracing::warn!(error = %e, "mrr rental sync failed"),
+            }
+            capacity.set_mrr(result, hashu_mint::capacity::now_ms());
+        }
+    });
+}
+
 async fn run_daemon(args: RunArgs) -> Result<()> {
     // ---- shared state -------------------------------------------------
     let upstream = strip_stratum_prefix(&args.upstream).to_string();
@@ -459,9 +532,17 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or_default();
+    std::fs::create_dir_all(&args.data_dir)
+        .with_context(|| format!("create {:?}", args.data_dir))?;
+    // Rented hashrate: what the mint can still sell (operator GUI / MRR).
+    let capacity = Arc::new(CapacityBook::load(args.data_dir.join("capacity.json"))?);
+    spawn_mrr_sync(&args, &capacity);
     // Live operator settings. Rails price at the base rate and the
     // controlled pricer adds the markup, so the GUI can change it.
-    let controls = Arc::new(MintControls::new(args.markup_bps.unwrap_or(0) as i64));
+    let controls = Arc::new(MintControls::with_capacity(
+        args.markup_bps.unwrap_or(0) as i64,
+        capacity.clone(),
+    ));
     let sats_controlled = Arc::new(ControlledPricer::new(
         Arc::new(sats_pricer(&oracle, None)),
         controls.clone(),
@@ -575,6 +656,26 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     );
     refresh_stored_mint_info(&mint, info).await?;
     mint.start().await.context("start mint")?;
+    // Count what is owed before the first quote, then keep it current.
+    match operator::obligations(&mint, &ledger).await {
+        Ok(o) => capacity.set_owed(o.total_owed(), hashu_mint::capacity::now_ms()),
+        Err(e) => tracing::warn!(error = %e, "could not count obligations"),
+    }
+    tokio::spawn(operator::run_owed_refresher(
+        mint.clone(),
+        ledger.clone(),
+        capacity.clone(),
+        Duration::from_secs(5),
+    ));
+    let cap = capacity.snapshot(hashu_mint::capacity::now_ms());
+    tracing::info!(
+        limit = cap.limit,
+        rented_ths = cap.rented_ths,
+        capacity_thh = cap.capacity_thh,
+        owed_thh = cap.owed_thh,
+        available_thh = ?cap.available_thh,
+        "capacity"
+    );
 
     let price_now = sats_controlled.quote(1).ok();
     tracing::info!(
