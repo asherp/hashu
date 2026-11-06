@@ -316,6 +316,27 @@ fn sats_pricer(
     }
 }
 
+/// cdk saves the mint info (NUT-06) in the database on first boot and
+/// serves that copy from then on, so a later `--mint-url`, a newly enabled
+/// payment rail or a new description would never show up in `/v1/info`.
+/// Overwrite the stored copy with this boot's, keeping the pubkey cdk
+/// derived from the keysets.
+async fn refresh_stored_mint_info(
+    mint: &cdk::mint::Mint,
+    mut info: cdk::nuts::MintInfo,
+) -> Result<()> {
+    let stored = mint.mint_info().await.context("read stored mint info")?;
+    info.pubkey = stored.pubkey.or(info.pubkey);
+    info.time = None;
+    if info != stored {
+        mint.set_mint_info(info)
+            .await
+            .context("update stored mint info")?;
+        tracing::info!("mint info updated from this run's configuration");
+    }
+    Ok(())
+}
+
 /// Load the mint seed from `dir/seed.hex`, creating it on first run.
 fn load_or_create_seed(dir: &Path) -> Result<Vec<u8>> {
     let path = dir.join("seed.hex");
@@ -486,7 +507,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     info.nuts.nut04.methods.retain(|m| m.method != hashrate);
     info.nuts.nut05.methods.retain(|m| m.method == hashrate);
     info.nuts.nut15.methods.clear();
-    builder = builder.with_mint_info(info);
+    builder = builder.with_mint_info(info.clone());
 
     if rails.is_empty() {
         tracing::warn!(
@@ -500,6 +521,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             .await
             .context("build mint")?,
     );
+    refresh_stored_mint_info(&mint, info).await?;
     mint.start().await.context("start mint")?;
 
     let price_now = sats_pricer(&oracle, args.markup_bps).price(1).ok();
