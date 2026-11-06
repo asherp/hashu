@@ -299,7 +299,28 @@ async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
         "max_thh": s.max_thh,
         "mint_url": s.public_url,
         "hashes_per_thh": HASHES_PER_THH as f64,
+        "delivery": delivery_json(&s),
     }))
+}
+
+/// Window the checkout's delivery estimate averages hashrate over.
+const ETA_WINDOW: Duration = Duration::from_secs(300);
+
+/// What a delivery estimate needs: the proxy's current hashrate and the
+/// THH still owed to open redemptions, which are served before a new one.
+fn delivery_json(s: &CheckoutState) -> Value {
+    let queue: Vec<_> = s.ledger.active();
+    let queue_thh: f64 = queue
+        .iter()
+        .map(|r| r.target_hashes.saturating_sub(r.accumulated_hashes) as f64)
+        .sum::<f64>()
+        / HASHES_PER_THH as f64;
+    json!({
+        "hashrate_hs": s.meter.rate_over(ETA_WINDOW),
+        "window_s": ETA_WINDOW.as_secs(),
+        "queue_thh": queue_thh,
+        "open_redemptions": queue.len(),
+    })
 }
 
 async fn buy(State(s): State<Arc<CheckoutState>>, body: Bytes) -> Response {
