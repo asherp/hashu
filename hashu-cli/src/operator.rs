@@ -11,15 +11,18 @@
 //! - `GET /api/hashrate?since=<unix ms>`: the hashrate series.
 //! - `GET /api/track?id=<redemption id>`: one redemption's delivered work
 //!   over time (the current redemption without `id`).
-//! - `POST /api/controls`: `{ "issuance_paused": bool, "markup_bps": int }`,
-//!   either field optional. Pausing makes every rail refuse new mint
-//!   quotes; redemptions and the proxy keep running.
+//! - `POST /api/controls`: `{ "issuance_paused": bool, "markup_bps": int,
+//!   "heat_j_per_th": number }`, every field optional. Pausing makes every
+//!   rail refuse new mint quotes; redemptions and the proxy keep running.
+//!   `heat_j_per_th` is the J/TH assumed for rigs not named after a model.
 //! - `POST /api/test-mint` `{ "amount_thh": n }`: mint test THH without a
 //!   payment and return the token, to rehearse a redemption on a live mint.
 //!   It counts as issued ecash (an obligation) like any other THH.
 //! - `POST /api/test-redeem` `{ token, pool_url, worker_name }`: redeem it.
 //! - `GET /api/capacity`: rented hashrate, THH it can still deliver, THH
 //!   owed and THH available to sell (see `hashu_mint::capacity`).
+//! - `GET /api/operator` also carries `heat`: the heat the hashrate turned
+//!   into, estimated as work × J/TH (see `hashu_mint::heat`).
 //! - `POST /api/capacity`: `{ "rentals": [{ "ths", "hours" | "end_ms",
 //!   "label"?, "id"? }], "limit": bool | null }`, either field optional.
 //!   `rentals` replaces the operator's list (MRR rentals sync on their
@@ -30,7 +33,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -43,6 +46,7 @@ use axum::Json;
 use cdk::mint::Mint;
 use hashu_core::redemption::{RedemptionLedger, RedemptionState, HASHES_PER_THH};
 use hashu_mint::capacity::{rental_from_json, CapacityBook};
+use hashu_mint::heat;
 use hashu_mint::payment::thh_unit;
 use hashu_mint::pricing::{PricingError, ThhPricer};
 use hashu_proxy::control::{route as control_route, ControlState};
@@ -57,12 +61,16 @@ const PAGE: &str = include_str!("operator.html");
 pub const MIN_MARKUP_BPS: i64 = -9_000;
 /// Highest markup the GUI accepts: +1000%.
 pub const MAX_MARKUP_BPS: i64 = 100_000;
+/// Range of miner efficiencies the heat estimate accepts, J/TH.
+pub const HEAT_J_PER_TH_RANGE: std::ops::RangeInclusive<f64> = 1.0..=500.0;
 
 /// Live mint settings the operator can change while the daemon runs.
 #[derive(Debug)]
 pub struct MintControls {
     issuance_paused: AtomicBool,
     markup_bps: AtomicI64,
+    /// Default J/TH for the heat estimate, as f64 bits.
+    heat_j_per_th: AtomicU64,
     /// Rented hashrate and what is owed against it: caps issuance.
     pub capacity: Arc<CapacityBook>,
 }
@@ -75,6 +83,7 @@ impl MintControls {
         Self {
             issuance_paused: AtomicBool::new(false),
             markup_bps: AtomicI64::new(markup_bps.clamp(MIN_MARKUP_BPS, MAX_MARKUP_BPS)),
+            heat_j_per_th: AtomicU64::new(heat::DEFAULT_J_PER_TH.to_bits()),
             capacity,
         }
     }
@@ -94,6 +103,21 @@ impl MintControls {
             ));
         }
         self.markup_bps.store(bps, Ordering::Relaxed);
+        Ok(())
+    }
+    /// J/TH assumed for rigs whose name does not name a known model.
+    pub fn heat_j_per_th(&self) -> f64 {
+        f64::from_bits(self.heat_j_per_th.load(Ordering::Relaxed))
+    }
+    pub fn set_heat_j_per_th(&self, j: f64) -> Result<(), String> {
+        if !HEAT_J_PER_TH_RANGE.contains(&j) {
+            return Err(format!(
+                "heat_j_per_th must be between {} and {} J/TH",
+                HEAT_J_PER_TH_RANGE.start(),
+                HEAT_J_PER_TH_RANGE.end()
+            ));
+        }
+        self.heat_j_per_th.store(j.to_bits(), Ordering::Relaxed);
         Ok(())
     }
 }
@@ -255,6 +279,15 @@ async fn set_controls(State(s): State<Arc<OperatorState>>, body: Bytes) -> Respo
         }
         tracing::info!(markup_bps = bps, "operator changed markup");
     }
+    if let Some(j) = v.get("heat_j_per_th").filter(|x| !x.is_null()) {
+        let Some(j) = j.as_f64() else {
+            return bad("heat_j_per_th must be a number".into());
+        };
+        if let Err(e) = s.controls.set_heat_j_per_th(j) {
+            return bad(e);
+        }
+        tracing::info!(heat_j_per_th = j, "operator changed heat efficiency");
+    }
     if let Some(p) = v.get("issuance_paused").filter(|x| !x.is_null()) {
         let Some(p) = p.as_bool() else {
             return bad("issuance_paused must be true or false".into());
@@ -345,6 +378,7 @@ fn controls_json(s: &OperatorState) -> Value {
     json!({
         "issuance_paused": s.controls.issuance_paused(),
         "markup_bps": s.controls.markup_bps(),
+        "heat_j_per_th": s.controls.heat_j_per_th(),
     })
 }
 
@@ -537,6 +571,15 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
 
     let m = s.control.metrics.snapshot();
     let latest = s.meter.latest();
+    let now = now_ms();
+    let capacity = s.controls.capacity.snapshot(now);
+    let heat = heat_json(
+        s,
+        &capacity,
+        latest.map(|l| l.hashrate_hs).unwrap_or(0.0),
+        latest.map(|l| l.total_hashes).unwrap_or(0.0),
+        now,
+    );
     Ok(json!({
         "now_ms": now_ms(),
         "started_ms": s.started_ms,
@@ -567,7 +610,8 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
             "spent_thh": o.spent,
             "melting_thh": o.melting,
         },
-        "capacity": s.controls.capacity.snapshot(now_ms()),
+        "capacity": capacity,
+        "heat": heat,
         "proxy": {
             "stratum_bind": s.info.stratum_bind,
             "default_upstream": s.control.default_upstream,
@@ -585,6 +629,48 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
         "redemptions": redemptions,
         "current": s.meter.current_track(),
     }))
+}
+
+/// Heat estimate: the work through the proxy and into redemptions, times
+/// the fleet's J/TH (from rig names, else the operator's default).
+fn heat_json(
+    s: &OperatorState,
+    capacity: &hashu_mint::capacity::CapacitySnapshot,
+    hashrate_hs: f64,
+    total_hashes: f64,
+    now: u64,
+) -> Value {
+    let eff = heat::fleet_efficiency(&capacity.rentals, s.controls.heat_j_per_th(), now);
+    let j = eff.j_per_th;
+    // Every accepted share since the daemon started, default pool included.
+    let proxy_thh = total_hashes / HASHES_PER_THH as f64;
+    // Work delivered to redeemers, all time (the ledger is persisted).
+    let redeemed_thh: f64 = s
+        .control
+        .ledger
+        .all()
+        .iter()
+        .map(|r| r.accumulated_hashes as f64 / HASHES_PER_THH as f64)
+        .fold(0.0, |a, b| a + b);
+    let now_ths = hashrate_hs / 1e12;
+    let kwh = |thh: f64| heat::kwh(thh, j);
+    json!({
+        "efficiency": eff,
+        "kwh_per_thh": kwh(1.0),
+        "now_kw": heat::kw(now_ths, j),
+        "now_btu_per_h": heat::kw(now_ths, j) * heat::BTU_PER_KWH,
+        "rented_kw": heat::kw(capacity.rented_ths, j),
+        "proxy_since_start": {
+            "thh": proxy_thh,
+            "kwh": kwh(proxy_thh),
+            "btu": kwh(proxy_thh) * heat::BTU_PER_KWH,
+        },
+        "redeemed": {
+            "thh": redeemed_thh,
+            "kwh": kwh(redeemed_thh),
+            "btu": kwh(redeemed_thh) * heat::BTU_PER_KWH,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -636,6 +722,17 @@ mod tests {
                 available: 25
             })
         ));
+    }
+
+    #[test]
+    fn heat_default_is_bounded() {
+        let c = MintControls::new(0);
+        assert_eq!(c.heat_j_per_th(), heat::DEFAULT_J_PER_TH);
+        c.set_heat_j_per_th(17.5).unwrap();
+        assert_eq!(c.heat_j_per_th(), 17.5);
+        assert!(c.set_heat_j_per_th(0.0).is_err());
+        assert!(c.set_heat_j_per_th(f64::NAN).is_err());
+        assert_eq!(c.heat_j_per_th(), 17.5);
     }
 
     #[test]

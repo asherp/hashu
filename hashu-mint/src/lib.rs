@@ -5,6 +5,7 @@
 
 pub mod attestation;
 pub mod capacity;
+pub mod heat;
 pub mod lightning;
 pub mod manifest;
 pub mod melt;

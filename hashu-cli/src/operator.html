@@ -102,6 +102,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
     <div class="tile"><label>THH owed</label><b id="t-owed">—</b><small>ecash out + open redemptions</small></div>
     <div class="tile"><label>Redemption remaining</label><b id="t-open">—</b><small id="t-open-sub">no open redemption</small></div>
     <div class="tile"><label>THH sold</label><b id="t-sold">—</b><small id="t-sold-sub">—</small></div>
+    <div class="tile"><label>Heat produced</label><b id="t-heat">—</b><small id="t-heat-sub">estimate</small></div>
     <div class="tile"><label>Price</label><b id="t-price">—</b><small id="t-price-sub">sats per THH</small></div>
   </section>
 
@@ -179,6 +180,20 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
       <p class="note" id="cap-note">Capacity = rented TH/s × hours left. Mint quotes beyond capacity minus THH owed are refused.</p>
     </section>
 
+    <section class="card" aria-labelledby="h-heat">
+      <div class="card-head">
+        <h2 id="h-heat">Heat produced</h2>
+        <span class="pill rail" id="heat-src">estimate</span>
+      </div>
+      <dl class="kv" id="heat"></dl>
+      <div class="row">
+        <label for="heat-j">Default efficiency</label>
+        <input type="number" id="heat-j" step="0.5" min="1" max="500"> <span>J/TH</span>
+        <button class="act" id="btn-heat">Apply</button>
+      </div>
+      <p class="note">Miners turn almost all their power into heat, so heat ≈ work × J/TH; 1 THH is 3,600 TH, so 1 THH at <i>E</i> J/TH is <i>E</i> ÷ 1000 kWh. J/TH comes from each rental's rig name when it names a model (e.g. S21, S19j Pro), else the default above, weighted by TH/s.</p>
+    </section>
+
     <section class="card" aria-labelledby="h-test">
       <h2 id="h-test">Test redemption</h2>
       <p class="note">Mint THH without a payment to rehearse a redemption. It is real ecash: it counts as owed until redeemed.</p>
@@ -213,7 +228,13 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 // All URLs are relative, so the page also works behind a path prefix.
 const $ = (id) => document.getElementById(id)
 const HASHES_PER_THH = 3.6e15
-const state = { op: null, samples: [], lastT: 0, selected: null, track: null, avg: 60, span: 900, markupDirty: false }
+const state = { op: null, samples: [], lastT: 0, selected: null, track: null, avg: 60, span: 900, markupDirty: false, heatDirty: false }
+const fmtKwh = (k) => {
+  if (!Number.isFinite(k)) return '—'
+  if (k >= 1000) return `${(k / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 })} MWh`
+  return `${k.toLocaleString(undefined, { maximumFractionDigits: k < 10 ? 3 : 1 })} kWh`
+}
+const fmtBtu = (b) => !Number.isFinite(b) ? '—' : b >= 1e6 ? `${(b / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 })} M BTU` : `${Math.round(b).toLocaleString()} BTU`
 
 const fmtRate = (hs) => {
   if (!Number.isFinite(hs) || hs <= 0) return '0 H/s'
@@ -435,6 +456,23 @@ function render () {
       </tr>`).join('') : '<tr><td colspan="5" class="sub">No rentals. Add the rented TH/s and how many hours it has left.</td></tr>'
   }
 
+  const h = op.heat
+  if (h) {
+    const e = h.efficiency, ps = h.proxy_since_start, rd = h.redeemed
+    $('t-heat').textContent = fmtKwh(ps.kwh)
+    $('t-heat-sub').textContent = `${fmtBtu(ps.btu)} since start · ${fmtThh(h.now_kw, 2)} kW now`
+    $('heat-src').textContent = { rigs: 'J/TH from rig models', mixed: 'J/TH partly from rig models', default: 'J/TH default' }[e.source] || 'estimate'
+    $('heat').innerHTML = kv([
+      ['Efficiency used', `${fmtThh(e.j_per_th, 1)} J/TH`],
+      ['Heat per THH', `${fmtThh(h.kwh_per_thh, 4)} kWh`],
+      ['Heat output now', `${fmtThh(h.now_kw, 2)} kW · ${fmtBtu(h.now_btu_per_h)}/h`],
+      ['Rented rigs at full rate', `${fmtThh(h.rented_kw, 2)} kW`],
+      [`All work since start (${fmtThh(ps.thh)} THH)`, `${fmtKwh(ps.kwh)} · ${fmtBtu(ps.btu)}`, 'total'],
+      [`Delivered to redeemers (${fmtThh(rd.thh)} THH)`, `${fmtKwh(rd.kwh)} · ${fmtBtu(rd.btu)}`],
+      ...e.rigs.map((r) => [`<span class="sub">${esc(r.label || r.id || 'rental')} · ${fmtThh(r.ths, 1)} TH/s</span>`, `<span class="sub">${r.model ? esc(r.model) : 'default'} · ${fmtThh(r.j_per_th, 1)} J/TH</span>`])
+    ])
+    if (!state.heatDirty && document.activeElement !== $('heat-j')) $('heat-j').value = e.default_j_per_th
+  }
   const mm = px.metrics
   $('proxy').innerHTML = kv([
     ['Stratum', `<span class="mono">${esc(px.stratum_bind)}</span>`],
@@ -529,6 +567,13 @@ $('btn-pause').addEventListener('click', () => {
   setControls({ issuance_paused: !paused })
 })
 $('markup').addEventListener('input', () => { state.markupDirty = true })
+$('heat-j').addEventListener('input', () => { state.heatDirty = true })
+$('btn-heat').addEventListener('click', () => {
+  const j = Number($('heat-j').value)
+  if (!(j > 0)) return alertMsg('Efficiency must be a positive number of J/TH')
+  state.heatDirty = false
+  setControls({ heat_j_per_th: j })
+})
 $('btn-markup').addEventListener('click', () => {
   const pct = Number($('markup').value)
   if (!Number.isFinite(pct)) return alertMsg('Markup must be a number')
