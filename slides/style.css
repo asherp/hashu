@@ -1,0 +1,17 @@
+/* Match mint.hashu.io (hashu-cli/src/landing.html, dark scheme). */
+:root {
+  --hashu-bg: #111110; --hashu-surface: #1a1a19; --hashu-ink: #f1efea;
+  --hashu-ink-2: #b5b2ab; --hashu-ink-3: #85827c; --hashu-line: rgba(241,239,234,0.14);
+  --hashu-brand: #f7931a; --hashu-brand-fill: rgba(247,147,26,0.14);
+  --slidev-theme-primary: #f7931a;
+}
+.slidev-layout { background: var(--hashu-bg) !important; color: var(--hashu-ink); }
+.slidev-layout h1 { color: var(--hashu-ink); font-weight: 750; letter-spacing: -0.02em; }
+.slidev-layout h1 span { color: var(--hashu-brand); }
+.slidev-layout h3 { color: var(--hashu-ink-2); opacity: 1; }
+.slidev-layout strong { color: var(--hashu-ink); }
+.slidev-layout p, .slidev-layout li { color: var(--hashu-ink-2); }
+.slidev-layout a { color: var(--hashu-brand); border-color: var(--hashu-brand); }
+.slidev-layout code { background: var(--hashu-surface); color: var(--hashu-ink); }
+.slidev-layout pre, .slidev-layout .slidev-code { background: var(--hashu-surface) !important; }
+.slidev-layout li::marker { color: var(--hashu-brand); }

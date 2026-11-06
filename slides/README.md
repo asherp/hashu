@@ -1,6 +1,6 @@
 # Hashu slides
 
-Six-slide [Slidev](https://sli.dev) deck introducing Hashu: why it sells computation rather than money, the USD → hashrate → BTC flow, share accounting, the Hashu Heater on Tether MDK, what works today on mainnet, and the live demo at mint.hashu.io. Published at https://hashu.io/slides/ (built into the Caddy image in deploy/).
+Seven-slide [Slidev](https://sli.dev) deck introducing Hashu: why it sells computation rather than money, the USD → hashrate → BTC flow, share accounting, the Hashu Heater on Tether MDK, what works today on mainnet, and the live demo at mint.hashu.io. Published at https://hashu.io/slides/ (built into the Caddy image in deploy/).
 
 ```bash
 cd slides
