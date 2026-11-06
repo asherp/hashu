@@ -21,7 +21,7 @@ control API and operator GUI), a mainnet **phoenixd** for Lightning, and
 
 | Port | Exposed? | What |
 |---|---|---|
-| 80, 443 (tcp+udp) | public | Caddy: mint API at `/`, buyer checkout at `/checkout/`, operator GUI at `/operator/`, `GET /control/status` |
+| 80, 443 (tcp+udp) | public | Caddy: landing page at `/`, mint API at `/v1/`, buyer checkout at `/checkout/`, operator GUI at `/operator/`, `GET /control/status` |
 | 3335 | public | Stratum proxy, raw TCP (host 3335 → container 3333; ckpool keeps 3333) |
 | 8085 | compose network only | Cashu mint API (behind Caddy) |
 | 3334 | compose network only | control API + operator GUI (behind Caddy) |

@@ -13,6 +13,7 @@
 pub mod checkout;
 pub mod config;
 pub mod init;
+pub mod landing;
 pub mod manifest;
 pub mod mine;
 pub mod mint;

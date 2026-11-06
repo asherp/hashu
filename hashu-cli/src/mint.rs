@@ -50,6 +50,7 @@ use hashu_proxy::stratum::{run_routed_listener, strip_stratum_prefix};
 use hashu_proxy::ProxyMetrics;
 
 use crate::checkout::{self, CheckoutState};
+use crate::landing;
 use crate::network::{default_esplora_url, parse_network};
 use crate::operator::{self, ControlledPricer, DaemonInfo, MintControls, OperatorState};
 
@@ -590,7 +591,8 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let app = cdk_axum::create_mint_router(mint.clone(), methods)
         .await
         .context("build mint HTTP router")?
-        .merge(checkout::router(checkout));
+        .merge(checkout::router(checkout))
+        .merge(landing::router());
     let http = tokio::net::TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("bind mint API on {}", args.listen))?;
