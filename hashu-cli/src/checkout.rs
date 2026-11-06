@@ -47,6 +47,21 @@ use tokio::sync::Mutex;
 use crate::operator::{ControlledPricer, MintControls};
 
 const PAGE: &str = include_str!("checkout.html");
+/// QR reader plus UR decoder, bundled so pages load nothing from a CDN.
+/// Built from `assets/scan.src.js`; the pages load it only when someone
+/// presses "Scan token".
+pub(crate) const SCAN_JS: &str = include_str!("assets/scan.js");
+
+pub(crate) async fn scan_js() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        SCAN_JS,
+    )
+        .into_response()
+}
 /// Mint the proofs for a paid quote in-process: blind outputs, have the
 /// mint sign them, unblind. Used for custom methods (`usdt`), where cdk
 /// 0.16's wallet cannot mint (it misreads the custom quote responses).
@@ -236,6 +251,7 @@ pub fn router(state: Arc<CheckoutState>) -> axum::Router {
             get(|| async { Redirect::permanent("/checkout/") }),
         )
         .route("/checkout/", get(page))
+        .route("/checkout/scan.js", get(scan_js))
         .route("/checkout/api/info", get(info))
         .route("/checkout/api/buy", post(buy))
         .route("/checkout/api/buy/{id}", get(buy_status))

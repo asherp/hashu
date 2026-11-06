@@ -124,6 +124,7 @@ button.act:disabled { opacity: 0.5; cursor: default; }
     <label class="f">Cashu token
       <textarea id="r-token" placeholder="cashuB…"></textarea>
     </label>
+    <div class="row"><button class="act" type="button" id="btn-scan">Scan token QR</button><span class="note">From Cashu.me's send screen, or any Cashu wallet.</span></div>
     <label class="f">Your pool
       <input type="text" id="r-pool" placeholder="stratum+tcp://pool.example:3333">
     </label>
@@ -302,6 +303,18 @@ $('btn-copy-token').addEventListener('click', (ev) => copy($('token').value, ev.
 $('btn-goto-redeem').addEventListener('click', () => { step('redeem'); $('s-redeem').scrollIntoView({ behavior: 'smooth' }); $('r-pool').focus() })
 
 // ---- 4. redeem ----------------------------------------------------------
+// Reads a token from a QR code (plain or animated) with the camera. The
+// scanner script is bundled with the mint and loaded on first use.
+function scanToken (into) {
+  const go = () => window.HashuScan.openScanner({ onToken: (t) => { into.value = t; alertMsg('') } })
+  if (window.HashuScan) return go()
+  const s = document.createElement('script')
+  s.src = 'scan.js'
+  s.onload = go
+  s.onerror = () => alertMsg('Could not load the QR scanner.')
+  document.head.appendChild(s)
+}
+$('btn-scan').addEventListener('click', () => scanToken($('r-token')))
 $('btn-redeem').addEventListener('click', async () => {
   $('btn-redeem').disabled = true
   try {
