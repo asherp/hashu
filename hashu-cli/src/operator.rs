@@ -14,6 +14,10 @@
 //! - `POST /api/controls`: `{ "issuance_paused": bool, "markup_bps": int }`,
 //!   either field optional. Pausing makes every rail refuse new mint
 //!   quotes; redemptions and the proxy keep running.
+//! - `POST /api/test-mint` `{ "amount_thh": n }`: mint test THH without a
+//!   payment and return the token, to rehearse a redemption on a live mint.
+//!   It counts as issued ecash (an obligation) like any other THH.
+//! - `POST /api/test-redeem` `{ token, pool_url, worker_name }`: redeem it.
 //!
 //! The controls change what the mint sells, so like `POST /redemptions` they
 //! trust whoever can reach the port: keep `--control-bind` on loopback.
@@ -37,6 +41,8 @@ use hashu_mint::pricing::{PricingError, ThhPricer};
 use hashu_proxy::control::{route as control_route, ControlState};
 use hashu_proxy::meter::HashrateMeter;
 use serde_json::{json, Value};
+
+use crate::checkout::{self, CheckoutState};
 
 const PAGE: &str = include_str!("operator.html");
 
@@ -146,7 +152,12 @@ pub struct OperatorState {
     pub usdt: Option<Arc<ControlledPricer>>,
     pub info: DaemonInfo,
     pub started_ms: u64,
+    /// For the operator's test mint and one-click redeem.
+    pub checkout: Arc<CheckoutState>,
 }
+
+/// Largest test mint in one go.
+pub const MAX_TEST_MINT_THH: u64 = 1_000;
 
 pub fn router(state: Arc<OperatorState>) -> axum::Router {
     axum::Router::new()
@@ -155,6 +166,8 @@ pub fn router(state: Arc<OperatorState>) -> axum::Router {
         .route("/api/hashrate", get(hashrate))
         .route("/api/track", get(track))
         .route("/api/controls", post(set_controls))
+        .route("/api/test-mint", post(test_mint))
+        .route("/api/test-redeem", post(test_redeem))
         .fallback(proxy_control)
         .with_state(state)
 }
@@ -239,6 +252,30 @@ async fn set_controls(State(s): State<Arc<OperatorState>>, body: Bytes) -> Respo
     Json(controls_json(&s)).into_response()
 }
 
+/// `POST /api/test-mint` `{ "amount_thh": n }`: mint THH without payment
+/// and return the token. Operator-only, like everything on this port.
+async fn test_mint(State(s): State<Arc<OperatorState>>, body: Bytes) -> Response {
+    let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let Some(amount) = v["amount_thh"]
+        .as_u64()
+        .filter(|a| (1..=MAX_TEST_MINT_THH).contains(a))
+    else {
+        return bad(format!("amount_thh must be 1 to {MAX_TEST_MINT_THH}"));
+    };
+    match checkout::operator_test_mint(&s.checkout, &s.mint, amount).await {
+        Ok((token, quote)) => {
+            Json(json!({ "token": token, "amount_thh": amount, "quote": quote })).into_response()
+        }
+        Err((code, msg)) => (code, Json(json!({ "error": msg }))).into_response(),
+    }
+}
+
+/// `POST /api/test-redeem` `{ token, pool_url, worker_name }`: same as the
+/// checkout's redeem, from the operator page.
+async fn test_redeem(State(s): State<Arc<OperatorState>>, body: Bytes) -> Response {
+    checkout::redeem(State(s.checkout.clone()), body).await
+}
+
 fn bad(msg: String) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response()
 }
@@ -308,12 +345,22 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
     let mut sold: BTreeMap<String, u64> = BTreeMap::new();
     let mut paid_not_minted = 0u64;
     let mut quotes_open = 0u64;
+    let mut test_minted = 0u64;
     for q in s.mint.mint_quotes().await? {
         if q.unit != thh_unit() {
             continue;
         }
         let issued = q.amount_issued().value();
         let paid = q.amount_paid().value();
+        // Operator test mints are marked paid with an `operator-test-` id.
+        if q.payments
+            .iter()
+            .any(|p| p.payment_id.starts_with("operator-test-"))
+        {
+            test_minted += issued;
+            paid_not_minted += paid.saturating_sub(issued);
+            continue;
+        }
         *sold.entry(q.payment_method.to_string()).or_default() += issued;
         paid_not_minted += paid.saturating_sub(issued);
         if paid == 0 {
@@ -389,6 +436,7 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
         },
         "obligations": {
             "thh_sold": sold_total,
+            "test_minted_thh": test_minted,
             "sold_by_rail": sold,
             "paid_not_minted_thh": paid_not_minted,
             "unpaid_quotes": quotes_open,

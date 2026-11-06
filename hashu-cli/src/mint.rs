@@ -585,13 +585,14 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         args.min_redeem_thh.max(1),
         args.max_thh,
         ledger.clone(),
+        mint.clone(),
         meter.clone(),
     ));
 
     let app = cdk_axum::create_mint_router(mint.clone(), methods)
         .await
         .context("build mint HTTP router")?
-        .merge(checkout::router(checkout))
+        .merge(checkout::router(checkout.clone()))
         .merge(landing::router());
     let http = tokio::net::TcpListener::bind(args.listen)
         .await
@@ -658,6 +659,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
                 max_thh: args.max_thh,
             },
             started_ms,
+            checkout: checkout.clone(),
         });
         let listener = tokio::net::TcpListener::bind(bind)
             .await
