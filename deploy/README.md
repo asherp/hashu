@@ -76,7 +76,9 @@ uses external nameservers, add the same A record at that DNS provider instead.
 
 **hashu.io and www.hashu.io (slides at https://hashu.io/slides/).** Caddy
 also answers for `$HASHU_EXTRA_DOMAINS` (default `hashu.io www.hashu.io`),
-serving the same site. To point them here, in the same DNS settings:
+serving the same site, except that `/` there is the Hashu project splash page
+(`site/index.html`, baked into the caddy image) instead of the mint's landing
+page. To point them here, in the same DNS settings:
 
 - Delete the Squarespace defaults for the apex and `www` (the `@` A records
   to 198.185.159.x / 198.49.23.x and the `www` CNAME to `ext-cust.squarespace.com`).

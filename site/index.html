@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hashu · sell computation, not money</title>
+<meta name="description" content="Hashu is open-source software that turns hashrate into Cashu ecash. A Hashu mint sells terahash-hours of computation, not money: buy with Lightning or USDT, redeem by pointing hashrate at your pool.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f7931a'/%3E%3Cpath d='M10 7v18M22 7v18M10 16h12' stroke='%23111' stroke-width='3.4' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f6f6f4; --surface: #ffffff; --ink: #1b1b1a; --ink-2: #55534f; --ink-3: #8a8782;
+  --line: rgba(27,27,26,0.12); --brand: #e8850c; --brand-fill: rgba(232,133,12,0.12); --brand-ink: #111;
+  --good: #2f8a57; --good-bg: rgba(47,138,87,0.14); --bad: #c2403a; --bad-bg: rgba(194,64,58,0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111110; --surface: #1a1a19; --ink: #f1efea; --ink-2: #b5b2ab; --ink-3: #85827c;
+    --line: rgba(241,239,234,0.14); --brand: #f7931a; --brand-fill: rgba(247,147,26,0.14);
+    --good: #5cc28a; --good-bg: rgba(92,194,138,0.16); --bad: #e06c6c; --bad-bg: rgba(224,108,108,0.14);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: inherit; }
+.wrap { max-width: 960px; margin: 0 auto; padding: 0 16px; }
+nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 0; flex-wrap: wrap; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; text-decoration: none; }
+.logo svg { width: 28px; height: 28px; }
+nav .links { display: flex; gap: 18px; font-size: 14px; flex-wrap: wrap; }
+nav .links a { color: var(--ink-2); text-decoration: none; }
+nav .links a:hover { color: var(--ink); }
+.hero { padding: 48px 0 32px; }
+.hero h1 { font-size: clamp(34px, 6vw, 56px); line-height: 1.05; letter-spacing: -0.02em; margin: 0 0 18px; max-width: 14ch; }
+.hero h1 span { color: var(--brand); }
+.hero p { font-size: 19px; color: var(--ink-2); max-width: 60ch; margin: 0 0 28px; }
+.cta { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn { display: inline-block; text-decoration: none; border: 1px solid var(--line); border-radius: 10px; padding: 12px 20px; font-weight: 600; font-size: 15px; }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+.btn:hover { filter: brightness(1.05); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 40px 0 8px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.stat .k { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); }
+.stat .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; overflow-wrap: anywhere; }
+.stat .v small { font-size: 13px; font-weight: 500; color: var(--ink-2); }
+.pill { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 13px; font-weight: 600; }
+.pill.ok { background: var(--good-bg); color: var(--good); }
+.pill.no { background: var(--bad-bg); color: var(--bad); }
+section { padding: 40px 0; border-top: 1px solid var(--line); }
+section > h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-2); margin: 0 0 20px; }
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; min-width: 0; }
+.card h3 { margin: 0 0 6px; font-size: 18px; }
+.card p { margin: 0; color: var(--ink-2); }
+.num { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--brand-fill); color: var(--brand); font-weight: 700; margin-bottom: 10px; }
+.flow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-weight: 600; margin: 4px 0 0; }
+.flow span { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; }
+.flow i { color: var(--ink-3); font-style: normal; }
+.unit { font-size: 15px; color: var(--ink-2); margin: 0; }
+.unit b { color: var(--ink); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+pre { margin: 10px 0 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; }
+.copy { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.copy code { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; overflow-wrap: anywhere; flex: 1 1 200px; }
+.copy button { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 8px; padding: 8px 14px; cursor: pointer; font: inherit; font-size: 14px; }
+dl { margin: 12px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 14px; }
+dt { color: var(--ink-3); }
+dd { margin: 0; overflow-wrap: anywhere; }
+footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 14px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+.hero .kicker { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--brand); margin: 0 0 12px; }
+.hero p.live { display: inline-flex; align-items: baseline; gap: 8px; max-width: 100%; background: var(--good-bg); color: var(--good); border-radius: 12px; padding: 6px 14px; font-size: 14px; font-weight: 600; margin: 0 0 24px; }
+.hero p.live::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+.contrast { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.contrast .card h3 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-3); }
+.contrast .card.us { border-color: var(--brand); }
+.contrast .card.us h3 { color: var(--brand); }
+.contrast ul { margin: 8px 0 0; padding-left: 18px; color: var(--ink-2); }
+.contrast li { margin: 4px 0; }
+.grid4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+.links-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.links-grid a { display: block; text-decoration: none; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.links-grid a:hover { border-color: var(--brand); }
+.links-grid b { display: block; font-size: 16px; }
+.links-grid span { color: var(--ink-2); font-size: 14px; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="logo" href="/">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#f7931a"/><path d="M10 7v18M22 7v18M10 16h12" stroke="#111" stroke-width="3.4" stroke-linecap="round"/></svg>
+      Hashu
+    </a>
+    <div class="links">
+      <a href="#how">How it works</a>
+      <a href="#run">Run a mint</a>
+      <a class="mint-link" data-path="slides/" href="https://mint.hashu.io/slides/">Slides</a>
+      <a href="https://github.com/asherp/hashu">GitHub</a>
+      <a class="mint-link" href="https://mint.hashu.io/">Live mint</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <p class="kicker">Open source · Cashu · Stratum</p>
+    <h1>Sell <span>computation</span>, not money.</h1>
+    <p>Hashu turns hashrate into private ecash. A Hashu mint issues terahash-hours (THH) as Cashu tokens backed only by the hashrate of its miners, and the only way to redeem them is as real work delivered to the holder's pool. No bitcoin is held for users and none is paid out.</p>
+    <p class="live">Live on mainnet: Lightning purchases verified, redemptions mining to Braiins Pool</p>
+    <div class="cta">
+      <a class="btn primary mint-link" data-path="checkout/" href="https://mint.hashu.io/checkout/">Buy hashrate</a>
+      <a class="btn mint-link" data-path="slides/" href="https://mint.hashu.io/slides/">Slides</a>
+      <a class="btn" href="https://github.com/asherp/hashu">Source on GitHub</a>
+    </div>
+  </header>
+
+  <section id="why">
+    <h2>The problem</h2>
+    <div class="contrast">
+      <div class="card">
+        <h3>A typical ecash mint</h3>
+        <ul>
+          <li>Holds users' bitcoin and pays it back out on demand.</li>
+          <li>That is custody and transmission of money, with the regulatory weight that comes with it.</li>
+          <li>Tokens are claims on the operator's BTC reserves.</li>
+        </ul>
+      </div>
+      <div class="card us">
+        <h3>A Hashu mint</h3>
+        <ul>
+          <li>Sells a service: terahash-hours of mining computation.</li>
+          <li>Never pays out bitcoin. Tokens are redeemed only as hashrate.</li>
+          <li>Tokens are backed only by the miners behind the mint.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <div class="grid4">
+      <div class="card"><div class="num">1</div><h3>Buy</h3><p>Pay a mainnet Lightning invoice, or pay in USDT. Dollars go to hashrate and on to bitcoin without an exchange.</p></div>
+      <div class="card"><div class="num">2</div><h3>Hold</h3><p>Receive THH as Cashu ecash. Blind signatures mean the mint can't link who bought to who redeems.</p></div>
+      <div class="card"><div class="num">3</div><h3>Redeem</h3><p>Melt the tokens with a pool URL and worker name. The mint's Stratum proxy points its miners at your pool until the work is delivered.</p></div>
+      <div class="card"><div class="num">4</div><h3>Audit</h3><p>Every share credited to a redemption goes into its own Merkle tree. Holders can fetch the root and inclusion proofs to check the work that reached their pool.</p></div>
+    </div>
+    <p class="unit" style="margin-top:20px"><b>1 THH</b> = 1 TH/s for one hour = 3.6 × 10<sup>15</sup> hashes.</p>
+  </section>
+
+  <section id="run">
+    <h2>Run your own mint</h2>
+    <div class="grid2">
+      <div class="card"><h3>Self-hosted software, not a service</h3><p>Anyone with hashrate can run Hashu and sell it as ecash: one binary runs the Cashu mint, the Lightning and USDT payment rails, the Stratum proxy and an operator dashboard. Pricing follows the live hashrate rental market.</p></div>
+      <div class="card"><h3>Built on open pieces</h3><p>Rust on the Cashu Development Kit (cdk), mainnet Lightning through phoenixd, and Tether's Mining Development Kit for the hardware side. Dual-licensed MIT / Apache-2.0.</p></div>
+    </div>
+    <div class="links-grid" style="margin-top:16px">
+      <a href="https://github.com/asherp/hashu"><b>Source</b><span>github.com/asherp/hashu</span></a>
+      <a class="mint-link" data-path="slides/" href="https://mint.hashu.io/slides/"><b>Slides</b><span>The bitcoin++ Seoul pitch deck</span></a>
+      <a class="mint-link" href="https://mint.hashu.io/"><b>Live mint</b><span class="mint-host">mint.hashu.io</span></a>
+      <a class="mint-link" data-path="checkout/" href="https://mint.hashu.io/checkout/"><b>Buy hashrate</b><span>Checkout with Lightning or USDT</span></a>
+      <a class="mint-link" data-path="v1/info" href="https://mint.hashu.io/v1/info"><b>Mint API</b><span>/v1/info</span></a>
+    </div>
+  </section>
+
+  <footer>
+    <span>Inquiries: <a href="https://x.com/asherp" rel="noopener">@asherp</a> on X · <a href="mailto:asherp.nostr@gmail.com">asherp.nostr@gmail.com</a></span>
+    <span>Built at bitcoin++ Seoul 2026 · <a href="https://github.com/asherp/hashu">github.com/asherp/hashu</a></span>
+  </footer>
+</div>
+<script>
+// Point mint links at this deployment's mint (its advertised URL), so the
+// page also works on a stand-in host.
+fetch('/checkout/api/info', { cache: 'no-store' })
+  .then((r) => (r.ok ? r.json() : null))
+  .then((i) => {
+    if (!i || !/^https?:\/\//.test(i.mint_url || '')) return;
+    const base = i.mint_url.replace(/\/+$/, '') + '/';
+    document.querySelectorAll('a.mint-link').forEach((a) => { a.href = base + (a.dataset.path || ''); });
+    document.querySelectorAll('.mint-host').forEach((s) => { s.textContent = base.replace(/^https?:\/\//, '').replace(/\/$/, ''); });
+  })
+  .catch(() => {});
+</script>
+</body>
+</html>
