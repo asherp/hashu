@@ -6,8 +6,10 @@
 //!   the payment-method routes);
 //! - **payment rails** that sell `THH`: Lightning over phoenixd (mainnet
 //!   sats, receive-only) and/or Tether (USDT on Sepolia by default);
-//! - the **`hashrate` melt method**, which opens redemptions in an in-memory
-//!   [`RedemptionLedger`];
+//! - the **`hashrate` melt method**, which opens redemptions in a
+//!   [`RedemptionLedger`] journaled to `<data-dir>/redemptions.jsonl`, so
+//!   open redemptions (and their share trees, `share-audit.jsonl`) resume
+//!   after a restart;
 //! - the **Stratum V1 proxy**, sharing that ledger: while a redemption is
 //!   open, miners are routed to the redeemer's pool and accepted shares
 //!   credit it, so the melt completes;
@@ -33,7 +35,7 @@ use clap::{Args, Subcommand, ValueEnum};
 use hashu_core::hashprice::{HashpriceOracle, HashpriceSample};
 use hashu_core::redemption::RedemptionLedger;
 use hashu_mint::lightning::add_lightning_issuance;
-use hashu_mint::melt::{HashrateMelter, METHOD as HASHRATE};
+use hashu_mint::melt::{reopen_pending_quotes, HashrateMelter, METHOD as HASHRATE};
 use hashu_mint::oracle::{esplora, mrr};
 use hashu_mint::payment::{thh_unit, ThhIssuer};
 use hashu_mint::phoenixd::{Phoenixd, PhoenixdConfig};
@@ -42,6 +44,7 @@ use hashu_mint::tether::{
     EvmRpcSource, FixedUsdtPrice, SatsToUsdt, TetherPayments, UsdtRail, METHOD as USDT,
     MICRO_PER_USDT,
 };
+use hashu_proxy::audit::ShareAudit;
 use hashu_proxy::control::ControlState;
 use hashu_proxy::credit::{CreditContext, ShareCrediter};
 use hashu_proxy::meter::HashrateMeter;
@@ -438,7 +441,18 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     if !upstream.contains(':') {
         bail!("--upstream must include a port (got {upstream})");
     }
-    let ledger = Arc::new(RedemptionLedger::new());
+    std::fs::create_dir_all(&args.data_dir)
+        .with_context(|| format!("create {:?}", args.data_dir))?;
+    let ledger_path = args.data_dir.join("redemptions.jsonl");
+    let ledger = Arc::new(
+        RedemptionLedger::persistent(&ledger_path)
+            .with_context(|| format!("open redemption ledger {ledger_path:?}"))?,
+    );
+    let audit_path = args.data_dir.join("share-audit.jsonl");
+    let audit = Arc::new(
+        ShareAudit::persistent(&audit_path)
+            .with_context(|| format!("open share audit {audit_path:?}"))?,
+    );
     let oracle = build_oracle(&args).await?;
     let limits = MintMeltLimits::new(1, args.max_thh);
     let started_ms = SystemTime::now()
@@ -455,8 +469,6 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let mut usdt_controlled = None;
 
     // ---- mint ---------------------------------------------------------
-    std::fs::create_dir_all(&args.data_dir)
-        .with_context(|| format!("create {:?}", args.data_dir))?;
     let seed = load_or_create_seed(&args.data_dir)?;
     let db_path = args.data_dir.join("mint.sqlite");
     let db = Arc::new(
@@ -464,6 +476,17 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             .await
             .with_context(|| format!("open {db_path:?}"))?,
     );
+    // Keep the ledger consistent with cdk's melt quotes: any redemption the
+    // mint still holds proofs pending for must exist before `mint.start()`
+    // re-checks it.
+    {
+        use cdk::cdk_database::MintQuotesDatabase;
+        let quotes = db
+            .get_melt_quotes()
+            .await
+            .map_err(|e| anyhow::anyhow!("read melt quotes: {e}"))?;
+        reopen_pending_quotes(&ledger, &quotes);
+    }
 
     let mut builder = MintBuilder::new(db.clone())
         .with_name(args.name.clone())
@@ -600,8 +623,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
 
     // ---- proxy --------------------------------------------------------
     let router = Arc::new(Router::new(upstream.clone(), ledger.clone()));
-    let crediter = Arc::new(ShareCrediter::new(ledger.clone()));
-    let audit = crediter.audit().clone();
+    let crediter = Arc::new(ShareCrediter::with_audit(ledger.clone(), audit.clone()));
     let credit = CreditContext::new(crediter, router.clone());
 
     if args.metrics_interval > 0 {

@@ -2,5 +2,6 @@
 
 pub mod denom;
 pub mod hashprice;
+pub mod journal;
 pub mod redemption;
 pub mod share;

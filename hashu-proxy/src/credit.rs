@@ -105,10 +105,15 @@ pub struct ShareEvidence {
 
 impl ShareCrediter {
     pub fn new(ledger: Arc<RedemptionLedger>) -> Self {
+        Self::with_audit(ledger, Arc::new(ShareAudit::new()))
+    }
+
+    /// Like [`Self::new`], with a caller-built (e.g. persistent) audit.
+    pub fn with_audit(ledger: Arc<RedemptionLedger>, audit: Arc<ShareAudit>) -> Self {
         let (completions, _) = broadcast::channel(COMPLETION_CHANNEL_CAPACITY);
         Self {
             ledger,
-            audit: Arc::new(ShareAudit::new()),
+            audit,
             completions,
         }
     }
