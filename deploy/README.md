@@ -128,24 +128,59 @@ To move an existing phoenixd wallet (e.g. the one overpay uses) instead,
 put its words in `PHOENIXD_SEED` **before the first start**. Running the
 same seed in two phoenixd instances at once is unsafe; stop the other one.
 
-## 5. First Lightning payment opens the channel
+## 5. First payments, fee credit and the channel
 
-A new phoenixd has no channel. The first incoming payment makes ACINQ's
-LSP open one on the fly and takes a fee out of it (about 2,000+ sats plus
-1% at the time of writing, more when mainnet fees are high). So:
+**The mint absorbs its LSP's fees.** A buyer who pays the advertised
+invoice always gets the full THH: the mint credits the invoiced amount,
+never what phoenixd netted after channel fees (`hashu-mint/src/phoenixd.rs`).
 
-- Make the first buy yourself, **before the demo**, and make it big enough
-  to cover that fee, e.g. a mint quote of ~10,000 sats. A smaller first
-  payment may be held as fee credit instead of opening a channel.
-- Then check the channel:
+A new phoenixd has no channel. What happens to incoming payments
+(phoenixd 0.9.1 defaults, lightning-kmp 1.13):
 
-  ```bash
-  docker compose exec phoenixd /phoenix/phoenix-cli \
-    --http-password="$(grep ^PHOENIXD_PASSWORD= .env | cut -d= -f2)" getinfo
-  ```
+- **Small payments are accepted as fee credit.** While the running total
+  is below what a channel open would cost, each payment settles normally
+  (the payer's wallet shows success, phoenixd marks it paid, the mint
+  issues THH) but the sats go into phoenixd's *fee credit*, not its
+  balance. `getinfo`/`getbalance` show them as `feeCreditSat`; they can't
+  be withdrawn, only spent on the channel open. Demo-size buys (tens to
+  hundreds of sats) all land here, which is fine: the mint never pays out.
+- **The channel opens once the credit (plus the next payment) can pay for
+  it.** ACINQ opens a channel with `--auto-liquidity` of inbound liquidity
+  (default 2,000,000 sats) and charges about 1% of that as a service fee
+  (~20,000 sats) plus the on-chain mining fee, taken from the fee credit
+  and the triggering payment. After that, payments settle straight into
+  the balance with no fee.
+- **When a payment is rejected.** Only in two cases, both tied to high
+  on-chain feerates: the fee credit would pass `--max-fee-credit`
+  (default 2.5% of auto-liquidity = 50,000 sats) before it covers an open,
+  or the channel open's mining fee is above `--max-mining-fee` (default 1%
+  of auto-liquidity = 20,000 sats). At normal
+  feerates neither happens.
 
-  `channels` should show one `Normal` channel with inbound liquidity.
-  Later demo-size payments then settle instantly.
+Knobs (set in `.env`, passed through `PHOENIXD_EXTRA_ARGS`):
+
+```bash
+# more headroom when mainnet fees spike
+PHOENIXD_EXTRA_ARGS=--max-fee-credit=125k --max-mining-fee=50000
+```
+
+Don't set `--auto-liquidity=off`: it also turns the fee credit off
+(it defaults to 2.5% of 0), so every payment is rejected until a
+channel exists. There is no setting that opens a channel for less than
+the 2m-sat minimum's ~1% service fee.
+
+**Pre-opening the channel (optional).** If you want buyer sats to be
+real, spendable balance from the first sale, or want the ~20k sat open
+out of the way before the demo, make one buy yourself of about 25,000
+sats (more when mempool fees are high). Then check:
+
+```bash
+docker compose exec phoenixd /phoenix/phoenix-cli \
+  --http-password="$(grep ^PHOENIXD_PASSWORD= .env | cut -d= -f2)" getinfo
+```
+
+`channels` should show one `Normal` channel with inbound liquidity.
+Skipping this is fine for the demo: small buys succeed as fee credit.
 
 ## 6. Smoke test
 
@@ -283,7 +318,8 @@ Before going on stage (~15 min early):
 1. MRR rental running against `stratum+tcp://mint.hashu.io:3335`, user
    `<braiins-user>.mrr`. Braiins dashboard shows worker `mrr` hashing,
    operator GUI shows the live hashrate.
-2. The phoenixd channel is open (section 5). Do one tiny rehearsal buy.
+2. Do one tiny rehearsal buy. Before the first channel it settles as fee
+   credit (section 5), which is fine.
 
 On stage:
 

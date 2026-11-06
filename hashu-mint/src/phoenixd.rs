@@ -28,7 +28,10 @@
 //!   phoenixd opens a channel to receive a payment it deducts the opening
 //!   fee from `receivedSat`. The payer still paid the whole invoice, so the
 //!   shortfall is the operator's cost, not an underpayment (same rule as
-//!   overpay's `LightningPaymentChecker`).
+//!   overpay's `LightningPaymentChecker`). The same holds for payments
+//!   phoenixd parks as **fee credit** before its first channel exists:
+//!   the invoice settles and the buyer gets the full `THH`. The mint
+//!   absorbs whatever its LSP charges. See deploy/README.md §5.
 //! - **outgoing**: refused. The mint never pays out.
 //!
 //! **Payment network ≠ redemption network.** phoenixd runs on mainnet: buyers
@@ -792,6 +795,42 @@ mod tests {
             &server,
             &hash,
             serde_json::json!({"isPaid": true, "receivedSat": 5, "invoice": inv.to_string()}),
+        )
+        .await;
+
+        let n = node(&server).await;
+        n.create_incoming_payment_request(bolt11(20)).await.unwrap();
+        let got = n
+            .check_incoming_payment_status(&PaymentIdentifier::PaymentHash(hash))
+            .await
+            .unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].payment_amount,
+            Amount::new(20_000, CurrencyUnit::Msat)
+        );
+    }
+
+    /// A fresh node with no channel holds small payments as fee credit
+    /// (lightning-kmp `Part.FeeCredit`) until they cover the channel open.
+    /// The invoice still settles (`completedAt` is set, so `isPaid`), the
+    /// buyer's payment succeeds, and the mint must credit the whole invoice
+    /// even though none of it is spendable balance yet.
+    #[tokio::test]
+    async fn fee_credit_payment_is_paid_in_full() {
+        let server = MockServer::start().await;
+        let (inv, hash) = fake_invoice(20_000);
+        mock_create(&server, &inv, &hash).await;
+        mock_incoming(
+            &server,
+            &hash,
+            serde_json::json!({
+                "paymentHash": hex::encode(hash),
+                "isPaid": true,
+                "receivedSat": 0,
+                "fees": 0,
+                "invoice": inv.to_string(),
+            }),
         )
         .await;
 
