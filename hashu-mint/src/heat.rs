@@ -11,7 +11,8 @@
 //! since 1 THH is 3,600 TH. The proxy knows the work (accepted share
 //! difficulty) but not the machines, so J/TH is an estimate: matched from
 //! the rental's rig name (MRR rig names and operator labels usually name the
-//! model, e.g. "Antminer S19j Pro") or, failing that, a configurable default.
+//! model, e.g. "Antminer S19j Pro"), else from the make alone ("Whatsminer
+//! IMM 4", "ANT #9"), else a configurable default.
 
 use serde::Serialize;
 
@@ -29,6 +30,7 @@ const MODELS: &[(&str, &str, f64)] = &[
     // Bitmain Antminer
     ("s21xphyd", "Antminer S21 XP Hyd", 12.0),
     ("s21xp", "Antminer S21 XP", 13.5),
+    ("s21jxp", "Antminer S21 XP", 13.5),
     ("s21prohyd", "Antminer S21 Pro Hyd", 14.5),
     ("s21pro", "Antminer S21 Pro", 15.0),
     ("s21+hyd", "Antminer S21+ Hyd", 15.0),
@@ -71,22 +73,51 @@ const MODELS: &[(&str, &str, f64)] = &[
     ("a1246", "Avalon A1246", 38.0),
 ];
 
-/// A known model and its J/TH.
+/// Vendors named without a model ("Whatsminer IMM 4", "ANT #9", "Avalon"):
+/// a typical current-generation machine of that make. Matched on whole
+/// words, by prefix for the longer names (so "Whatsminer1800TH" counts).
+const VENDORS: &[(&[&str], &[&str], &str, f64)] = &[
+    // (exact words, word prefixes, name, J/TH)
+    (
+        &["ant", "ants"],
+        &["antminer", "bitmain"],
+        "Antminer (model not named)",
+        25.0,
+    ),
+    (
+        &[],
+        &["whatsminer", "whatsmier", "whatminer", "microbt"],
+        "Whatsminer (model not named)",
+        26.0,
+    ),
+    (&[], &["avalon", "canaan"], "Avalon (model not named)", 25.0),
+];
+
+/// A known model (or make) and its J/TH.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Model {
     pub name: &'static str,
     pub j_per_th: f64,
+    /// `"model"`: the name named a model; `"vendor"`: only the make.
+    pub basis: &'static str,
 }
 
-/// The model a rig name refers to, if any.
+/// The model a rig name refers to, if any: a model ("S21+ hyd.",
+/// "S21XP_(Hydro)", "s19") or, failing that, a make ("Whatsminer IMM 4",
+/// "ANT #9", "Avalon"). Case and punctuation do not matter.
 pub fn model_for(name: &str) -> Option<Model> {
+    model_named(name).or_else(|| vendor_named(name))
+}
+
+fn model_named(name: &str) -> Option<Model> {
     // Lowercase with separators dropped, so "S19j Pro" matches "s19jpro";
-    // `gap[i]` records that a separator came before byte `i`.
+    // `gap[i]` records that a separator came before byte `i`. '+' is part of
+    // model names (S21+); any other punctuation, space or emoji separates.
     let mut n = String::new();
     let mut gap = Vec::new();
     let mut sep = false;
     for c in name.chars().flat_map(char::to_lowercase) {
-        if c.is_whitespace() || matches!(c, '-' | '_' | '/' | ',' | '(' | ')') {
+        if !c.is_alphanumeric() && c != '+' {
             sep = true;
             continue;
         }
@@ -101,7 +132,31 @@ pub fn model_for(name: &str) -> Option<Model> {
         .iter()
         .filter(|(pat, ..)| contains_model(&n, &gap, pat))
         .max_by_key(|(pat, ..)| pat.len())
-        .map(|&(_, name, j_per_th)| Model { name, j_per_th })
+        .map(|&(_, name, j_per_th)| Model {
+            name,
+            j_per_th,
+            basis: "model",
+        })
+}
+
+fn vendor_named(name: &str) -> Option<Model> {
+    let lower = name.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    VENDORS
+        .iter()
+        .find(|(exact, prefixes, ..)| {
+            words
+                .iter()
+                .any(|w| exact.contains(w) || prefixes.iter().any(|p| w.starts_with(p)))
+        })
+        .map(|&(_, _, name, j_per_th)| Model {
+            name,
+            j_per_th,
+            basis: "vendor",
+        })
 }
 
 /// `pat` occurs in `s` without running into adjacent digits, so "s9" does
@@ -137,8 +192,10 @@ pub struct RigEfficiency {
     pub id: String,
     pub label: String,
     pub ths: f64,
-    /// Model matched from the label, if any.
+    /// Model (or make) matched from the label, if any.
     pub model: Option<&'static str>,
+    /// `"model"`, `"vendor"` or `"default"`: what `j_per_th` rests on.
+    pub basis: &'static str,
     pub j_per_th: f64,
 }
 
@@ -146,8 +203,8 @@ pub struct RigEfficiency {
 #[derive(Debug, Clone, Serialize)]
 pub struct Efficiency {
     pub j_per_th: f64,
-    /// `"rigs"`: every running rental named a known model; `"mixed"`: some
-    /// did; `"default"`: none did (or no rentals).
+    /// `"rigs"`: every running rental named a known model or make;
+    /// `"mixed"`: some did; `"default"`: none did (or no rentals).
     pub source: &'static str,
     pub default_j_per_th: f64,
     pub rigs: Vec<RigEfficiency>,
@@ -166,6 +223,7 @@ pub fn fleet_efficiency(rentals: &[RentalView], default_j_per_th: f64, now_ms: u
                 label: r.rental.label.clone(),
                 ths: r.rental.ths,
                 model: m.map(|m| m.name),
+                basis: m.map_or("default", |m| m.basis),
                 j_per_th: m.map_or(default_j_per_th, |m| m.j_per_th),
             }
         })
@@ -221,6 +279,56 @@ mod tests {
         assert!(model_for("S90 rig").is_none());
         assert!(model_for("my rig").is_none());
         assert!(model_for("").is_none());
+    }
+
+    /// Rig names from a real MRR SHA-256 listing (2026-11-06).
+    #[test]
+    fn parses_real_mrr_rig_names() {
+        let j = |n: &str| model_for(n).map(|m| (m.basis, m.j_per_th));
+        let model = |n: &str| model_for(n).map(|m| m.name);
+        // Models.
+        assert_eq!(model("S21+"), Some("Antminer S21+"));
+        assert_eq!(model("S21+374210"), Some("Antminer S21+"));
+        assert_eq!(model("S21PRO"), Some("Antminer S21 Pro"));
+        assert_eq!(model("Antminer S21J XP H"), Some("Antminer S21 XP"));
+        assert_eq!(model("🍀 S21XP_(Hydro)@1"), Some("Antminer S21 XP Hyd"));
+        assert_eq!(model("S21+ hyd. 8х - 92"), Some("Antminer S21+ Hyd"));
+        assert_eq!(model("S19"), Some("Antminer S19"));
+        assert_eq!(model("s19"), Some("Antminer S19"));
+        // Make only: vendor default.
+        for n in ["Whatsminer IMM 4", "Whatsminer IMM 2", "💰Whatsmier 1800TH"] {
+            assert_eq!(j(n), Some(("vendor", 26.0)), "{n}");
+        }
+        assert_eq!(j("Avalon"), Some(("vendor", 25.0)));
+        for n in ["ANT #9 ~ Stable~", "ANT #14 ~ Stable~", "ANT #28 ~ Stable"] {
+            assert_eq!(j(n), Some(("vendor", 25.0)), "{n}");
+        }
+        // No hardware in the name: operator default.
+        for n in [
+            "Bigie-1",
+            "Stable",
+            "💎Fast! Stable! Li",
+            "arsss",
+            "[384411] YKKI Asic",
+            "Wash1234",
+            "Hydro Power! Stabl",
+            "⚡Sha256 Lv up sol",
+            "BlockFinder - 1.1P",
+            "A2 Pro Farm **",
+            "Supermarket",
+            "1 PTh Sima",
+            "catch 'n' mine sha",
+            "002.0PHS ReadDescr",
+            "🚀Hydro 1800 TH As",
+            "✅KTD3✅",
+            "InfiniteHash 07",
+            "Coin Rider 🏭 2.6",
+            "😊LUCKY SERVICES 2",
+            "Che",
+            "Giant rig",
+        ] {
+            assert_eq!(model_for(n), None, "{n}");
+        }
     }
 
     #[test]
