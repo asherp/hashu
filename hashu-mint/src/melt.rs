@@ -51,6 +51,9 @@ pub struct HashrateRequest {
     pub pool_url: String,
     /// Worker name the redeemer's pool expects.
     pub worker_name: String,
+    /// Password for the worker, if the pool needs one (default `x`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_password: Option<String>,
     /// `THH` to redeem. Must be covered by the melted proofs.
     pub amount_thh: u64,
     /// Optional wallet-chosen value that makes the request unique. The
@@ -192,12 +195,10 @@ pub fn reopen_pending_quotes(
             continue;
         };
         if ledger
-            .open(Redemption::new(
-                id,
-                req.amount_thh,
-                req.pool_url,
-                req.worker_name,
-            ))
+            .open(
+                Redemption::new(id, req.amount_thh, req.pool_url, req.worker_name)
+                    .with_password(req.worker_password),
+            )
             .is_ok()
         {
             tracing::warn!(quote = %quote.id, redemption = %id, "reopened pending redemption missing from the ledger journal");
@@ -273,12 +274,10 @@ impl MintPayment for HashrateMelter {
             return self.check_outgoing_payment(&lookup_id(&id)).await;
         }
         self.ledger
-            .open(Redemption::new(
-                id,
-                req.amount_thh,
-                req.pool_url,
-                req.worker_name,
-            ))
+            .open(
+                Redemption::new(id, req.amount_thh, req.pool_url, req.worker_name)
+                    .with_password(req.worker_password),
+            )
             .map_err(|e| Error::Custom(e.to_string()))?;
 
         Ok(MakePaymentResponse {

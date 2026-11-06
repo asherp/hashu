@@ -282,7 +282,8 @@ fn open(body: &[u8], state: &ControlState) -> (u16, Value) {
         amount_thh,
         pool_url.to_string(),
         worker_name.to_string(),
-    );
+    )
+    .with_password(v["worker_password"].as_str().map(str::to_string));
     let out = redemption_json(&r);
     match state.ledger.open(r) {
         Ok(()) => {

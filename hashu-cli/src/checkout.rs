@@ -264,16 +264,66 @@ async fn fresh_wallet(url: &str) -> anyhow::Result<Wallet> {
     )?)
 }
 
+/// A QR code as a compact SVG: one path, each row's dark runs as
+/// rectangles, so an animated token QR stays a few KB per frame.
 fn qr_svg(data: &str) -> Option<String> {
-    use qrcode::render::svg;
     let code =
         qrcode::QrCode::with_error_correction_level(data.as_bytes(), qrcode::EcLevel::L).ok()?;
-    Some(
-        code.render::<svg::Color>()
-            .min_dimensions(240, 240)
-            .quiet_zone(true)
-            .build(),
+    let w = code.width();
+    let colors = code.to_colors();
+    let quiet = 4;
+    let size = w + 2 * quiet;
+    let mut d = String::new();
+    for y in 0..w {
+        let mut x = 0;
+        while x < w {
+            if colors[y * w + x] == qrcode::Color::Dark {
+                let start = x;
+                while x < w && colors[y * w + x] == qrcode::Color::Dark {
+                    x += 1;
+                }
+                d.push_str(&format!(
+                    "M{} {}h{}v1h-{}z",
+                    start + quiet,
+                    y + quiet,
+                    x - start,
+                    x - start
+                ));
+            } else {
+                x += 1;
+            }
+        }
+    }
+    Some(format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" shape-rendering="crispEdges"><rect width="{size}" height="{size}" fill="#fff"/><path fill="#000" d="{d}"/></svg>"##
+    ))
+}
+
+/// One proof per set bit of the amount. The cdk wallet's default split
+/// keeps several proofs of each size for making change, which only makes
+/// a token we hand over longer (and its QR code harder to scan).
+fn fewest_proofs(amount_thh: u64) -> SplitTarget {
+    SplitTarget::Values(
+        (0..64)
+            .filter(|b| amount_thh >> b & 1 == 1)
+            .map(|b| Amount::from(1u64 << b))
+            .collect(),
     )
+}
+
+/// QR frames for a Cashu token. A short token is one plain QR code; a
+/// longer one becomes an animated `ur:bytes` QR (one SVG per frame), which
+/// Cashu wallets such as Cashu.me scan frame by frame.
+pub(crate) fn token_qr_frames(token: &str) -> Vec<String> {
+    const STATIC_MAX: usize = 600;
+    const FRAGMENT: usize = 200;
+    if token.len() <= STATIC_MAX {
+        return qr_svg(token).into_iter().collect();
+    }
+    crate::ur::ur_bytes_parts(token.as_bytes(), FRAGMENT)
+        .iter()
+        .filter_map(|part| qr_svg(part))
+        .collect()
 }
 
 fn method_of(name: &str) -> PaymentMethod {
@@ -417,6 +467,7 @@ fn checkout_json(id: &str, c: &Checkout, state: &str) -> Value {
         "qr_svg": qr_svg(&qr_data),
         "state": state,
         "token": c.token,
+        "token_qr": c.token.as_deref().map(token_qr_frames),
     })
 }
 
@@ -449,7 +500,7 @@ async fn buy_status(State(s): State<Arc<CheckoutState>>, Path(id): Path<String>)
             .map_err(|e| e.to_string())
     } else {
         c.wallet
-            .mint(&c.quote_id, SplitTarget::default(), None)
+            .mint(&c.quote_id, fewest_proofs(c.amount_thh), None)
             .await
             .map_err(|e| e.to_string())
     };
@@ -543,13 +594,21 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
         );
     }
 
-    let request = json!({
+    let mut request = json!({
         "pool_url": pool_url,
         "worker_name": worker,
         "amount_thh": amount,
         "nonce": hex::encode(rand::random::<[u8; 8]>()),
-    })
-    .to_string();
+    });
+    // Optional; the proxy sends `x` without one.
+    if let Some(pw) = v["worker_password"]
+        .as_str()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        request["worker_password"] = json!(pw);
+    }
+    let request = request.to_string();
     let rid = redemption_id_for(&request);
     let quote = match wallet
         .melt_quote(PaymentMethod::Custom(HASHRATE.into()), request, None, None)
@@ -620,7 +679,7 @@ pub(crate) async fn operator_test_mint(
 
     let proofs = if method == "bolt11" {
         wallet
-            .mint(&quote_id, SplitTarget::default(), None)
+            .mint(&quote_id, fewest_proofs(amount_thh), None)
             .await
             .map_err(|e| e.to_string())
     } else {

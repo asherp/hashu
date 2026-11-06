@@ -145,8 +145,10 @@ impl HashrateMeter {
                         target_hashes: r.target_hashes as f64,
                         opened_ms: t_ms,
                         completed_ms: None,
-                        // Anchor the curve at zero so it starts at the open.
-                        points: vec![(t_ms, 0.0)],
+                        // Start the curve where the redemption stands when
+                        // first seen: zero for a new one, its restored
+                        // progress after a restart (no false jump).
+                        points: vec![(t_ms, acc)],
                     },
                 );
             }

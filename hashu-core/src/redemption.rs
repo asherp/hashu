@@ -88,6 +88,9 @@ pub struct Redemption {
     pub pool_url: String,
     /// Worker name the redeemer's pool expects.
     pub worker_name: String,
+    /// Password for `worker_name` in `mining.authorize`; `None` sends the
+    /// conventional `x`.
+    pub worker_password: Option<String>,
     /// `THH` melted.
     pub amount_thh: u64,
     /// `amount_thh × HASHES_PER_THH`.
@@ -103,11 +106,23 @@ impl Redemption {
             id,
             pool_url,
             worker_name,
+            worker_password: None,
             amount_thh,
             target_hashes: u128::from(amount_thh) * HASHES_PER_THH,
             accumulated_hashes: 0,
             state: RedemptionState::Pending,
         }
+    }
+
+    /// Set the worker password (`None` or empty: the default `x`).
+    pub fn with_password(mut self, password: Option<String>) -> Self {
+        self.worker_password = password.filter(|p| !p.is_empty());
+        self
+    }
+
+    /// Password to send in `mining.authorize`.
+    pub fn authorize_password(&self) -> &str {
+        self.worker_password.as_deref().unwrap_or("x")
     }
 
     /// Credit one accepted share at the given bdiff. Returns the state
@@ -174,6 +189,8 @@ enum LedgerRecord {
         amount_thh: u64,
         pool_url: String,
         worker_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_password: Option<String>,
     },
     Credit {
         id: RedemptionId,
@@ -216,10 +233,14 @@ impl RedemptionLedger {
                     amount_thh,
                     pool_url,
                     worker_name,
+                    worker_password,
                 } => {
                     // A duplicate open can only come from a hand-edited
                     // file; keep the first.
-                    let _ = ledger.open(Redemption::new(id, amount_thh, pool_url, worker_name));
+                    let _ = ledger.open(
+                        Redemption::new(id, amount_thh, pool_url, worker_name)
+                            .with_password(worker_password),
+                    );
                 }
                 LedgerRecord::Credit { id, hashes } => {
                     let Ok(hashes) = hashes.parse::<u128>() else {
@@ -240,6 +261,7 @@ impl RedemptionLedger {
                     amount_thh: r.amount_thh,
                     pool_url: r.pool_url.clone(),
                     worker_name: r.worker_name.clone(),
+                    worker_password: r.worker_password.clone(),
                 };
                 let credit = (r.accumulated_hashes > 0).then(|| LedgerRecord::Credit {
                     id: r.id,
@@ -279,6 +301,7 @@ impl RedemptionLedger {
             amount_thh: redemption.amount_thh,
             pool_url: redemption.pool_url.clone(),
             worker_name: redemption.worker_name.clone(),
+            worker_password: redemption.worker_password.clone(),
         });
         map.insert(id, redemption);
         // Take `order` while still holding `inner` so the two never

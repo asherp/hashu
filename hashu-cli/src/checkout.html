@@ -48,7 +48,8 @@ button.act:disabled { opacity: 0.5; cursor: default; }
 .price b { font-size: 26px; font-variant-numeric: tabular-nums; }
 .note { color: var(--ink-3); font-size: 13px; margin: 0; }
 .qr { align-self: center; background: #fff; padding: 8px; border-radius: 10px; line-height: 0; }
-.qr svg { width: 240px; height: 240px; }
+.qr svg { width: 240px; height: 240px; display: block; }
+.qr[hidden] { display: none; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; color: var(--ink-2); }
 .pill { border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600; }
 .pill.wait { border: 1px solid var(--line); color: var(--ink-2); }
@@ -111,6 +112,8 @@ button.act:disabled { opacity: 0.5; cursor: default; }
   <section class="card" id="s-token" hidden>
     <div class="row" style="justify-content:space-between"><h2>Your THH</h2><span class="pill ok" id="token-amt"></span></div>
     <p class="note">This Cashu token is the hashrate you bought. It is bearer money: anyone holding it can redeem it. Save it in a Cashu wallet, or redeem it now.</p>
+    <div class="qr" id="token-qr"></div>
+    <p class="note" id="token-qr-note" style="text-align:center"></p>
     <textarea id="token" readonly></textarea>
     <div class="row"><button class="act" id="btn-copy-token">Copy token</button><button class="act primary" id="btn-goto-redeem">Redeem now</button></div>
   </section>
@@ -126,6 +129,9 @@ button.act:disabled { opacity: 0.5; cursor: default; }
     </label>
     <label class="f">Worker name on that pool
       <input type="text" id="r-worker" placeholder="you.worker1">
+    </label>
+    <label class="f">Worker password <span style="color:var(--ink-3)">(optional, most pools accept x)</span>
+      <input type="text" id="r-password" placeholder="x" autocomplete="off">
     </label>
     <button class="act primary" id="btn-redeem">Send me the hashrate</button>
     <p class="note">The mint's miners switch to your pool and mine under your worker name until the THH in the token is delivered.</p>
@@ -269,6 +275,18 @@ async function pollBuy () {
 $('btn-copy-req').addEventListener('click', (ev) => copy(st.checkout.request, ev.target))
 
 // ---- 3. token -----------------------------------------------------------
+// One frame is a plain QR of the token; several are an animated ur:bytes
+// QR, which Cashu wallets (Cashu.me and others) scan frame by frame.
+function playQr (box, note, frames) {
+  clearInterval(box._t)
+  frames = frames || []
+  box.hidden = !frames.length
+  if (note) note.textContent = frames.length > 1 ? `Scan with a Cashu wallet such as Cashu.me. Animated QR: hold the camera steady until all ${frames.length} parts are read.` : frames.length ? 'Scan with a Cashu wallet such as Cashu.me.' : ''
+  if (!frames.length) { box.innerHTML = ''; return }
+  let i = 0
+  box.innerHTML = frames[0]
+  if (frames.length > 1) box._t = setInterval(() => { i = (i + 1) % frames.length; box.innerHTML = frames[i] }, 250)
+}
 function showToken () {
   const c = st.checkout
   $('pay-state').textContent = 'paid'; $('pay-state').className = 'pill ok'
@@ -276,6 +294,7 @@ function showToken () {
   $('token').value = c.token
   $('token-amt').textContent = `${c.amount_thh} THH`
   $('r-token').value = c.token
+  playQr($('token-qr'), $('token-qr-note'), c.token_qr)
   step('token')
   $('s-token').scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
@@ -286,7 +305,7 @@ $('btn-goto-redeem').addEventListener('click', () => { step('redeem'); $('s-rede
 $('btn-redeem').addEventListener('click', async () => {
   $('btn-redeem').disabled = true
   try {
-    const r = await post('api/redeem', { token: $('r-token').value, pool_url: $('r-pool').value, worker_name: $('r-worker').value })
+    const r = await post('api/redeem', { token: $('r-token').value, pool_url: $('r-pool').value, worker_name: $('r-worker').value, worker_password: $('r-password').value })
     alertMsg('')
     st.redemption = r.redemption_id
     history.replaceState(null, '', `#redemption=${r.redemption_id}`)

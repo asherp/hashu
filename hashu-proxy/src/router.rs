@@ -48,11 +48,13 @@ pub const FALLBACK_HOLD: Duration = Duration::from_secs(60);
 pub enum Route {
     /// Operator's default pool; lines pass through unmodified.
     Default { upstream: String },
-    /// A redeemer's pool; worker name is rewritten to `worker_name`.
+    /// A redeemer's pool; worker name is rewritten to `worker_name` and
+    /// the authorize password to `worker_password`.
     Redemption {
         id: RedemptionId,
         upstream: String,
         worker_name: String,
+        worker_password: String,
     },
 }
 
@@ -78,18 +80,23 @@ impl Route {
     /// name instead of the miner's. Anything else (and every line on the
     /// default route) is returned as-is.
     pub fn rewrite_miner_line(&self, line: &str) -> Option<String> {
-        let Route::Redemption { worker_name, .. } = self else {
+        let Route::Redemption {
+            worker_name,
+            worker_password,
+            ..
+        } = self
+        else {
             return None;
         };
-        rewrite_worker(line, worker_name)
+        rewrite_worker(line, worker_name, worker_password)
     }
 }
 
 /// Replace `params[0]` of `mining.authorize` / `mining.submit` with
-/// `worker`. Returns `None` if the line is not one of those (or does not
+/// `worker`, and the authorize password (`params[1]`) with `password`. Returns `None` if the line is not one of those (or does not
 /// parse), meaning "forward unchanged". The rewritten line keeps the
 /// trailing newline so it can be written straight to the socket.
-pub fn rewrite_worker(line: &str, worker: &str) -> Option<String> {
+pub fn rewrite_worker(line: &str, worker: &str, password: &str) -> Option<String> {
     let mut v: Value = serde_json::from_str(line.trim()).ok()?;
     let method = v.get("method")?.as_str()?;
     let is_authorize = method == "mining.authorize";
@@ -100,10 +107,11 @@ pub fn rewrite_worker(line: &str, worker: &str) -> Option<String> {
     let first = params.first_mut()?;
     *first = Value::String(worker.to_string());
     if is_authorize {
-        // The miner's password was meant for the default pool. Most pools
-        // ignore it; send the conventional placeholder.
-        if let Some(pw) = params.get_mut(1) {
-            *pw = Value::String("x".into());
+        // The miner's password was meant for the default pool; send the
+        // redeemer's (`x` unless they gave one).
+        match params.get_mut(1) {
+            Some(pw) => *pw = Value::String(password.to_string()),
+            None => params.push(Value::String(password.to_string())),
         }
     }
     let mut out = serde_json::to_string(&v).ok()?;
@@ -330,6 +338,7 @@ fn pick_route(
             id: r.id,
             upstream,
             worker_name: r.worker_name.clone(),
+            worker_password: r.authorize_password().to_string(),
         },
         None => Route::Default {
             upstream: default_upstream.to_string(),
@@ -354,21 +363,22 @@ mod tests {
     #[test]
     fn rewrites_authorize_and_submit_only() {
         let auth = r#"{"id":2,"method":"mining.authorize","params":["miner.1","secret"]}"#;
-        let out: Value = serde_json::from_str(&rewrite_worker(auth, "bob.rig").unwrap()).unwrap();
+        let out: Value =
+            serde_json::from_str(&rewrite_worker(auth, "bob.rig", "x").unwrap()).unwrap();
         assert_eq!(out["params"][0], "bob.rig");
         assert_eq!(out["params"][1], "x");
         assert_eq!(out["id"], 2);
 
         let submit = r#"{"id":5,"method":"mining.submit","params":["miner.1","job1","00000000","60000000","deadbeef"]}"#;
-        let out = rewrite_worker(submit, "bob.rig").unwrap();
+        let out = rewrite_worker(submit, "bob.rig", "x").unwrap();
         assert!(out.ends_with('\n'));
         let out: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(out["params"][0], "bob.rig");
         assert_eq!(out["params"][1], "job1");
 
         let sub = r#"{"id":1,"method":"mining.subscribe","params":["cpuminer/1.0"]}"#;
-        assert_eq!(rewrite_worker(sub, "bob.rig"), None);
-        assert_eq!(rewrite_worker("not json", "bob.rig"), None);
+        assert_eq!(rewrite_worker(sub, "bob.rig", "x"), None);
+        assert_eq!(rewrite_worker("not json", "bob.rig", "x"), None);
     }
 
     #[test]
@@ -407,6 +417,37 @@ mod tests {
     }
 
     #[test]
+    fn authorize_carries_the_redeemers_password() {
+        let auth = r#"{"id":2,"method":"mining.authorize","params":["miner.1","secret"]}"#;
+        let out: Value =
+            serde_json::from_str(&rewrite_worker(auth, "bob.rig", "d=1024").unwrap()).unwrap();
+        assert_eq!(out["params"], serde_json::json!(["bob.rig", "d=1024"]));
+        // A miner that sent no password still authorizes with one.
+        let bare = r#"{"id":3,"method":"mining.authorize","params":["miner.1"]}"#;
+        let out: Value =
+            serde_json::from_str(&rewrite_worker(bare, "bob.rig", "pw").unwrap()).unwrap();
+        assert_eq!(out["params"], serde_json::json!(["bob.rig", "pw"]));
+    }
+
+    #[test]
+    fn route_uses_the_redemption_password() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        ledger
+            .open(
+                Redemption::new(rid(9), 1, "stratum+tcp://p:3333".into(), "w".into())
+                    .with_password(Some("hunter2".into())),
+            )
+            .unwrap();
+        let router = Router::new("default:3333", ledger);
+        match router.assign(ConnectionId::next()).route {
+            Route::Redemption {
+                worker_password, ..
+            } => assert_eq!(worker_password, "hunter2"),
+            r => panic!("unexpected {r:?}"),
+        }
+    }
+
+    #[test]
     fn active_redemption_takes_new_connections() {
         let ledger = Arc::new(RedemptionLedger::new());
         open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
@@ -418,6 +459,7 @@ mod tests {
                 id: rid(1),
                 upstream: "alice:3333".into(),
                 worker_name: "alice.w".into(),
+                worker_password: "x".into(),
             }
         );
     }
