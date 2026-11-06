@@ -164,7 +164,7 @@ const methodName = (m) => m === 'bolt11' ? 'Lightning' : m === 'usdt' ? 'USDT' :
 async function api (path, opts) {
   const r = await fetch(path, opts)
   const body = await r.json().catch(() => ({}))
-  if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`)
+  if (!r.ok) throw Object.assign(new Error(body.error || `${r.status} ${r.statusText}`), { body })
   return body
 }
 const post = (path, body) => api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
@@ -324,7 +324,7 @@ $('btn-redeem').addEventListener('click', async () => {
     history.replaceState(null, '', `#redemption=${r.redemption_id}`)
     step('redeem')
     pollRedemption()
-  } catch (e) { alertMsg(e.message) } finally { $('btn-redeem').disabled = false }
+  } catch (e) { if (e.body && e.body.refund_token) $('r-token').value = e.body.refund_token; alertMsg(e.message) } finally { $('btn-redeem').disabled = false }
 })
 
 // ---- 5. progress --------------------------------------------------------
