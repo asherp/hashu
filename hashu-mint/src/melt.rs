@@ -162,6 +162,51 @@ fn parse_lookup_id(payment_identifier: &PaymentIdentifier) -> Result<RedemptionI
     Ok(RedemptionId::from_bytes(bytes))
 }
 
+/// Reopen, in `ledger`, every pending `hashrate` melt quote the mint's
+/// database holds but the ledger does not know. Run before the mint starts
+/// so cdk's startup check finds the redemption.
+///
+/// The ledger journal normally restores these with their progress. This
+/// covers a journal that is missing (state from before persistence, or a
+/// lost file): the redemption restarts from zero credited hashes, so the
+/// redeemer is owed at least what they melted, never less, and the
+/// proofs cdk holds pending can still settle instead of hanging forever.
+/// Returns the ids reopened.
+pub fn reopen_pending_quotes(
+    ledger: &RedemptionLedger,
+    quotes: &[cdk::mint::MeltQuote],
+) -> Vec<RedemptionId> {
+    let hashrate = cdk::nuts::PaymentMethod::Custom(METHOD.into());
+    let mut reopened = Vec::new();
+    for quote in quotes {
+        if quote.payment_method != hashrate || quote.state != MeltQuoteState::Pending {
+            continue;
+        }
+        let request = quote.request.to_string();
+        let id = redemption_id_for(&request);
+        if ledger.get(&id).is_some() {
+            continue;
+        }
+        let Ok(req) = HashrateRequest::parse(&request) else {
+            tracing::warn!(quote = %quote.id, "pending hashrate quote has an unreadable request");
+            continue;
+        };
+        if ledger
+            .open(Redemption::new(
+                id,
+                req.amount_thh,
+                req.pool_url,
+                req.worker_name,
+            ))
+            .is_ok()
+        {
+            tracing::warn!(quote = %quote.id, redemption = %id, "reopened pending redemption missing from the ledger journal");
+            reopened.push(id);
+        }
+    }
+    reopened
+}
+
 #[async_trait]
 impl MintPayment for HashrateMelter {
     type Err = Error;

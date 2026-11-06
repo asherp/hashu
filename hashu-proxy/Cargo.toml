@@ -16,4 +16,5 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "net", "time"] }

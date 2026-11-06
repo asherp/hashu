@@ -208,8 +208,9 @@ hashu mint run \
   `{"pool_url", "worker_name", "amount_thh", "nonce"?}`. The proxy routes
   miners to that pool under that worker until the amount is filled, then
   the melt turns `PAID`. `--upstream` is where miners go otherwise.
-- State lives in `--data-dir` (`mint.sqlite`, `seed.hex`). Open
-  redemptions are in memory: a restart forgets them.
+- State lives in `--data-dir` (`mint.sqlite`, `seed.hex`, plus
+  `redemptions.jsonl` and `share-audit.jsonl`). Open redemptions and their
+  share trees are replayed on startup, so a restart resumes them.
 - **Operator GUI** (`http://127.0.0.1:3334/`): real-time hashrate through
   the proxy (from accepted shares, difficulty × 2^32 hashes each, averaged
   over `--hashrate-window` seconds), the current redemption's delivered

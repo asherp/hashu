@@ -311,14 +311,18 @@ On stage:
 docker compose ps
 docker compose logs -f hashu            # mint + proxy
 docker compose logs -f phoenixd
-docker compose restart hashu            # note: open redemptions are in memory and are lost
+docker compose restart hashu            # open redemptions resume after the restart
 git pull && docker compose up -d --build hashu   # deploy a new version
 ```
 
 Caveats for the demo:
 
-- Open redemptions live in memory: restarting `hashu` mid-redemption drops
-  them (the melt never completes). Don't redeploy during the demo.
+- Open redemptions are journaled in the `hashu_data` volume
+  (`/data/redemptions.jsonl`, share trees in `/data/share-audit.jsonl`), so a
+  restart or redeploy resumes them: miners reconnect, get routed to the
+  redeemer's pool again and keep crediting. Shares submitted while `hashu`
+  is down are lost (miners are disconnected), so the redemption just takes
+  that much longer.
 - Stratum on 3335 is plaintext TCP, like most pools.
 - The mint API has no rate limiting; fine for a hackathon, not production.
 - The limited-access phoenixd password was not tested end to end before
