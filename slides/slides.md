@@ -1,19 +1,51 @@
 ---
 theme: default
+colorSchema: dark
+fonts:
+  sans: 'system-ui, -apple-system, "Segoe UI"'
+  mono: 'ui-monospace, SFMono-Regular, Menlo'
+  provider: none
 title: Hashu — Layer-0 privacy through hashrate ecash
 info: |
   Hashu: a hashrate proxy fused with a Cashu (CDK) mint.
-  Six-slide overview of the live mainnet demo at mint.hashu.io.
-class: text-left
+  Seven-slide overview of the live mainnet demo at mint.hashu.io.
+layout: cover
+class: hashu-title
 drawings:
   persist: false
 transition: slide-left
 mdc: true
 ---
 
-# Hashu
+<div class="flex items-center gap-3 text-2xl font-bold"><svg viewBox="0 0 32 32" style="width:44px;height:44px" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#f7931a"/><path d="M10 7v18M22 7v18M10 16h12" stroke="#111" stroke-width="3.4" stroke-linecap="round"/></svg> Hashu</div>
 
-### Layer-0 privacy: swap any payment for freshly mined coins
+<h1 class="hashu-h1">Ehash for <span>hashrate</span>.</h1>
+
+<p class="hashu-sub">Layer-0 privacy: swap any payment for freshly mined coins</p>
+
+<div class="abs-bl m-8 text-sm hashu-foot">mint.hashu.io · github.com/asherp/hashu · built on CDK + Tether MDK</div>
+
+<style>
+.slidev-layout.hashu-title { padding: 3.5rem 4rem; }
+.hashu-h1 { font-size: 5.2rem !important; line-height: 1.05 !important; font-weight: 800; letter-spacing: -0.02em; margin: 2.5rem 0 1.2rem !important; color: #f1efea; }
+.hashu-h1 span { color: #f7931a; }
+.hashu-sub { font-size: 1.6rem; color: #b5b2ab; margin: 0 !important; opacity: 1 !important; }
+.hashu-foot { color: #85827c; }
+</style>
+
+<!--
+Ehash: ecash whose backing is hashrate, not bitcoin. Open with the privacy hook,
+then the next slide explains why fresh coins matter.
+-->
+
+---
+class: text-left
+---
+
+
+# Layer-0 privacy
+
+### Swap any payment for freshly mined coins
 
 <div class="mt-6 grid grid-cols-2 gap-10 text-left text-sm">
 <div>
