@@ -197,6 +197,73 @@ and the miner pool at `stratum+tcp://mint.hashu.io:3335`.
 progress). If that should not be public, remove the `/control/*` block
 from the Caddyfile and reach 3334 over an SSH tunnel instead.
 
+## 8. Rented hashrate from MiningRigRentals
+
+With no Bitaxe at hand, rent SHA-256 hashrate on MiningRigRentals (MRR)
+and point it at the **Hashu proxy**, not at ckpool. Only shares that pass
+through the proxy are seen, committed and credited to redemptions; a rig
+pointed straight at ckpool mines fine but Hashu never knows.
+
+```
+MRR rig ──stratum+tcp://mint.hashu.io:3335──► hashu proxy ──► ckpool :3333 (default)
+                                                         └──► redeemer's pool (while a redemption is open)
+```
+
+**Add the pool on MRR** (Account → Pool Profiles, or the pool list when
+renting):
+
+| Field | Value |
+|---|---|
+| Algorithm | SHA256 |
+| Pool host | `stratum+tcp://mint.hashu.io` |
+| Port | `3335` |
+| Worker / username | any label, e.g. `asher.mrr` (ckpool on Testnet4 takes any name) |
+| Password | `x` |
+
+Don't append NiceHash's `#xnsub` to the URL. Hold off on a backup pool
+that goes straight to ckpool: MRR fails over to it whenever the proxy
+drops the rig (see below), and those shares bypass Hashu. If you want a
+backup, add the same proxy URL again.
+
+**How much to rent.** 1 TH/s for one hour is 1 THH, so a rig of R TH/s
+fills R/60 THH per minute. A 100 TH/s rental fills a 5 THH redemption in
+3 minutes; 1 PH/s fills it in 18 seconds. For a live demo, size the
+redemption so it takes 2–5 minutes at the rented rate, so the judges see
+the graph climb and the melt turn `PAID`. MRR rental hashrate takes a few
+minutes to ramp up after the rental starts, so start it ~15 minutes early.
+
+**What the proxy does with an MRR rig** (it is a pass-through Stratum V1
+proxy, one upstream connection per miner connection):
+
+- `mining.subscribe`/`configure` (version rolling), `extranonce`
+  handling and `mining.set_difficulty` are forwarded unchanged, so
+  difficulty is whatever ckpool's vardiff sets. A big rig floods a low
+  start difficulty for its first minute; raising `startdiff` in ckpool's
+  config (e.g. 10000+ for 100 TH/s and up) avoids that. Crediting is by
+  share difficulty (`difficulty × 2^32` hashes), so a THH is a THH at any
+  difficulty.
+- When a redemption opens or fills, the proxy **closes the rig's
+  connection** so it reconnects to the new route, with the worker name
+  rewritten to the redeemer's. MRR rigs reconnect in seconds; the MRR
+  rental page may briefly show the pool as down. That is expected.
+- The redemption pool in the demo is ckpool on the same box
+  (`stratum+tcp://216.230.225.61:3333`): the container reaches it through
+  the box's public IP.
+
+**Confirm hashrate is arriving:**
+
+1. MRR rental page: the rig shows the pool connected and a nonzero
+   hashrate after ramp-up.
+2. `docker compose logs -f hashu`: a new connection from MRR's IP, then
+   metrics lines every 30 s with `shares_accepted` climbing.
+3. `curl -s https://mint.hashu.io/control/status | jq .metrics`:
+   `connections_accepted` ≥ 1 and `shares_accepted` rising.
+4. Operator GUI at `https://mint.hashu.io/operator/`: the live hashrate
+   graph tracks the rented TH/s (averaged over `--hashrate-window`,
+   default 60 s). Open a redemption (e.g. `buy_and_redeem` above): the
+   rig reconnects, `shares_credited` starts rising and the cumulative THH
+   graph climbs to the target, then the rig goes back to ckpool.
+
 ## Operations
 
 ```bash
