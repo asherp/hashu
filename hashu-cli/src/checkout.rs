@@ -543,13 +543,21 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
         );
     }
 
-    let request = json!({
+    let mut request = json!({
         "pool_url": pool_url,
         "worker_name": worker,
         "amount_thh": amount,
         "nonce": hex::encode(rand::random::<[u8; 8]>()),
-    })
-    .to_string();
+    });
+    // Optional; the proxy sends `x` without one.
+    if let Some(pw) = v["worker_password"]
+        .as_str()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        request["worker_password"] = json!(pw);
+    }
+    let request = request.to_string();
     let rid = redemption_id_for(&request);
     let quote = match wallet
         .melt_quote(PaymentMethod::Custom(HASHRATE.into()), request, None, None)

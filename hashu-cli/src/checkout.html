@@ -127,6 +127,9 @@ button.act:disabled { opacity: 0.5; cursor: default; }
     <label class="f">Worker name on that pool
       <input type="text" id="r-worker" placeholder="you.worker1">
     </label>
+    <label class="f">Worker password <span style="color:var(--ink-3)">(optional, most pools accept x)</span>
+      <input type="text" id="r-password" placeholder="x" autocomplete="off">
+    </label>
     <button class="act primary" id="btn-redeem">Send me the hashrate</button>
     <p class="note">The mint's miners switch to your pool and mine under your worker name until the THH in the token is delivered.</p>
   </section>
@@ -286,7 +289,7 @@ $('btn-goto-redeem').addEventListener('click', () => { step('redeem'); $('s-rede
 $('btn-redeem').addEventListener('click', async () => {
   $('btn-redeem').disabled = true
   try {
-    const r = await post('api/redeem', { token: $('r-token').value, pool_url: $('r-pool').value, worker_name: $('r-worker').value })
+    const r = await post('api/redeem', { token: $('r-token').value, pool_url: $('r-pool').value, worker_name: $('r-worker').value, worker_password: $('r-password').value })
     alertMsg('')
     st.redemption = r.redemption_id
     history.replaceState(null, '', `#redemption=${r.redemption_id}`)

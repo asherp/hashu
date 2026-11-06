@@ -23,7 +23,7 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px; display: flex; flex-direction: column; gap: 16px; }
+main { max-width: 1400px; margin: 0 auto; padding: 20px 16px 48px; display: flex; flex-direction: column; gap: 16px; }
 header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
 h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
 h1 span { color: var(--brand); }
@@ -41,8 +41,10 @@ h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacin
 .tile label { display: block; font-size: 12px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.04em; }
 .tile b { display: block; font-size: 24px; font-variant-numeric: tabular-nums; margin-top: 2px; }
 .tile small { color: var(--ink-3); overflow-wrap: anywhere; }
-.cols { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: start; }
-@media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
+.pair { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 1100px) { .pair { grid-template-columns: 1fr 1fr; } }
+.cols { columns: 3 320px; column-gap: 16px; }
+.cols > .card { break-inside: avoid; margin-bottom: 16px; }
 .chart { position: relative; width: 100%; height: 240px; }
 .chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .chart .axis text { fill: var(--ink-3); font-size: 11px; font-variant-numeric: tabular-nums; }
@@ -102,6 +104,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
     <div class="tile"><label>Price</label><b id="t-price">—</b><small id="t-price-sub">sats per THH</small></div>
   </section>
 
+  <div class="pair">
   <section class="card" aria-labelledby="h-rate">
     <div class="card-head">
       <h2 id="h-rate">Real-time hashrate</h2>
@@ -127,76 +130,77 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
     <p class="note">Hashrate integrated since the redemption opened: the THH the redeemer's pool has received (1 THH = 3.6 × 10<sup>15</sup> hashes). The dashed line is the amount redeemed.</p>
   </section>
 
+  </div>
+
+  <section class="card" aria-labelledby="h-list">
+    <h2 id="h-list">Redemptions</h2>
+    <div class="scroll" style="max-height:360px;overflow-y:auto">
+      <table>
+        <thead><tr><th>Opened</th><th>Pool / worker</th><th>THH</th><th style="width:28%">Progress</th><th>State</th></tr></thead>
+        <tbody id="red-rows"><tr><td colspan="5" class="sub">None yet.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
   <div class="cols">
-    <section class="card" aria-labelledby="h-list">
-      <h2 id="h-list">Redemptions</h2>
-      <div class="scroll">
-        <table>
-          <thead><tr><th>Opened</th><th>Pool / worker</th><th>THH</th><th style="width:28%">Progress</th><th>State</th></tr></thead>
-          <tbody id="red-rows"><tr><td colspan="5" class="sub">None yet.</td></tr></tbody>
-        </table>
+    <section class="card" aria-labelledby="h-ctl">
+      <h2 id="h-ctl">Mint controls</h2>
+      <div class="row">
+        <button class="act" id="btn-pause">…</button>
+        <span class="note" id="pause-note"></span>
       </div>
+      <div class="row">
+        <label for="markup">Markup</label>
+        <input type="number" id="markup" step="0.5" min="-90" max="1000"> <span>%</span>
+        <button class="act" id="btn-markup">Apply</button>
+      </div>
+      <p class="note" id="price-note">Applied to every rail's base price. Redemptions and the proxy keep running while issuance is paused.</p>
     </section>
 
-    <div style="display:flex;flex-direction:column;gap:16px;min-width:0">
-      <section class="card" aria-labelledby="h-ctl">
-        <h2 id="h-ctl">Mint controls</h2>
-        <div class="row">
-          <button class="act" id="btn-pause">…</button>
-          <span class="note" id="pause-note"></span>
-        </div>
-        <div class="row">
-          <label for="markup">Markup</label>
-          <input type="number" id="markup" step="0.5" min="-90" max="1000"> <span>%</span>
-          <button class="act" id="btn-markup">Apply</button>
-        </div>
-        <p class="note" id="price-note">Applied to every rail's base price. Redemptions and the proxy keep running while issuance is paused.</p>
-      </section>
+    <section class="card" aria-labelledby="h-cap">
+      <div class="card-head">
+        <h2 id="h-cap">Hashrate capacity</h2>
+        <div class="seg" id="cap-limit"><button data-v="auto">Auto</button><button data-v="on">Cap on</button><button data-v="off">Off</button></div>
+      </div>
+      <dl class="kv" id="cap"></dl>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Rental</th><th>TH/s</th><th>Left</th><th>THH</th><th></th></tr></thead>
+          <tbody id="cap-rows"></tbody>
+        </table>
+      </div>
+      <div class="row">
+        <input type="number" id="cap-ths" step="any" min="0" placeholder="TH/s" aria-label="TH/s">
+        <input type="number" id="cap-hours" step="any" min="0" placeholder="hours" aria-label="Hours left">
+        <input type="text" id="cap-label" placeholder="label (optional)" aria-label="Label">
+        <button class="act primary" id="btn-cap">Add rental</button>
+      </div>
+      <p class="note" id="cap-note">Capacity = rented TH/s × hours left. Mint quotes beyond capacity minus THH owed are refused.</p>
+    </section>
 
-      <section class="card" aria-labelledby="h-cap">
-        <div class="card-head">
-          <h2 id="h-cap">Hashrate capacity</h2>
-          <div class="seg" id="cap-limit"><button data-v="auto">Auto</button><button data-v="on">Cap on</button><button data-v="off">Off</button></div>
-        </div>
-        <dl class="kv" id="cap"></dl>
-        <div class="scroll">
-          <table>
-            <thead><tr><th>Rental</th><th>TH/s</th><th>Left</th><th>THH</th><th></th></tr></thead>
-            <tbody id="cap-rows"></tbody>
-          </table>
-        </div>
-        <div class="row">
-          <input type="number" id="cap-ths" step="any" min="0" placeholder="TH/s" aria-label="TH/s">
-          <input type="number" id="cap-hours" step="any" min="0" placeholder="hours" aria-label="Hours left">
-          <input type="text" id="cap-label" placeholder="label (optional)" aria-label="Label">
-          <button class="act primary" id="btn-cap">Add rental</button>
-        </div>
-        <p class="note" id="cap-note">Capacity = rented TH/s × hours left. Mint quotes beyond capacity minus THH owed are refused.</p>
-      </section>
+    <section class="card" aria-labelledby="h-test">
+      <h2 id="h-test">Test redemption</h2>
+      <p class="note">Mint THH without a payment to rehearse a redemption. It is real ecash: it counts as owed until redeemed.</p>
+      <div class="row">
+        <input type="number" id="test-amt" min="1" max="1000" step="1" value="1"> <span>THH</span>
+        <button class="act" id="btn-test-mint">Mint test THH</button>
+      </div>
+      <textarea id="test-token" class="mono" rows="3" placeholder="token appears here" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;resize:vertical"></textarea>
+      <input type="text" id="test-pool" placeholder="stratum+tcp://pool:3333" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;font:inherit">
+      <input type="text" id="test-worker" placeholder="worker name, e.g. you.rig1" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;font:inherit">
+      <input type="text" id="test-password" placeholder="worker password (optional, default x)" autocomplete="off" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;font:inherit">
+      <div class="row"><button class="act primary" id="btn-test-redeem">Redeem to this pool</button><span class="note" id="test-note"></span></div>
+    </section>
 
-      <section class="card" aria-labelledby="h-test">
-        <h2 id="h-test">Test redemption</h2>
-        <p class="note">Mint THH without a payment to rehearse a redemption. It is real ecash: it counts as owed until redeemed.</p>
-        <div class="row">
-          <input type="number" id="test-amt" min="1" max="1000" step="1" value="1"> <span>THH</span>
-          <button class="act" id="btn-test-mint">Mint test THH</button>
-        </div>
-        <textarea id="test-token" class="mono" rows="3" placeholder="token appears here" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;resize:vertical"></textarea>
-        <input type="text" id="test-pool" placeholder="stratum+tcp://pool:3333" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;font:inherit">
-        <input type="text" id="test-worker" placeholder="worker name, e.g. you.rig1" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;font:inherit">
-        <div class="row"><button class="act primary" id="btn-test-redeem">Redeem to this pool</button><span class="note" id="test-note"></span></div>
-      </section>
+    <section class="card" aria-labelledby="h-obl">
+      <h2 id="h-obl">Outstanding obligations</h2>
+      <dl class="kv" id="obl"></dl>
+    </section>
 
-      <section class="card" aria-labelledby="h-obl">
-        <h2 id="h-obl">Outstanding obligations</h2>
-        <dl class="kv" id="obl"></dl>
-      </section>
-
-      <section class="card" aria-labelledby="h-proxy">
-        <h2 id="h-proxy">Proxy</h2>
-        <dl class="kv" id="proxy"></dl>
-      </section>
-    </div>
+    <section class="card" aria-labelledby="h-proxy">
+      <h2 id="h-proxy">Proxy</h2>
+      <dl class="kv" id="proxy"></dl>
+    </section>
   </div>
 </main>
 
@@ -544,7 +548,7 @@ $('btn-test-redeem').addEventListener('click', async () => {
   const b = $('btn-test-redeem'); b.disabled = true
   try {
     try { localStorage.setItem('hashu.testPool', $('test-pool').value); localStorage.setItem('hashu.testWorker', $('test-worker').value) } catch {}
-    const r = await postJson('api/test-redeem', { token: $('test-token').value, pool_url: $('test-pool').value, worker_name: $('test-worker').value })
+    const r = await postJson('api/test-redeem', { token: $('test-token').value, pool_url: $('test-pool').value, worker_name: $('test-worker').value, worker_password: $('test-password').value })
     $('test-note').textContent = `Redemption ${r.redemption_id.slice(0, 8)} open for ${r.amount_thh} THH.`
     $('test-token').value = ''
     state.selected = r.redemption_id; state.pinned = true
