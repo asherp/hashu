@@ -1,8 +1,19 @@
 # TLS front for the live Hashu demo. Certificates come from Let's Encrypt
 # automatically once $HASHU_DOMAIN resolves to this machine (sslip.io works) and
 # ports 80/443 are open.
-{$HASHU_DOMAIN} {
+# HASHU_EXTRA_DOMAINS (default "hashu.io www.hashu.io") serve the same site;
+# Caddy only gets their certificates once their A records point here, and
+# mint.hashu.io keeps working either way.
+{$HASHU_DOMAIN} {$HASHU_EXTRA_DOMAINS} {
 	encode gzip
+
+	# Slidev deck, built with --base /slides/ into the caddy image.
+	redir /slides /slides/
+	handle_path /slides/* {
+		root * /srv/slides
+		try_files {path} /index.html
+		file_server
+	}
 
 	# Operator GUI (served by the control API). Password protected: its
 	# POST api/controls pauses issuance and changes the markup.

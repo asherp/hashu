@@ -7,6 +7,8 @@
 #   80/443  Caddy (TLS)  -> mint API (hashu:8085) at https://$HASHU_DOMAIN/
 #                        -> operator GUI (hashu:3334) at /operator/ (basic auth)
 #                        -> GET /control/status (read-only, for the MDK app)
+#                        -> slide deck at /slides/ (built into the caddy image)
+#                        also answers for $HASHU_EXTRA_DOMAINS (hashu.io)
 #   3335    Stratum proxy, raw TCP, straight to the hashu container
 #           (3333 on the devbox is already taken by ckpool)
 # Private (compose network only, never published on the host):
@@ -85,10 +87,16 @@ services:
     restart: unless-stopped
 
   caddy:
-    image: caddy:2
+    # caddy:2 plus the Slidev deck (slides/) built at /srv/slides.
+    build:
+      context: ..
+      dockerfile: deploy/caddy/Dockerfile
+    image: hashu/caddy:latest
     depends_on: [hashu]
     environment:
       HASHU_DOMAIN: ${HASHU_DOMAIN}
+      # Extra names that serve the same site (needs A records on this machine).
+      HASHU_EXTRA_DOMAINS: ${HASHU_EXTRA_DOMAINS-hashu.io www.hashu.io}
       OPERATOR_USER: ${OPERATOR_USER:-operator}
       OPERATOR_PASSWORD_HASH: ${OPERATOR_PASSWORD_HASH:?set OPERATOR_PASSWORD_HASH in .env (caddy hash-password)}
     ports:
