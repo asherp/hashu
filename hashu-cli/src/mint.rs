@@ -153,6 +153,10 @@ pub struct RunArgs {
     /// The operator GUI can change it while the mint runs.
     #[arg(long)]
     pub markup_bps: Option<u32>,
+    /// Miner efficiency, J/TH, for the operator GUI's heat estimate when a
+    /// rental's rig name does not name a known model. The GUI can change it.
+    #[arg(long, env = "HASHU_HEAT_J_PER_TH", default_value_t = hashu_mint::heat::DEFAULT_J_PER_TH)]
+    pub heat_j_per_th: f64,
     /// Network for the esplora price source (`testnet4`, `bitcoin`, …).
     #[arg(long, default_value = "testnet4")]
     pub network: String,
@@ -543,6 +547,9 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         args.markup_bps.unwrap_or(0) as i64,
         capacity.clone(),
     ));
+    if let Err(e) = controls.set_heat_j_per_th(args.heat_j_per_th) {
+        bail!("--heat-j-per-th: {e}");
+    }
     let sats_controlled = Arc::new(ControlledPricer::new(
         Arc::new(sats_pricer(&oracle, None)),
         controls.clone(),

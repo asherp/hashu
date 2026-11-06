@@ -67,6 +67,8 @@ services:
       MRR_API_KEY: ${MRR_API_KEY:-}
       MRR_API_SECRET: ${MRR_API_SECRET:-}
       HASHU_MRR_RENTAL_IDS: ${HASHU_MRR_RENTAL_IDS:-}
+      # Heat estimate: J/TH for rigs whose name does not name a model.
+      HASHU_HEAT_J_PER_TH: ${HASHU_HEAT_J_PER_TH:-30}
     command:
       - mint
       - run
