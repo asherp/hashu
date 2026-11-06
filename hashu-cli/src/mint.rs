@@ -50,6 +50,7 @@ use hashu_proxy::stratum::{run_routed_listener, strip_stratum_prefix};
 use hashu_proxy::ProxyMetrics;
 
 use crate::checkout::{self, CheckoutState};
+use crate::landing;
 use crate::network::{default_esplora_url, parse_network};
 use crate::operator::{self, ControlledPricer, DaemonInfo, MintControls, OperatorState};
 
@@ -514,7 +515,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     info.nuts.nut04.methods.retain(|m| m.method != hashrate);
     info.nuts.nut05.methods.retain(|m| m.method == hashrate);
     info.nuts.nut15.methods.clear();
-    builder = builder.with_mint_info(info);
+    builder = builder.with_mint_info(info.clone());
 
     if rails.is_empty() {
         tracing::warn!(
@@ -528,6 +529,18 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             .await
             .context("build mint")?,
     );
+    // cdk keeps the MintInfo it stored on first boot and ignores the
+    // builder's on later boots, so a changed --mint-url (e.g. moving from
+    // the sslip.io stand-in to mint.hashu.io), name, description or rail
+    // set would never reach /v1/info. The command line is the source of
+    // truth: overwrite the stored info, keeping the pubkey cdk derived.
+    let stored = mint.mint_info().await.context("read mint info")?;
+    if info.pubkey.is_none() {
+        info.pubkey = stored.pubkey;
+    }
+    if stored != info {
+        mint.set_mint_info(info).await.context("update mint info")?;
+    }
     mint.start().await.context("start mint")?;
 
     let price_now = sats_controlled.quote(1).ok();
@@ -568,7 +581,8 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let app = cdk_axum::create_mint_router(mint.clone(), methods)
         .await
         .context("build mint HTTP router")?
-        .merge(checkout::router(checkout));
+        .merge(checkout::router(checkout))
+        .merge(landing::router());
     let http = tokio::net::TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("bind mint API on {}", args.listen))?;

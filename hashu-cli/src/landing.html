@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hashu · ecash for hashrate</title>
+<meta name="description" content="Hashu sells terahash-hours of real mining hashrate as Cashu ecash. Pay with Lightning or USDT, redeem by pointing hashrate at any pool.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f7931a'/%3E%3Cpath d='M10 7v18M22 7v18M10 16h12' stroke='%23111' stroke-width='3.4' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f6f6f4; --surface: #ffffff; --ink: #1b1b1a; --ink-2: #55534f; --ink-3: #8a8782;
+  --line: rgba(27,27,26,0.12); --brand: #e8850c; --brand-fill: rgba(232,133,12,0.12); --brand-ink: #111;
+  --good: #2f8a57; --good-bg: rgba(47,138,87,0.14); --bad: #c2403a; --bad-bg: rgba(194,64,58,0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111110; --surface: #1a1a19; --ink: #f1efea; --ink-2: #b5b2ab; --ink-3: #85827c;
+    --line: rgba(241,239,234,0.14); --brand: #f7931a; --brand-fill: rgba(247,147,26,0.14);
+    --good: #5cc28a; --good-bg: rgba(92,194,138,0.16); --bad: #e06c6c; --bad-bg: rgba(224,108,108,0.14);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: inherit; }
+.wrap { max-width: 960px; margin: 0 auto; padding: 0 16px; }
+nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 0; flex-wrap: wrap; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; text-decoration: none; }
+.logo svg { width: 28px; height: 28px; }
+nav .links { display: flex; gap: 18px; font-size: 14px; flex-wrap: wrap; }
+nav .links a { color: var(--ink-2); text-decoration: none; }
+nav .links a:hover { color: var(--ink); }
+.hero { padding: 48px 0 32px; }
+.hero h1 { font-size: clamp(34px, 6vw, 56px); line-height: 1.05; letter-spacing: -0.02em; margin: 0 0 18px; max-width: 14ch; }
+.hero h1 span { color: var(--brand); }
+.hero p { font-size: 19px; color: var(--ink-2); max-width: 60ch; margin: 0 0 28px; }
+.cta { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn { display: inline-block; text-decoration: none; border: 1px solid var(--line); border-radius: 10px; padding: 12px 20px; font-weight: 600; font-size: 15px; }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+.btn:hover { filter: brightness(1.05); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 40px 0 8px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.stat .k { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); }
+.stat .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; overflow-wrap: anywhere; }
+.stat .v small { font-size: 13px; font-weight: 500; color: var(--ink-2); }
+.pill { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 13px; font-weight: 600; }
+.pill.ok { background: var(--good-bg); color: var(--good); }
+.pill.no { background: var(--bad-bg); color: var(--bad); }
+section { padding: 40px 0; border-top: 1px solid var(--line); }
+section > h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-2); margin: 0 0 20px; }
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; min-width: 0; }
+.card h3 { margin: 0 0 6px; font-size: 18px; }
+.card p { margin: 0; color: var(--ink-2); }
+.num { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--brand-fill); color: var(--brand); font-weight: 700; margin-bottom: 10px; }
+.flow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-weight: 600; margin: 4px 0 0; }
+.flow span { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; }
+.flow i { color: var(--ink-3); font-style: normal; }
+.unit { font-size: 15px; color: var(--ink-2); margin: 0; }
+.unit b { color: var(--ink); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+pre { margin: 10px 0 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; }
+.copy { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.copy code { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; overflow-wrap: anywhere; flex: 1 1 200px; }
+.copy button { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 8px; padding: 8px 14px; cursor: pointer; font: inherit; font-size: 14px; }
+dl { margin: 12px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 14px; }
+dt { color: var(--ink-3); }
+dd { margin: 0; overflow-wrap: anywhere; }
+footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 14px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="logo" href="/">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#f7931a"/><path d="M10 7v18M22 7v18M10 16h12" stroke="#111" stroke-width="3.4" stroke-linecap="round"/></svg>
+      Hashu
+    </a>
+    <div class="links">
+      <a href="#how">How it works</a>
+      <a href="#why">Why</a>
+      <a href="#developers">Developers</a>
+      <a href="/checkout/">Buy hashrate</a>
+      <a href="https://github.com/asherp/hashu">GitHub</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <h1>Ecash for <span>hashrate</span>.</h1>
+    <p>Hashu is a Cashu mint fused with a mining proxy. It sells terahash-hours of real hashrate as private ecash. Pay with Lightning or USDT, hold the tokens in any Cashu wallet, and redeem them whenever you like by pointing hashrate at your own pool.</p>
+    <div class="cta">
+      <a class="btn primary" href="/checkout/">Buy hashrate</a>
+      <a class="btn" href="/v1/info">Mint API · /v1/info</a>
+    </div>
+
+    <div class="stats" aria-live="polite">
+      <div class="stat"><div class="k">Price</div><div class="v" id="s-price">—</div></div>
+      <div class="stat"><div class="k">Price in USDT</div><div class="v" id="s-usdt">—</div></div>
+      <div class="stat"><div class="k">Pay with</div><div class="v" id="s-rails">—</div></div>
+      <div class="stat"><div class="k">Sales</div><div class="v" id="s-sales">—</div></div>
+    </div>
+  </header>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <div class="grid3">
+      <div class="card"><div class="num">1</div><h3>Buy</h3><p>Choose how many terahash-hours you want and pay a mainnet Lightning invoice, or send USDT. The mint is priced live from the hashrate rental market.</p></div>
+      <div class="card"><div class="num">2</div><h3>Hold</h3><p>You receive THH as Cashu ecash: blind-signed bearer tokens in the <span class="mono">thh</span> unit. Keep them, send them to a friend, or redeem them right away.</p></div>
+      <div class="card"><div class="num">3</div><h3>Redeem</h3><p>Melt the tokens with your pool URL and worker name. The mint's proxy redirects its miners to your pool until the work you paid for has been delivered, share by share.</p></div>
+    </div>
+    <p class="unit" style="margin-top:20px"><b>1 THH</b> = 1 TH/s for one hour = 3.6 × 10<sup>15</sup> hashes. Redeem to any pool, including Testnet4.</p>
+  </section>
+
+  <section id="why">
+    <h2>Why Hashu</h2>
+    <div class="grid2">
+      <div class="card"><h3>It sells computation, not money</h3><p>A Hashu mint never pays out bitcoin. Its tokens are backed only by the hashrate of the miners behind it, and the only way out is as work delivered to your pool. That keeps the operator selling a service rather than holding and transmitting other people's money.</p></div>
+      <div class="card"><h3>Private by construction</h3><p>Cashu blind signatures mean the mint cannot link the tokens it issued to the tokens it later redeems. Who paid, who holds, and whose pool the hashrate lands on stay separate.</p></div>
+      <div class="card">
+        <h3>Dollars to bitcoin, no exchange</h3>
+        <p>Pay in USDT, receive hashrate, mine bitcoin into your own pool account.</p>
+        <div class="flow" style="margin-top:12px"><span>USD₮</span><i>→</i><span>THH</span><i>→</i><span>₿</span></div>
+      </div>
+      <div class="card"><h3>Verifiable delivery</h3><p>Each redemption gets its own Merkle tree of the shares it was credited, with audit endpoints so a holder can check the work that reached their pool.</p></div>
+    </div>
+  </section>
+
+  <section id="developers">
+    <h2>Developers</h2>
+    <div class="grid2">
+      <div class="card">
+        <h3>Use any Cashu wallet</h3>
+        <p>Add this mint and use the <span class="mono">thh</span> unit. Minting is over <span class="mono">bolt11</span> or <span class="mono">usdt</span>; melting is only over the <span class="mono">hashrate</span> method.</p>
+        <div class="copy"><code class="mono" id="mint-url">—</code><button id="copy-url" type="button">Copy</button></div>
+      </div>
+      <div class="card">
+        <h3>Mint API</h3>
+        <p>Standard Cashu NUT endpoints under <a href="/v1/info" class="mono">/v1</a>.</p>
+        <pre class="mono" id="curl">curl /v1/info</pre>
+        <dl>
+          <dt>Info</dt><dd><a class="mono" href="/v1/info">/v1/info</a></dd>
+          <dt>Keysets</dt><dd><a class="mono" href="/v1/keysets">/v1/keysets</a></dd>
+          <dt>Checkout</dt><dd><a class="mono" href="/checkout/">/checkout/</a></dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Hashu · built at bitcoin++ Seoul 2026 on Tether's Mining Development Kit</span>
+    <span><a href="https://github.com/asherp/hashu">Source</a> · MIT / Apache-2.0</span>
+  </footer>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n, d = 0) => Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
+const RAILS = { bolt11: 'Lightning', usdt: 'USDT' };
+
+let mintUrl = location.origin;
+function showUrl() {
+  $('mint-url').textContent = mintUrl;
+  $('curl').textContent = 'curl ' + mintUrl + '/v1/info';
+}
+showUrl();
+
+$('copy-url').onclick = async () => {
+  try { await navigator.clipboard.writeText(mintUrl); $('copy-url').textContent = 'Copied'; }
+  catch { $('copy-url').textContent = 'Select to copy'; }
+  setTimeout(() => { $('copy-url').textContent = 'Copy'; }, 1500);
+};
+
+async function load() {
+  try {
+    const r = await fetch('/checkout/api/info', { cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status);
+    const i = await r.json();
+    $('s-price').innerHTML = i.sats_per_thh != null ? fmt(i.sats_per_thh) + ' <small>sats / THH</small>' : '—';
+    $('s-usdt').innerHTML = i.usdt_per_thh != null ? fmt(i.usdt_per_thh, 4) + ' <small>USDT / THH</small>' : '<small>not offered</small>';
+    const rails = (i.methods || []).map((m) => RAILS[m] || m);
+    $('s-rails').textContent = rails.length ? rails.join(' · ') : 'none';
+    $('s-sales').innerHTML = i.issuance_paused ? '<span class="pill no">paused</span>' : '<span class="pill ok">open</span>';
+    if (i.mint_url && /^https?:\/\//.test(i.mint_url)) { mintUrl = i.mint_url.replace(/\/+$/, ''); showUrl(); }
+  } catch (e) {
+    $('s-sales').innerHTML = '<span class="pill no">unreachable</span>';
+  }
+}
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>
