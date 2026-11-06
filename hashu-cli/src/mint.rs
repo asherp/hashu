@@ -515,7 +515,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     info.nuts.nut04.methods.retain(|m| m.method != hashrate);
     info.nuts.nut05.methods.retain(|m| m.method == hashrate);
     info.nuts.nut15.methods.clear();
-    builder = builder.with_mint_info(info.clone());
+    builder = builder.with_mint_info(info);
 
     if rails.is_empty() {
         tracing::warn!(
@@ -529,18 +529,6 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             .await
             .context("build mint")?,
     );
-    // cdk keeps the MintInfo it stored on first boot and ignores the
-    // builder's on later boots, so a changed --mint-url (e.g. moving from
-    // the sslip.io stand-in to mint.hashu.io), name, description or rail
-    // set would never reach /v1/info. The command line is the source of
-    // truth: overwrite the stored info, keeping the pubkey cdk derived.
-    let stored = mint.mint_info().await.context("read mint info")?;
-    if info.pubkey.is_none() {
-        info.pubkey = stored.pubkey;
-    }
-    if stored != info {
-        mint.set_mint_info(info).await.context("update mint info")?;
-    }
     mint.start().await.context("start mint")?;
 
     let price_now = sats_controlled.quote(1).ok();

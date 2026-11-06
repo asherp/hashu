@@ -39,10 +39,7 @@ but cannot send, so even a compromised mint cannot spend the wallet.
   VPS add swap or build the image elsewhere and `docker save | ssh … docker load`.
 - A DNS name for the box: **`mint.hashu.io`** → the devbox (216.230.225.61).
   See "DNS on Squarespace" below. Until it resolves, `216-230-225-61.sslip.io`
-  works as a stand-in (sslip.io maps it to that IP). When you switch
-  `HASHU_DOMAIN` in `.env`, `docker compose up -d` recreates `hashu` and the
-  mint advertises the new URL in `/v1/info` (`urls`) from then on; wallets
-  that saved the old URL keep working as long as it still resolves here.
+  works as a stand-in (sslip.io maps it to that IP).
 - Ports 80 and 443 free on the host for Caddy. Check first with
   `sudo ss -tlnp | grep -E ':(80|443|3335) '`; if something (e.g. a faucet
   web server) already has 80/443, either put the Hashu routes in that
