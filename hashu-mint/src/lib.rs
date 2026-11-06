@@ -4,6 +4,7 @@
 //! See ARCHITECTURE.md §4.1, §5, §7.
 
 pub mod attestation;
+pub mod capacity;
 pub mod lightning;
 pub mod manifest;
 pub mod melt;

@@ -264,6 +264,33 @@ proxy, one upstream connection per miner connection):
    rig reconnects, `shares_credited` starts rising and the cumulative THH
    graph climbs to the target, then the rig goes back to ckpool.
 
+**Tell the mint how much it can sell.** The mint can only sell THH the
+rentals will still deliver: `rented TH/s × hours left − THH owed` (ecash
+held by users, paid-but-unminted quotes and the rest of open
+redemptions). Once a capacity source is set, mint quotes beyond that are
+refused on every rail, the checkout shows "N THH available" and the
+landing page shows the same number. Two ways to set it:
+
+- **Automatic, from MRR.** Put `MRR_API_KEY` / `MRR_API_SECRET` (the same
+  key `btc-rent.py` uses) in `.env`. The mint reads `GET /rental?type=active`
+  every minute and takes each rental's advertised hashrate and end time.
+  If the account also has rentals mining somewhere else (the fx-faucet),
+  list the ones on the proxy in `HASHU_MRR_RENTAL_IDS=123,456`.
+- **By hand**, in the operator GUI's *Hashrate capacity* card (TH/s and
+  hours left), or:
+
+  ```sh
+  curl -s -u operator:$OPERATOR_PASSWORD -XPOST \
+    https://mint.hashu.io/operator/api/capacity \
+    -d '{"rentals":[{"ths":100,"hours":3,"label":"MRR 123"}]}'
+  ```
+
+  `rentals` replaces the hand-entered list (`end_ms` in unix ms works
+  instead of `hours`). `{"limit": false}` stops capping, `{"limit": null}`
+  goes back to automatic. It is saved in `/data/capacity.json`.
+
+With no rentals and no MRR key, sales stay uncapped as before.
+
 ## Operations
 
 ```bash

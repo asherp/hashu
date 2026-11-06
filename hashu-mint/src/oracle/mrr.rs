@@ -311,6 +311,171 @@ impl HashpriceOracle for MrrOracle {
     }
 }
 
+// ---- account: active rentals (signed API) -------------------------------
+
+/// An active rental on the account, as capacity for the mint.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActiveRental {
+    pub id: String,
+    pub rig_name: String,
+    /// Advertised (paid-for) hashrate, TH/s.
+    pub ths: f64,
+    /// When the rental ends, unix seconds.
+    pub end_unix: f64,
+}
+
+/// Signed MRR API v2 client for the renter's own account. Every call carries
+/// `x-api-key`, a strictly increasing `x-api-nonce` and
+/// `x-api-sign = HMAC-SHA1(secret, key + nonce + endpoint)`, the same scheme
+/// as `fx-faucet/miner/btc-rent.py`.
+pub struct MrrAccount {
+    http: reqwest::Client,
+    base: String,
+    algo: String,
+    key: String,
+    secret: String,
+    last_nonce: Mutex<u64>,
+}
+
+impl std::fmt::Debug for MrrAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MrrAccount")
+            .field("base", &self.base)
+            .field("algo", &self.algo)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MrrAccount {
+    pub fn new(key: String, secret: String) -> Self {
+        Self::with_base(DEFAULT_BASE_URL.into(), DEFAULT_ALGO.into(), key, secret)
+    }
+
+    pub fn with_base(base: String, algo: String, key: String, secret: String) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .expect("reqwest client build");
+        Self {
+            http,
+            base,
+            algo,
+            key,
+            secret,
+            last_nonce: Mutex::new(0),
+        }
+    }
+
+    fn nonce(&self) -> u64 {
+        let now = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as u64)
+            .unwrap_or_default();
+        let mut last = self.last_nonce.lock().unwrap();
+        *last = now.max(*last + 1);
+        *last
+    }
+
+    fn sign(&self, nonce: u64, endpoint: &str) -> String {
+        use hmac::{Hmac, Mac};
+        let mut mac = Hmac::<sha1::Sha1>::new_from_slice(self.secret.as_bytes())
+            .expect("hmac takes any key length");
+        mac.update(format!("{}{nonce}{endpoint}", self.key).as_bytes());
+        hex::encode(mac.finalize().into_bytes())
+    }
+
+    /// `GET /rental?type=active`: rentals on this account still running.
+    pub async fn active_rentals(&self) -> Result<Vec<ActiveRental>, MrrError> {
+        let endpoint = "/rental";
+        let nonce = self.nonce();
+        let resp = self
+            .http
+            .get(format!("{}{endpoint}", self.base))
+            .header("Accept", "application/json")
+            .header("x-api-key", &self.key)
+            .header("x-api-nonce", nonce.to_string())
+            .header("x-api-sign", self.sign(nonce, endpoint))
+            .query(&[
+                ("type", "active"),
+                ("algo", self.algo.as_str()),
+                ("limit", "100"),
+            ])
+            .send()
+            .await?;
+        let status = resp.status();
+        let body: Value = match resp.json().await {
+            Ok(b) => b,
+            Err(_) if !status.is_success() => {
+                return Err(MrrError::Status {
+                    status,
+                    body: String::new(),
+                })
+            }
+            Err(e) => return Err(e.into()),
+        };
+        parse_rentals(&body)
+    }
+}
+
+fn parse_rentals(body: &Value) -> Result<Vec<ActiveRental>, MrrError> {
+    if body.get("success").and_then(Value::as_bool) != Some(true) {
+        let msg = body
+            .pointer("/data/message")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| body.to_string());
+        return Err(MrrError::Api(msg));
+    }
+    let data = body.get("data").cloned().unwrap_or(Value::Null);
+    let list = data
+        .get("rentals")
+        .and_then(Value::as_array)
+        .or_else(|| data.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok(list.iter().filter_map(normalise_rental).collect())
+}
+
+fn normalise_rental(r: &Value) -> Option<ActiveRental> {
+    if truthy(r.get("ended")) {
+        return None;
+    }
+    let adv = r.pointer("/hashrate/advertised")?;
+    let unit = adv.get("type").and_then(Value::as_str).unwrap_or("th");
+    let ths = num(adv.get("hash")?)? * unit_to_ph(unit)? * 1e3;
+    let end_unix = r.get("end_unix").and_then(num).or_else(|| {
+        // Some records only carry hours left.
+        let left = r
+            .get("length_left")
+            .or_else(|| r.get("remaining"))
+            .and_then(num)?;
+        let now = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs_f64();
+        Some(now + left * 3600.0)
+    })?;
+    if !ths.is_finite() || ths <= 0.0 {
+        return None;
+    }
+    let id = match r.get("id")? {
+        Value::String(s) => s.clone(),
+        v => v.to_string(),
+    };
+    let rig_name = r
+        .pointer("/rig/name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    Some(ActiveRental {
+        id,
+        rig_name,
+        ths,
+        end_unix,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,5 +544,34 @@ mod tests {
     #[test]
     fn empty_market_is_no_rigs() {
         assert!(matches!(floor_of(vec![], 0), Err(MrrError::NoRigs)));
+    }
+
+    #[test]
+    fn parses_active_rentals() {
+        let body = json!({"success": true, "data": {"total": "2", "rentals": [
+            {"id": "123", "rig": {"name": " S19 "}, "hashrate": {"advertised": {"hash": "0.1", "type": "ph"}}, "end_unix": "1800000000"},
+            {"id": 124, "ended": true, "hashrate": {"advertised": {"hash": "90", "type": "th"}}, "end_unix": "1"},
+            {"id": 125, "hashrate": {"advertised": {"hash": "500", "type": "gh"}}, "end_unix": 1800003600}
+        ]}});
+        let r = parse_rentals(&body).unwrap();
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].id, "123");
+        assert_eq!(r[0].rig_name, "S19");
+        assert!((r[0].ths - 100.0).abs() < 1e-9);
+        assert_eq!(r[0].end_unix, 1_800_000_000.0);
+        assert_eq!(r[1].id, "125");
+        assert!((r[1].ths - 0.5).abs() < 1e-9);
+        let err = parse_rentals(&json!({"success": false, "data": {"message": "Bad Nonce"}}));
+        assert!(matches!(err, Err(MrrError::Api(m)) if m == "Bad Nonce"));
+    }
+
+    #[test]
+    fn signs_like_btc_rent() {
+        let a = MrrAccount::new("key".into(), "secret".into());
+        // python3 -c "import hmac,hashlib;print(hmac.new(b'secret',b'key1/rental',hashlib.sha1).hexdigest())"
+        assert_eq!(
+            a.sign(1, "/rental"),
+            "cf0e9cfe875177e377b41e80640d1ee924806c10"
+        );
     }
 }

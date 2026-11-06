@@ -59,6 +59,10 @@ services:
       HASHU_USDT_DEPOSIT: ${HASHU_USDT_DEPOSIT:-}
       HASHU_USD_PER_BTC: ${HASHU_USD_PER_BTC:-}
       HASHU_USDT_PER_THH: ${HASHU_USDT_PER_THH:-}
+      # Capacity from MRR active rentals (optional; see .env.example).
+      MRR_API_KEY: ${MRR_API_KEY:-}
+      MRR_API_SECRET: ${MRR_API_SECRET:-}
+      HASHU_MRR_RENTAL_IDS: ${HASHU_MRR_RENTAL_IDS:-}
     command:
       - mint
       - run

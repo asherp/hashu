@@ -41,6 +41,11 @@ pub enum PricingError {
     /// The operator has paused issuance.
     #[error("issuance is paused by the mint operator")]
     Paused,
+    /// More THH than the mint's rented hashrate can still deliver.
+    #[error(
+        "only {available} THH available from the mint's rented hashrate (asked for {requested})"
+    )]
+    SoldOut { requested: u64, available: u64 },
 }
 
 /// Prices `THH` in one payment rail's base unit.
