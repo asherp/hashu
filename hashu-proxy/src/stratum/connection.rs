@@ -1,7 +1,8 @@
 //! Per-connection bidirectional Stratum forwarder.
 //!
-//! Each accepted miner gets one of these. We open a TCP connection to the
-//! upstream pool, then run two forwarding tasks (miner→pool, pool→miner).
+//! Each accepted miner gets one of these. We open a connection to the
+//! upstream pool (plain TCP, or TLS for a `tls://` upstream; see
+//! [`crate::upstream`]), then run two forwarding tasks (miner→pool, pool→miner).
 //! Each task reads lines, calls into [`super::observe::observe_line`] for
 //! metrics and into a shared [`SessionState`] (for typed parse +
 //! share-commitment), then writes the line through unmodified. Closing
@@ -33,6 +34,7 @@ use super::replay::{JobGate, PoolLine};
 use super::session::{SessionEvent, SessionState};
 use crate::credit::{ConnectionId, CreditContext, ShareEvidence};
 use crate::router::{Route, Router};
+use crate::upstream::{dial, PoolStream};
 use crate::ProxyMetrics;
 use hashu_core::redemption::RedemptionId;
 
@@ -100,7 +102,7 @@ pub async fn proxy_connection_with(
     conn: ConnectionId,
     credit: Option<CreditContext>,
 ) -> Result<()> {
-    let pool_socket = TcpStream::connect(upstream_addr)
+    let pool_socket = dial(upstream_addr)
         .await
         .with_context(|| format!("connect upstream {upstream_addr}"))?;
     let route = Route::Default {
@@ -132,7 +134,7 @@ pub async fn proxy_routed_connection(
     let assignment = router.assign(conn);
     let result = async {
         let mut route = assignment.route;
-        let pool_socket = match TcpStream::connect(route.upstream()).await {
+        let pool_socket = match dial(route.upstream()).await {
             Ok(s) => s,
             Err(e) if route.redemption_id().is_some() => {
                 tracing::warn!(
@@ -142,7 +144,7 @@ pub async fn proxy_routed_connection(
                     "redeemer's pool unreachable; falling back to default pool",
                 );
                 route = router.fall_back_to_default(conn);
-                TcpStream::connect(route.upstream())
+                dial(route.upstream())
                     .await
                     .with_context(|| format!("connect default upstream {}", route.upstream()))?
             }
@@ -166,12 +168,12 @@ pub async fn proxy_routed_connection(
 /// until either side closes or `kicked` turns true.
 async fn relay(
     miner_socket: TcpStream,
-    pool_socket: TcpStream,
+    pool_socket: PoolStream,
     mut kicked: watch::Receiver<bool>,
     ctx: ConnectionCtx,
     metrics: Arc<ProxyMetrics>,
 ) -> Result<()> {
-    pool_socket.set_nodelay(true).ok();
+    // `dial` already set TCP_NODELAY on the pool side.
     miner_socket.set_nodelay(true).ok();
 
     let pending = Arc::new(PendingSubmits::default());
@@ -179,7 +181,7 @@ async fn relay(
     let ctx = Arc::new(ctx);
 
     let (miner_r, miner_w) = miner_socket.into_split();
-    let (pool_r, pool_w) = pool_socket.into_split();
+    let (pool_r, pool_w) = tokio::io::split(pool_socket);
 
     let mut m_to_p = tokio::spawn(forward(
         BufReader::new(miner_r),

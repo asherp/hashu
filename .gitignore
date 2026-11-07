@@ -27,5 +27,8 @@ mint-secret*
 .idea/
 .vscode/
 
+# Test-only TLS fixtures (throwaway CA, key discarded).
+!hashu-proxy/tests/fixtures/*.pem
+
 # Node
 node_modules/

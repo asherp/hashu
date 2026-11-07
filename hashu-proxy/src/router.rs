@@ -36,7 +36,7 @@ use serde_json::Value;
 use tokio::sync::{broadcast, watch};
 
 use crate::credit::{ConnectionId, RedemptionBinding};
-use crate::stratum::strip_stratum_prefix;
+use crate::upstream::normalize_upstream;
 
 /// How long a connection that fell back to the default pool (redeemer's
 /// pool unreachable) stays there before it is retried. Stops a dead pool
@@ -59,7 +59,8 @@ pub enum Route {
 }
 
 impl Route {
-    /// `host:port` to dial.
+    /// Upstream to dial: `host:port`, or `tls://host:port` (see
+    /// [`crate::upstream::dial`]).
     pub fn upstream(&self) -> &str {
         match self {
             Route::Default { upstream } | Route::Redemption { upstream, .. } => upstream,
@@ -119,18 +120,12 @@ pub fn rewrite_worker(line: &str, worker: &str, password: &str) -> Option<String
     Some(out)
 }
 
-/// Turn a melt request's `pool_url` into a dialable `host:port`, or
-/// `None` if the proxy can't reach it (TLS stratum is not supported yet).
+/// Turn a melt request's `pool_url` into an upstream the proxy can dial
+/// (`host:port`, or `tls://host:port` for `stratum+ssl://`), or `None` if
+/// it can't (no port, a path, or an unknown scheme such as Stratum V2).
+/// See [`crate::upstream::normalize_upstream`].
 pub fn upstream_for_pool_url(pool_url: &str) -> Option<String> {
-    if pool_url.starts_with("stratum+ssl://") || pool_url.starts_with("stratum+tcps://") {
-        return None;
-    }
-    let bare = strip_stratum_prefix(pool_url);
-    if bare.contains(':') && !bare.contains('/') {
-        Some(bare.to_string())
-    } else {
-        None
-    }
+    normalize_upstream(pool_url)
 }
 
 /// Bookkeeping for one live connection.
@@ -294,7 +289,7 @@ impl Router {
             .filter(|r| {
                 let ok = upstream_for_pool_url(&r.pool_url).is_some();
                 if !ok {
-                    tracing::warn!(redemption = %r.id, pool_url = %r.pool_url, "redemption pool URL not routable (TLS stratum unsupported); skipping");
+                    tracing::warn!(redemption = %r.id, pool_url = %r.pool_url, "redemption pool URL not routable (needs stratum+tcp:// or stratum+ssl:// with a port); skipping");
                 }
                 ok
             })
@@ -398,10 +393,11 @@ mod tests {
             Some("pool.example:3333")
         );
         assert_eq!(
-            upstream_for_pool_url("stratum+ssl://pool.example:443"),
-            None
+            upstream_for_pool_url("stratum+ssl://pool.example:443").as_deref(),
+            Some("tls://pool.example:443")
         );
         assert_eq!(upstream_for_pool_url("stratum+tcp://noport"), None);
+        assert_eq!(upstream_for_pool_url("stratum+tcp://p:3333/key"), None);
     }
 
     #[test]
@@ -483,9 +479,19 @@ mod tests {
     }
 
     #[test]
-    fn tls_pool_is_skipped() {
+    fn tls_pool_is_routed_over_tls() {
         let ledger = Arc::new(RedemptionLedger::new());
         open(&ledger, 1, "stratum+ssl://alice:443", "a");
+        let router = Router::new("default:3333", ledger);
+        let route = router.assign(ConnectionId::next()).route;
+        assert_eq!(route.redemption_id(), Some(rid(1)));
+        assert_eq!(route.upstream(), "tls://alice:443");
+    }
+
+    #[test]
+    fn unroutable_pool_is_skipped() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        open(&ledger, 1, "stratum+tcp://alice:3333/key", "a");
         let router = Router::new("default:3333", ledger);
         assert_eq!(
             router.assign(ConnectionId::next()).route.redemption_id(),
