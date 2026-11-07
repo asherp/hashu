@@ -232,6 +232,8 @@ hashu mint run \
   back with a pool and worker redeems it and shows the hashrate arriving.
   The daemon runs a throwaway wallet per checkout, so it briefly holds the
   buyer's ecash; any Cashu wallet with the `thh` unit can skip the page.
+  Per-pool redemption guides (OCEAN, Braiins, ViaBTC, F2Pool, solo pools,
+  Testnet4) are in [docs/redeem/](docs/redeem/README.md).
 
 To run it live on an internet-facing machine (Docker Compose with
 phoenixd and Caddy for TLS), see [deploy/README.md](deploy/README.md).
