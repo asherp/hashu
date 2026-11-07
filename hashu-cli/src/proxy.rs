@@ -10,7 +10,8 @@ use hashu_core::redemption::RedemptionLedger;
 use hashu_proxy::control::{serve as serve_control, ControlState};
 use hashu_proxy::credit::{CreditContext, ShareCrediter};
 use hashu_proxy::router::Router;
-use hashu_proxy::stratum::{run_routed_listener, strip_stratum_prefix};
+use hashu_proxy::stratum::run_routed_listener;
+use hashu_proxy::upstream::normalize_upstream;
 use hashu_proxy::ProxyMetrics;
 
 #[derive(Debug, Args)]
@@ -57,12 +58,12 @@ pub async fn run(cmd: ProxyCmd) -> Result<()> {
 }
 
 async fn run_listener_cmd(args: RunArgs) -> Result<()> {
-    let upstream = strip_stratum_prefix(&args.upstream).to_string();
-    if !upstream.contains(':') {
+    let Some(upstream) = normalize_upstream(&args.upstream) else {
         anyhow::bail!(
-            "upstream must include a port (got {upstream}); e.g. stratum+tcp://pool.example.com:3333"
+            "upstream must include a port (got {}); e.g. stratum+tcp://pool.example.com:3333 or stratum+ssl://pool.example.com:1300",
+            args.upstream
         );
-    }
+    };
     // The ledger is empty until a mint in this process opens redemptions
     // in it; until then every miner goes to the default upstream.
     let ledger = Arc::new(RedemptionLedger::new());

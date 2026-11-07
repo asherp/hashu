@@ -8,8 +8,9 @@
 | Worker name | `<your account>.hashu` |
 | Worker password | `x` **(unverified: any value is believed to work)** |
 
-Source: F2Pool help center, "BTC mining guide". Don't use its SSL endpoint
-`stratum+ssl://btcssl.f2pool.com:1300`; Hashu can't route TLS yet.
+Source: F2Pool help center, "BTC mining guide". Its SSL endpoint
+`stratum+ssl://btcssl.f2pool.com:1300` should also work over TLS **(unverified:
+whether its certificate chains to a public CA)**.
 
 ## Check it arrived
 
