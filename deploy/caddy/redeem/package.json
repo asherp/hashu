@@ -1,0 +1,8 @@
+{
+  "name": "hashu-redeem-pages",
+  "private": true,
+  "type": "module",
+  "description": "Renders docs/redeem/*.md to static pages served at /redeem/ (see deploy/caddy/Dockerfile).",
+  "scripts": { "build": "node build.mjs ../../../docs/redeem out" },
+  "dependencies": { "marked": "14.1.4" }
+}

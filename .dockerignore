@@ -13,3 +13,4 @@ slides/.slidev
 !deploy/mdk
 mdk/apps/dashboard
 mdk/.mdk
+!deploy/caddy/redeem

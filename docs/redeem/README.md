@@ -8,16 +8,16 @@ you for the work the way it pays any miner.
 This page covers what every pool has in common. Pick your pool below for
 the exact values to type in.
 
-| Pool | Account needed | Username you give Hashu | Guide |
-|---|---|---|---|
-| OCEAN | No | BTC address (+ `.worker`) | [ocean.md](ocean.md) |
-| Braiins Pool | Yes | `account.worker` | [braiins.md](braiins.md) |
-| ViaBTC | Yes, for payouts | `account.worker` | [viabtc.md](viabtc.md) |
-| F2Pool | Yes | `account.worker` | [f2pool.md](f2pool.md) |
-| Foundry USA | Yes, institutional | `account.worker` | [foundry.md](foundry.md) |
-| solo.ckpool.org | No | BTC address (+ `.worker`) | [ckpool-solo.md](ckpool-solo.md) |
-| public-pool.io | No | BTC address (+ `.worker`) | [public-pool.md](public-pool.md) |
-| Hashu Testnet4 ckpool | No | any label | [testnet4.md](testnet4.md) |
+| Pool | Account needed | Username you give Hashu |
+|---|---|---|
+| [OCEAN](ocean.md) | No | BTC address (+ `.worker`) |
+| [Braiins Pool](braiins.md) | Yes | `account.worker` |
+| [ViaBTC](viabtc.md) | Yes, for payouts | `account.worker` |
+| [F2Pool](f2pool.md) | Yes | `account.worker` |
+| [Foundry USA](foundry.md) | Yes, institutional | `account.worker` |
+| [solo.ckpool.org](ckpool-solo.md) | No | BTC address (+ `.worker`) |
+| [public-pool.io](public-pool.md) | No | BTC address (+ `.worker`) |
+| [Hashu Testnet4 ckpool](testnet4.md) | No | any label |
 
 ## What you supply
 

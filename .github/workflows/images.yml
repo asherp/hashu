@@ -2,7 +2,7 @@
 # `docker compose pull` instead of compiling (see deploy/DIGITALOCEAN.md).
 #
 #   ghcr.io/asherp/hashu           mint + payment rails + Stratum proxy
-#   ghcr.io/asherp/hashu-caddy     Caddy with the slides and splash site baked in
+#   ghcr.io/asherp/hashu-caddy     Caddy with the slides, splash site and redeem guides baked in
 #   ghcr.io/asherp/hashu-mdk       MDK dashboard demo
 #   ghcr.io/asherp/hashu-phoenixd  phoenixd with the seed-import entrypoint
 #
@@ -25,6 +25,7 @@ on:
       - mdk/**
       - slides/**
       - site/**
+      - docs/redeem/**
       - .github/workflows/images.yml
   workflow_dispatch:
 
