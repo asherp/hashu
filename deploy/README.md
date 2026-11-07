@@ -95,6 +95,7 @@ Until those resolve, Caddy simply keeps retrying their certificates and
 `HASHU_EXTRA_DOMAINS=` (empty) in `.env`.
 
 The deck is built from `slides/` into the caddy image (`deploy/caddy/Dockerfile`),
+together with the site and the `Caddyfile` itself,
 so `docker compose up -d --build` republishes it.
 
 ## 2. Configure
@@ -421,8 +422,10 @@ docker compose ps
 docker compose logs -f hashu            # mint + proxy
 docker compose logs -f phoenixd
 docker compose restart hashu            # open redemptions resume after the restart
-git pull && docker compose up -d --build hashu   # deploy a new version
-docker compose pull && docker compose up -d      # or: use the images CI published
+# deploy a new version: CI-published images (after the `images` workflow is green)
+git pull && docker compose pull && docker compose up -d
+# or build from this checkout
+git pull && docker compose up -d --build
 ```
 
 Caveats for the demo:

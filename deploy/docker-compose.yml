@@ -129,7 +129,11 @@ services:
     restart: unless-stopped
 
   caddy:
-    # caddy:2 plus the Slidev deck (slides/) built at /srv/slides.
+    # caddy:2 plus deploy/Caddyfile and the Slidev deck (slides/) built at
+    # /srv/slides. The Caddyfile is baked in (not bind-mounted), so routes
+    # always match the image. To test a local Caddyfile edit without a
+    # rebuild, add `- ./Caddyfile:/etc/caddy/Caddyfile:ro` under volumes in a
+    # docker-compose.override.yml, then remove it again.
     build:
       context: ..
       dockerfile: deploy/caddy/Dockerfile
@@ -148,7 +152,6 @@ services:
       - "443:443"
       - "443:443/udp"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     networks: [edge]

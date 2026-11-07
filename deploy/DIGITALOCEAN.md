@@ -233,9 +233,9 @@ part of this stack.
 - Deploys: merge to main, wait for the `images` workflow to go green, then
   on the droplet:
   `cd ~/hashu && git pull && docker compose -f deploy/docker-compose.yml pull && docker compose -f deploy/docker-compose.yml up -d`.
-  (`git pull` keeps the compose file and Caddyfile in step with the images.)
-  Slide or site edits go live the same way, since they are baked into
-  `hashu-caddy`.
+  (`git pull` keeps the compose file and `.env.example` in step with the
+  images.) Caddy routes, slide and site edits go live the same way, since the
+  Caddyfile, deck and site are all baked into `hashu-caddy`.
 - Backups: droplet backups are weekly snapshots. The seeds are what matter,
   and they don't change, so keep the offline copies from README §4. For
   `mint.sqlite` (spent proofs change with every sale), a nightly copy is
