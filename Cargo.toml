@@ -12,9 +12,16 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 homepage = "https://hashu.io"
+repository = "https://github.com/asherp/hashu"
+readme = "README.md"
+keywords = ["bitcoin", "cashu", "ecash", "mining", "stratum"]
 authors = ["Hashu contributors"]
 
 [workspace.dependencies]
+# Internal crates: `version` is what crates.io records, `path` is used in the workspace.
+hashu-core = { path = "hashu-core", version = "0.1.0" }
+hashu-mint = { path = "hashu-mint", version = "0.1.0" }
+hashu-proxy = { path = "hashu-proxy", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"

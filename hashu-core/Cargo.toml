@@ -3,6 +3,13 @@ name = "hashu-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Core types for Hashu: terahash-hour (THH) units, share accounting and redemption records"
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "../README.md"
+keywords.workspace = true
+categories = ["cryptography::cryptocurrencies", "data-structures"]
 
 [dependencies]
 serde = { workspace = true }

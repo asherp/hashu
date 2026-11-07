@@ -57,7 +57,7 @@ You need a recent stable Rust toolchain plus `protoc` on `PATH` (the
 brew install protobuf            # macOS
 # or: apt install protobuf-compiler
 
-git clone https://github.com/<org>/hashu && cd hashu
+git clone https://github.com/asherp/hashu && cd hashu
 cargo build --release
 ```
 
@@ -66,6 +66,14 @@ The binary lands at `target/release/hashu`. To install on `$PATH`:
 ```bash
 cargo install --path hashu-cli
 ```
+
+Or install the published crate from crates.io (still needs `protoc`):
+
+```bash
+cargo install hashu-cli --locked
+```
+
+The library crates are `hashu-core`, `hashu-proxy` and `hashu-mint`.
 
 ## Quick start
 

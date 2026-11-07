@@ -1,0 +1,59 @@
+# Publishes the workspace crates to crates.io.
+#
+# Trigger: push a tag `vX.Y.Z` that matches `[workspace.package] version` in
+# Cargo.toml (and the internal `version =` pins in [workspace.dependencies]).
+# Needs the repository secret CARGO_REGISTRY_TOKEN, a crates.io API token
+# with the publish-new and publish-update scopes.
+#
+# `cargo publish --workspace` publishes in dependency order:
+# hashu-core, hashu-proxy, hashu-mint, then hashu-cli (which installs `hashu`).
+# Run it with `dry_run` from the Actions tab to check without uploading.
+
+name: release-crates
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Package and verify only (no upload)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc (cdk-signatory build script)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check tag matches the workspace version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          have=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name=="hashu-core") | .version')
+          if [ "$want" != "$have" ]; then
+            echo "tag $GITHUB_REF_NAME does not match workspace version $have" >&2
+            exit 1
+          fi
+
+      - name: Dry run
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        run: cargo publish --workspace --dry-run --locked
+
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --workspace --locked
