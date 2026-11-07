@@ -37,6 +37,7 @@ nav .links a:hover { color: var(--ink); }
 .btn { display: inline-block; text-decoration: none; border: 1px solid var(--line); border-radius: 10px; padding: 12px 20px; font-weight: 600; font-size: 15px; }
 .btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
 .btn:hover { filter: brightness(1.05); }
+.btn.soldout { background: transparent; border-color: var(--line); color: var(--ink-3, #888); cursor: not-allowed; pointer-events: none; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 40px 0 8px; }
 .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
 .stat .k { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); }
@@ -80,7 +81,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       <a href="#how">How it works</a>
       <a href="#why">Why</a>
       <a href="#developers">Developers</a>
-      <a href="/checkout/">Buy hashrate</a>
+      <a href="/checkout/" data-buy>Buy hashrate</a>
       <a href="/slides/">Slides</a>
       <a href="https://github.com/asherp/hashu">GitHub</a>
       <a href="https://x.com/asherp" rel="noopener">Contact</a>
@@ -91,7 +92,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     <h1>Ehash for <span>hashrate</span>.</h1>
     <p>Hashu is a Cashu mint fused with a mining proxy. It sells terahash-hours of real hashrate as private ecash. Pay with Lightning or USDT, hold the tokens in any Cashu wallet, and redeem them whenever you like by pointing hashrate at your own pool.</p>
     <div class="cta">
-      <a class="btn primary" href="/checkout/">Buy hashrate</a>
+      <a class="btn primary" href="/checkout/" data-buy>Buy hashrate</a>
       <a class="btn" href="/v1/info">Mint API · /v1/info</a>
       <a class="btn" href="https://github.com/asherp/hashu">Source on GitHub</a>
     </div>
@@ -175,6 +176,21 @@ $('copy-url').onclick = async () => {
   setTimeout(() => { $('copy-url').textContent = 'Copy'; }, 1500);
 };
 
+// No hashrate left to sell: buy links say so instead of opening checkout.
+function markSoldOut(soldOut) {
+  document.querySelectorAll('a[data-buy]').forEach((a) => {
+    if (!a.dataset.label) a.dataset.label = a.innerHTML;
+    a.classList.toggle('soldout', soldOut && a.classList.contains('btn'));
+    a.setAttribute('aria-disabled', soldOut ? 'true' : 'false');
+    a.title = soldOut ? 'Sold out: the mint has no hashrate available to sell right now' : '';
+    a.innerHTML = soldOut ? a.dataset.label.replace('Buy hashrate', 'Sold out') : a.dataset.label;
+  });
+}
+document.addEventListener('click', (ev) => {
+  const a = ev.target.closest('a[data-buy][aria-disabled="true"]');
+  if (a) ev.preventDefault();
+});
+
 async function load() {
   try {
     const r = await fetch('/checkout/api/info', { cache: 'no-store' });
@@ -185,8 +201,12 @@ async function load() {
     const rails = (i.methods || []).map((m) => RAILS[m] || m);
     $('s-rails').textContent = rails.length ? rails.join(' · ') : 'none';
     $('s-avail').innerHTML = i.available_thh == null ? '<small>uncapped</small>'
-      : fmt(i.available_thh) + ` <small>THH · ${fmt(i.rented_ths || 0, 1)} TH/s rented</small>`;
-    $('s-sales').innerHTML = i.issuance_paused ? '<span class="pill no">paused</span>' : '<span class="pill ok">open</span>';
+      : fmt(i.available_thh) + ` <small>THH of ${fmt(i.capacity_thh || 0)} · ${fmt(i.allocated_thh || 0)} allocated · ${fmt(i.rented_ths || 0, 1)} TH/s rented</small>`;
+    const soldOut = i.available_thh === 0;
+    $('s-sales').innerHTML = i.issuance_paused ? '<span class="pill no">paused</span>'
+      : soldOut ? '<span class="pill no">sold out</span>' : '<span class="pill ok">open</span>';
+    if (soldOut) $('s-avail').innerHTML = `0 <small>THH · no hashrate available${i.capacity_thh > 0 ? ` (all ${fmt(i.capacity_thh)} allocated)` : ''}</small>`;
+    markSoldOut(soldOut || !!i.issuance_paused);
     if (i.mint_url && /^https?:\/\//.test(i.mint_url)) { mintUrl = i.mint_url.replace(/\/+$/, ''); showUrl(); }
   } catch (e) {
     $('s-sales').innerHTML = '<span class="pill no">unreachable</span>';

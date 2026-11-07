@@ -95,6 +95,7 @@ Until those resolve, Caddy simply keeps retrying their certificates and
 `HASHU_EXTRA_DOMAINS=` (empty) in `.env`.
 
 The deck is built from `slides/` into the caddy image (`deploy/caddy/Dockerfile`),
+together with the site and the `Caddyfile` itself,
 so `docker compose up -d --build` republishes it.
 
 ## 2. Configure
@@ -410,9 +411,17 @@ landing page shows the same number. Two ways to set it:
 
   `rentals` replaces the hand-entered list (`end_ms` in unix ms works
   instead of `hours`). `{"limit": false}` stops capping, `{"limit": null}`
-  goes back to automatic. It is saved in `/data/capacity.json`.
+  goes back to automatic (capped). It is saved in `/data/capacity.json`.
 
-With no rentals and no MRR key, sales stay uncapped as before.
+The other operator settings (issuance paused, markup, heat J/TH) are saved in
+`/data/operator-settings.json` whenever they change in the GUI, and reloaded
+on start. A saved value wins over its flag or env var (`--markup-bps`,
+`HASHU_HEAT_J_PER_TH`); delete the file to go back to the flags.
+
+With no rentals (no MRR key, or no active MRR rental) nothing can be
+sold: the mint refuses quotes and the checkout and landing page show
+"Sold out" with the buy button off. Set `{"limit": false}` (Capacity
+card → Off) only to sell without a cap, for example in local testing.
 
 ## Operations
 
@@ -421,8 +430,10 @@ docker compose ps
 docker compose logs -f hashu            # mint + proxy
 docker compose logs -f phoenixd
 docker compose restart hashu            # open redemptions resume after the restart
-git pull && docker compose up -d --build hashu   # deploy a new version
-docker compose pull && docker compose up -d      # or: use the images CI published
+# deploy a new version: CI-published images (after the `images` workflow is green)
+git pull && docker compose pull && docker compose up -d
+# or build from this checkout
+git pull && docker compose up -d --build
 ```
 
 Caveats for the demo:

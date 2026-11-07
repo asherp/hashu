@@ -28,13 +28,18 @@
 //!   `rentals` replaces the operator's list (MRR rentals sync on their
 //!   own); `limit: null` goes back to automatic (on once a rental is set).
 //!
+//! `POST /api/controls` settings are saved to `operator-settings.json` in the
+//! data dir and capacity to `capacity.json`, so both survive a restart; a
+//! saved value wins over its command-line flag.
+//!
 //! The controls change what the mint sells, so like `POST /redemptions` they
 //! trust whoever can reach the port: keep `--control-bind` on loopback.
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
@@ -73,6 +78,22 @@ pub struct MintControls {
     heat_j_per_th: AtomicU64,
     /// Rented hashrate and what is owed against it: caps issuance.
     pub capacity: Arc<CapacityBook>,
+    /// Where the settings above are saved (see [`MintControls::persist_to`]).
+    /// The lock also serialises writes of the file.
+    settings_path: Mutex<Option<PathBuf>>,
+}
+
+/// The operator settings saved to `operator-settings.json` in the data dir,
+/// so a restart keeps what the operator set in the GUI. Capacity (rentals,
+/// limit) is saved separately in `capacity.json` by [`CapacityBook`].
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct SavedSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    issuance_paused: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    markup_bps: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    heat_j_per_th: Option<f64>,
 }
 
 impl MintControls {
@@ -85,6 +106,60 @@ impl MintControls {
             markup_bps: AtomicI64::new(markup_bps.clamp(MIN_MARKUP_BPS, MAX_MARKUP_BPS)),
             heat_j_per_th: AtomicU64::new(heat::DEFAULT_J_PER_TH.to_bits()),
             capacity,
+            settings_path: Mutex::new(None),
+        }
+    }
+
+    /// Load the settings saved at `path`, if any, over the current ones (the
+    /// command-line defaults), and save every later change there. A saved
+    /// value wins over its flag: it is what the operator last chose.
+    pub fn persist_to(&self, path: PathBuf) -> anyhow::Result<()> {
+        let saved: SavedSettings = match std::fs::read(&path) {
+            Ok(b) => serde_json::from_slice(&b)
+                .map_err(|e| anyhow::anyhow!("parse {}: {e}", path.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => SavedSettings::default(),
+            Err(e) => return Err(anyhow::anyhow!("read {}: {e}", path.display())),
+        };
+        if let Some(p) = saved.issuance_paused {
+            self.issuance_paused.store(p, Ordering::Relaxed);
+        }
+        if let Some(bps) = saved.markup_bps {
+            if let Err(e) = self.store_markup_bps(bps) {
+                tracing::warn!(path = %path.display(), "ignoring saved markup: {e}");
+            }
+        }
+        if let Some(j) = saved.heat_j_per_th {
+            if let Err(e) = self.store_heat_j_per_th(j) {
+                tracing::warn!(path = %path.display(), "ignoring saved heat J/TH: {e}");
+            }
+        }
+        tracing::info!(
+            path = %path.display(),
+            issuance_paused = self.issuance_paused(),
+            markup_bps = self.markup_bps(),
+            heat_j_per_th = self.heat_j_per_th(),
+            "operator settings"
+        );
+        *self.settings_path.lock().unwrap() = Some(path);
+        Ok(())
+    }
+
+    /// Write the current settings to the settings file, if there is one.
+    fn save(&self) {
+        let guard = self.settings_path.lock().unwrap();
+        let Some(path) = guard.as_ref() else { return };
+        let s = SavedSettings {
+            issuance_paused: Some(self.issuance_paused()),
+            markup_bps: Some(self.markup_bps()),
+            heat_j_per_th: Some(self.heat_j_per_th()),
+        };
+        let tmp = path.with_extension("json.tmp");
+        let r = serde_json::to_vec_pretty(&s)
+            .map_err(std::io::Error::other)
+            .and_then(|b| std::fs::write(&tmp, b))
+            .and_then(|_| std::fs::rename(&tmp, path));
+        if let Err(e) = r {
+            tracing::warn!(path = %path.display(), error = %e, "could not save operator settings");
         }
     }
     pub fn issuance_paused(&self) -> bool {
@@ -92,11 +167,17 @@ impl MintControls {
     }
     pub fn set_issuance_paused(&self, paused: bool) {
         self.issuance_paused.store(paused, Ordering::Relaxed);
+        self.save();
     }
     pub fn markup_bps(&self) -> i64 {
         self.markup_bps.load(Ordering::Relaxed)
     }
     pub fn set_markup_bps(&self, bps: i64) -> Result<(), String> {
+        self.store_markup_bps(bps)?;
+        self.save();
+        Ok(())
+    }
+    fn store_markup_bps(&self, bps: i64) -> Result<(), String> {
         if !(MIN_MARKUP_BPS..=MAX_MARKUP_BPS).contains(&bps) {
             return Err(format!(
                 "markup_bps must be between {MIN_MARKUP_BPS} and {MAX_MARKUP_BPS}"
@@ -110,6 +191,11 @@ impl MintControls {
         f64::from_bits(self.heat_j_per_th.load(Ordering::Relaxed))
     }
     pub fn set_heat_j_per_th(&self, j: f64) -> Result<(), String> {
+        self.store_heat_j_per_th(j)?;
+        self.save();
+        Ok(())
+    }
+    fn store_heat_j_per_th(&self, j: f64) -> Result<(), String> {
         if !HEAT_J_PER_TH_RANGE.contains(&j) {
             return Err(format!(
                 "heat_j_per_th must be between {} and {} J/TH",
@@ -688,6 +774,7 @@ mod tests {
     #[test]
     fn markup_applies_and_pause_refuses() {
         let c = Arc::new(MintControls::new(0));
+        c.capacity.set_limit(Some(false));
         let p = ControlledPricer::new(Arc::new(Flat(40)), c.clone());
         assert_eq!(p.price(2).unwrap(), 80);
         c.set_markup_bps(2_500).unwrap();
@@ -705,8 +792,14 @@ mod tests {
         let book = Arc::new(CapacityBook::new());
         let c = Arc::new(MintControls::with_capacity(0, book.clone()));
         let p = ControlledPricer::new(Arc::new(Flat(40)), c);
-        // No rentals configured: no cap.
-        assert_eq!(p.price(500).unwrap(), 20_000);
+        // No rentals configured: nothing to sell.
+        assert!(matches!(
+            p.price(1),
+            Err(PricingError::SoldOut {
+                requested: 1,
+                available: 0
+            })
+        ));
         book.set_manual(vec![hashu_mint::capacity::Rental {
             id: "r1".into(),
             label: String::new(),
@@ -741,7 +834,45 @@ mod tests {
         assert!(c.set_markup_bps(-10_000).is_err());
         assert!(c.set_markup_bps(MAX_MARKUP_BPS + 1).is_err());
         c.set_markup_bps(MIN_MARKUP_BPS).unwrap();
+        c.capacity.set_limit(Some(false));
         let p = ControlledPricer::new(Arc::new(Flat(1)), c);
         assert_eq!(p.price(1).unwrap(), 1);
+    }
+
+    #[test]
+    fn settings_survive_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "hashu-settings-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("operator-settings.json");
+
+        let c = MintControls::new(0);
+        c.persist_to(path.clone()).unwrap();
+        // Nothing saved yet: the flags stand.
+        assert_eq!(c.markup_bps(), 0);
+        assert!(!c.issuance_paused());
+        c.set_markup_bps(1_500).unwrap();
+        c.set_issuance_paused(true);
+        c.set_heat_j_per_th(21.0).unwrap();
+
+        // A restart with different flags keeps what the operator chose.
+        let c2 = MintControls::new(300);
+        c2.set_heat_j_per_th(30.0).unwrap();
+        c2.persist_to(path.clone()).unwrap();
+        assert_eq!(c2.markup_bps(), 1_500);
+        assert!(c2.issuance_paused());
+        assert_eq!(c2.heat_j_per_th(), 21.0);
+
+        // Out-of-range saved values are ignored, the flag stays.
+        std::fs::write(&path, r#"{"markup_bps": 999999999}"#).unwrap();
+        let c3 = MintControls::new(300);
+        c3.persist_to(path.clone()).unwrap();
+        assert_eq!(c3.markup_bps(), 300);
+        assert!(!c3.issuance_paused());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

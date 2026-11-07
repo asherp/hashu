@@ -550,6 +550,8 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     if let Err(e) = controls.set_heat_j_per_th(args.heat_j_per_th) {
         bail!("--heat-j-per-th: {e}");
     }
+    // Settings changed in the operator GUI survive a restart.
+    controls.persist_to(args.data_dir.join("operator-settings.json"))?;
     let sats_controlled = Arc::new(ControlledPricer::new(
         Arc::new(sats_pricer(&oracle, None)),
         controls.clone(),

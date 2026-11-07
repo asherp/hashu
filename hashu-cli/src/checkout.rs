@@ -356,6 +356,10 @@ async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
         // THH the rented hashrate can still deliver beyond what is owed;
         // null when the mint does not cap sales.
         "available_thh": cap.available_thh,
+        // allocated + available = total capacity (rented TH/s × hours
+        // left); allocated is THH already sold or still being delivered.
+        "capacity_thh": cap.capacity_thh,
+        "allocated_thh": cap.owed_thh,
         "rented_ths": cap.rented_ths,
         "capacity_ends_ms": cap.ends_ms,
         "issuance_paused": s.controls.issuance_paused(),

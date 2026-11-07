@@ -27,6 +27,14 @@
 		file_server
 	}
 
+	# Per-pool redemption guides (docs/redeem, rendered into the caddy
+	# image), on every host so the checkout can link to them.
+	redir /redeem /redeem/
+	handle /redeem/* {
+		root * /srv/site
+		file_server
+	}
+
 	# MDK demo: the dashboard runs on its own host because the MDK shell
 	# serves from / (its /auth, /apps and /app-ui paths are absolute).
 	redir /mdk https://{$HASHU_MDK_DOMAIN}/ 302

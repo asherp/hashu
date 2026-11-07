@@ -26,3 +26,6 @@ mint-secret*
 *.swo
 .idea/
 .vscode/
+
+# Node
+node_modules/
