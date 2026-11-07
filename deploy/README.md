@@ -422,6 +422,7 @@ docker compose logs -f hashu            # mint + proxy
 docker compose logs -f phoenixd
 docker compose restart hashu            # open redemptions resume after the restart
 git pull && docker compose up -d --build hashu   # deploy a new version
+docker compose pull && docker compose up -d      # or: use the images CI published
 ```
 
 Caveats for the demo:

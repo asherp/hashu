@@ -9,8 +9,8 @@ first; it is still the reference for configuration and operations.
 
 The short version:
 
-1. Create a 2 vCPU / 4 GB droplet with a reserved IP and a cloud firewall.
-2. Install Docker, clone the repo, copy `.env`, build the images.
+1. Create a 1 vCPU / 2 GB droplet with a reserved IP and a cloud firewall.
+2. Install Docker, clone the repo, copy `.env`, pull the published images.
 3. Cut over: stop the devbox stack, copy three volumes, start on the droplet,
    repoint DNS. Downtime is a few minutes; open redemptions resume (PR #20).
 4. Never start phoenixd on the devbox again.
@@ -20,17 +20,22 @@ The short version:
 | Setting | Choice | Why |
 |---|---|---|
 | Image | Ubuntu 24.04 LTS x64 | Docker's install script supports it |
-| Size | Basic, Regular, **2 vCPU / 4 GB / 80 GB** (`s-2vcpu-4gb`, ~$24/mo) | The first `cargo build` of the workspace wants ~4 GB; at runtime the whole stack (mint, phoenixd JVM, Caddy, MDK demo) fits in ~1.5 GB |
+| Size | Basic, Regular, **1 vCPU / 2 GB / 50 GB** (`s-1vcpu-2gb`, ~$12/mo) | The droplet pulls prebuilt images (§3), so it never compiles. At runtime the whole stack (mint, phoenixd JVM, Caddy, MDK demo) fits in ~1.5 GB |
 | Region | `nyc3` or `fra1` (or wherever is closest to the pools you route to) | Stratum latency to Braiins/MRR matters more than to wallets; both are fine |
 | Auth | SSH key only | |
 | Backups | On (weekly, +20%) | Snapshot of the volumes on top of the seed backups below |
 | Monitoring | On | Free CPU/RAM/disk graphs |
 | IPv6 | Off unless you also add AAAA records | Caddy and Stratum work fine on v4 only |
 
-Going cheaper: a 1 vCPU / 2 GB droplet (`s-1vcpu-2gb`) runs the stack once
-built. Either add 4 GB of swap for the build, or build on the 4 GB size and
-resize down afterwards with a **CPU and RAM only** resize (a disk resize
-can't be undone, which blocks shrinking later).
+Building on the droplet instead (`docker compose up -d --build`) needs
+~4 GB for the first `cargo build`: use `s-2vcpu-4gb` (~$24/mo), or add 4 GB
+of swap to the 2 GB size. Add 1 GB of swap either way as headroom for
+phoenixd's JVM:
+
+```bash
+fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile \
+  && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab
+```
 
 **Reserved IP.** Assign a reserved IP to the droplet and point DNS at that,
 not at the droplet's own address. It is free while attached, and you can
@@ -40,7 +45,7 @@ With `doctl` (or do the same in the control panel):
 
 ```bash
 doctl compute droplet create hashu \
-  --region nyc3 --size s-2vcpu-4gb --image ubuntu-24-04-x64 \
+  --region nyc3 --size s-1vcpu-2gb --image ubuntu-24-04-x64 \
   --ssh-keys <your-key-fingerprint> --enable-backups --enable-monitoring --wait
 doctl compute reserved-ip create --droplet-id <droplet-id>
 ```
@@ -104,11 +109,19 @@ Then edit `.env` on the droplet:
   the entrypoint ignores the variable once `seed.dat` exists anyway.
 - Everything else (`HASHU_DOMAIN=mint.hashu.io`, passwords, MRR key) stays.
 
-Build the images now so the cutover doesn't wait on `cargo build`:
+Pull the images now so the cutover doesn't wait on the download:
 
 ```bash
-docker compose build
+docker compose pull
 ```
+
+CI publishes them on every push to main (`.github/workflows/images.yml`):
+`ghcr.io/asherp/hashu`, `hashu-caddy` (with the slides and splash site),
+`hashu-mdk` and `hashu-phoenixd`, each as `:latest` and `:sha-<commit>`.
+The packages must be **public** (GitHub → your profile → Packages → each
+package → Package settings → Change visibility), or run
+`docker login ghcr.io` on the droplet with a token that has `read:packages`.
+To pin a build, set `HASHU_IMAGE_TAG=sha-<short>` in `.env`.
 
 **Lower the DNS TTL.** In Squarespace → Domains → hashu.io → DNS, set the
 TTL on the `mint`, `@` and `www` records to the lowest it offers, a few
@@ -217,8 +230,12 @@ part of this stack.
   `docker compose -f ~/hashu/deploy/docker-compose.yml rm -f` on the devbox
   (removes containers, keeps volumes as a cold backup). Delete the devbox
   volumes and the `.tgz` files only after a few days of the droplet running.
-- Deploys are the same as before, on the droplet:
-  `cd ~/hashu && git pull && docker compose -f deploy/docker-compose.yml up -d --build`.
+- Deploys: merge to main, wait for the `images` workflow to go green, then
+  on the droplet:
+  `cd ~/hashu && git pull && docker compose -f deploy/docker-compose.yml pull && docker compose -f deploy/docker-compose.yml up -d`.
+  (`git pull` keeps the compose file and Caddyfile in step with the images.)
+  Slide or site edits go live the same way, since they are baked into
+  `hashu-caddy`.
 - Backups: droplet backups are weekly snapshots. The seeds are what matter,
   and they don't change, so keep the offline copies from README §4. For
   `mint.sqlite` (spent proofs change with every sale), a nightly copy is
