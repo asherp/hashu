@@ -1,4 +1,5 @@
-# Caddy front for the live demo, with the Slidev deck baked in at /slides.
+# Caddy front for the live demo: deploy/Caddyfile, with the Slidev deck baked
+# in at /slides.
 # Build context is the repo root (see deploy/docker-compose.yml), so a
 # `docker compose up -d --build` rebuilds the deck from slides/.
 
@@ -19,6 +20,11 @@ COPY docs/redeem/ /docs/redeem/
 RUN node build.mjs /docs/redeem /out
 
 FROM caddy:2
+# The routes ship with the image, so the Caddyfile always matches the site,
+# slides and guides built here: `docker compose pull && up -d` alone picks
+# up a route change. To try a local edit without rebuilding, mount it over
+# this path (see the comment on the caddy service in docker-compose.yml).
+COPY deploy/Caddyfile /etc/caddy/Caddyfile
 COPY --from=slides /out /srv/slides
 # Hashu project splash page, served at / on hashu.io and www (see Caddyfile).
 COPY site/ /srv/site/
