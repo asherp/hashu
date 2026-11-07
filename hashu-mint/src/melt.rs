@@ -291,8 +291,12 @@ impl MintPayment for HashrateMelter {
 
     async fn wait_payment_event(&self) -> Result<BoxStream<'static, Event>, Self::Err> {
         // Nothing arrives unprompted. Melt completion is observed by
-        // polling `check_outgoing_payment`.
-        Ok(Box::pin(stream::empty()))
+        // polling `check_outgoing_payment`. The stream must stay open
+        // (`pending`, not `empty`): cdk calls `wait_payment_event` again as
+        // soon as a stream ends, so an empty stream spins that loop without
+        // ever yielding, pins a runtime worker at 100% CPU, and on a 1-vCPU
+        // host stalls the whole mint before it starts serving.
+        Ok(Box::pin(stream::pending()))
     }
 
     fn is_wait_invoice_active(&self) -> bool {
@@ -340,6 +344,17 @@ mod tests {
     fn melter() -> (HashrateMelter, Arc<RedemptionLedger>) {
         let ledger = Arc::new(RedemptionLedger::new());
         (HashrateMelter::new(ledger.clone()), ledger)
+    }
+
+    /// cdk re-subscribes the moment a payment stream ends, so the melter's
+    /// stream has to stay open or the mint's payment loop busy-spins.
+    #[tokio::test]
+    async fn payment_event_stream_stays_open() {
+        use futures::StreamExt;
+        let (m, _) = melter();
+        let mut events = m.wait_payment_event().await.unwrap();
+        let next = tokio::time::timeout(std::time::Duration::from_millis(50), events.next()).await;
+        assert!(next.is_err(), "stream ended or yielded: {:?}", next.map(|e| e.is_some()));
     }
 
     fn request(amount_thh: u64) -> String {
