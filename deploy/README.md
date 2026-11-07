@@ -5,6 +5,9 @@ Compose: `hashu mint run` (mint, Lightning + Tether rails, Stratum proxy,
 control API and operator GUI), a mainnet **phoenixd** for Lightning, and
 **Caddy** for TLS.
 
+Moving it to a DigitalOcean droplet (sizing, cloud firewall, DNS, moving the
+mint and phoenixd state): see [DIGITALOCEAN.md](DIGITALOCEAN.md).
+
 ```
                 internet
    wallets ──https──┐        miners ──stratum+tcp:3335──┐
