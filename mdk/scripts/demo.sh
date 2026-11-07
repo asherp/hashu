@@ -20,8 +20,8 @@ command -v mdk >/dev/null || { echo "Install the MDK CLI first: npm i -g @tether
 
 HASHU=${HASHU_BIN:-$ROOT/../target/release/hashu}
 if [ ! -x "$HASHU" ]; then
-  echo "Building the hashu binary (cargo build --release -p hashu-cli)…"
-  (cd "$ROOT/.." && cargo build --release -p hashu-cli)
+  echo "Building the hashu binary (cargo build --release -p hashu)…"
+  (cd "$ROOT/.." && cargo build --release -p hashu)
 fi
 
 [ -d node_modules ] || npm install

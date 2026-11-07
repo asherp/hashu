@@ -226,7 +226,7 @@ nc -vz mint.hashu.io 3335                                  # Stratum reachable
 End to end with the example wallet (from a checkout of the repo):
 
 ```bash
-cargo run -p hashu-cli --example buy_and_redeem -- \
+cargo run -p hashu --example buy_and_redeem -- \
   https://mint.hashu.io bolt11 2 stratum+tcp://stratum.braiins.com:3333 <braiins-user>.redeem
 ```
 
@@ -376,7 +376,7 @@ On stage:
    `stratum+tcp://stratum.braiins.com:3333`, worker `<braiins-user>.redeem`:
 
    ```bash
-   cargo run -p hashu-cli --example buy_and_redeem -- \
+   cargo run -p hashu --example buy_and_redeem -- \
      https://mint.hashu.io bolt11 5 stratum+tcp://stratum.braiins.com:3333 <braiins-user>.redeem
    ```
 

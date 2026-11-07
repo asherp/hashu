@@ -70,10 +70,10 @@ cargo install --path hashu-cli
 Or install the published crate from crates.io (still needs `protoc`):
 
 ```bash
-cargo install hashu-cli --locked
+cargo install hashu --locked
 ```
 
-The library crates are `hashu-core`, `hashu-proxy` and `hashu-mint`.
+The CLI crate is published as `hashu` (source in `hashu-cli/`). The library crates are `hashu-core`, `hashu-proxy` and `hashu-mint`.
 
 ## Quick start
 
@@ -240,7 +240,7 @@ Rehearse the whole loop without money or hardware:
 
 ```bash
 hashu mint run --lightning fake --price fixed --sats-per-thh 40
-cargo run -p hashu-cli --example buy_and_redeem -- \
+cargo run -p hashu --example buy_and_redeem -- \
   http://127.0.0.1:8085 bolt11 2 stratum+tcp://216.230.225.61:3333 yourname.worker1
 ```
 

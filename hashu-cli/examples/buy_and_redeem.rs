@@ -1,7 +1,7 @@
 //! Demo client for `hashu mint run`: buy THH, then redeem it as hashrate.
 //!
 //! ```text
-//! cargo run -p hashu-cli --example buy_and_redeem -- \
+//! cargo run -p hashu --example buy_and_redeem -- \
 //!     http://127.0.0.1:8085 bolt11 2 stratum+tcp://216.230.225.61:3333 asher.bitaxe1
 //! ```
 //!

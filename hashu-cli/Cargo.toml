@@ -1,5 +1,5 @@
 [package]
-name = "hashu-cli"
+name = "hashu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,6 +10,12 @@ authors.workspace = true
 readme = "../README.md"
 keywords.workspace = true
 categories = ["cryptography::cryptocurrencies", "command-line-utilities"]
+
+# The package is published as `hashu` (so `cargo install hashu` works); the
+# library keeps its old name so code paths like `hashu_cli::mint` stay put.
+[lib]
+name = "hashu_cli"
+path = "src/lib.rs"
 
 [[bin]]
 name = "hashu"
