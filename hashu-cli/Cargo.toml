@@ -3,15 +3,22 @@ name = "hashu-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "The `hashu` command: run a Hashu hashrate mint and Stratum proxy, buy and redeem terahash-hours"
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "../README.md"
+keywords.workspace = true
+categories = ["cryptography::cryptocurrencies", "command-line-utilities"]
 
 [[bin]]
 name = "hashu"
 path = "src/main.rs"
 
 [dependencies]
-hashu-core = { path = "../hashu-core" }
-hashu-mint = { path = "../hashu-mint" }
-hashu-proxy = { path = "../hashu-proxy" }
+hashu-core = { workspace = true }
+hashu-mint = { workspace = true }
+hashu-proxy = { workspace = true }
 tokio = { workspace = true, features = ["signal"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
