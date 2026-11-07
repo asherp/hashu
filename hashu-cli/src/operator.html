@@ -101,7 +101,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 
   <section class="tiles" aria-label="Summary">
     <div class="tile"><label>Hashrate now</label><b id="t-rate">—</b><small id="t-rate-sub">through the proxy</small></div>
-    <div class="tile"><label>THH available</label><b id="t-avail">—</b><small id="t-avail-sub">no capacity set</small></div>
+    <div class="tile"><label>THH available</label><b id="t-avail">—</b><small id="t-avail-sub">no rentals: sold out</small></div>
     <div class="tile"><label>THH owed</label><b id="t-owed">—</b><small>ecash out + open redemptions</small></div>
     <div class="tile"><label>Redemption remaining</label><b id="t-open">—</b><small id="t-open-sub">no open redemption</small></div>
     <div class="tile"><label>THH sold</label><b id="t-sold">—</b><small id="t-sold-sub">—</small></div>
@@ -180,7 +180,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
         <input type="text" id="cap-label" placeholder="label (optional)" aria-label="Label">
         <button class="act primary" id="btn-cap">Add rental</button>
       </div>
-      <p class="note" id="cap-note">Capacity = rented TH/s × hours left. Mint quotes beyond capacity minus THH owed are refused.</p>
+      <p class="note" id="cap-note">Capacity = rented TH/s × hours left. Mint quotes beyond capacity minus THH owed are refused, so with no rentals nothing is sold (checkout shows Sold out). Off sells uncapped.</p>
     </section>
 
     <section class="card" aria-labelledby="h-heat">
