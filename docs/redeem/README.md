@@ -33,10 +33,10 @@ melts with the `hashrate` method sends the same fields as JSON:
 | Worker name | any non-empty string | Sent to your pool in `mining.authorize` in place of the miner's own name. This is how the pool knows the work is yours. |
 | Worker password | optional, defaults to `x` | Only matters if your pool checks it. |
 
-> **Use a `stratum+tcp://` URL.** The mint accepts `stratum+ssl://` in a
-> request, but the proxy cannot dial TLS stratum yet, so a TLS redemption
-> is skipped and never fills. A URL without a port (or with a path) is
-> also unroutable. Every guide below lists a plain-TCP endpoint.
+> **Use a `stratum+tcp://` URL.** The proxy cannot dial TLS stratum yet,
+> so the mint refuses a `stratum+ssl://` URL (or one without a port, or
+> with a path) when you ask for a quote, before you pay anything. Every
+> guide below lists a plain-TCP endpoint.
 
 The redemption must be at least the mint's minimum (`min_redeem_thh`, shown
 by `GET /checkout/api/info`; 1 THH by default).

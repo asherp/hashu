@@ -70,17 +70,33 @@ impl HashrateRequest {
     pub fn parse(request: &str) -> Result<Self, Error> {
         let parsed: Self = serde_json::from_str(request)
             .map_err(|e| Error::Custom(format!("invalid hashrate request: {e}")))?;
-        if !(parsed.pool_url.starts_with("stratum+tcp://")
-            || parsed.pool_url.starts_with("stratum+ssl://"))
-        {
+        if !is_routable_pool_url(&parsed.pool_url) {
             return Err(Error::Custom(
-                "pool_url must start with stratum+tcp:// or stratum+ssl://".into(),
+                "pool_url must be stratum+tcp://host:port (TLS stratum is not supported yet)"
+                    .into(),
             ));
         }
         if parsed.worker_name.is_empty() {
             return Err(Error::Custom("worker_name must not be empty".into()));
         }
         Ok(parsed)
+    }
+}
+
+/// Whether the proxy can dial `pool_url`: plain-TCP `stratum+tcp://host:port`
+/// with a port and no path. Checked at quote time so a wallet can't pay for
+/// a redemption the router would skip. Mirrors
+/// `hashu_proxy::router::upstream_for_pool_url`, which this crate can't
+/// depend on. TLS (`stratum+ssl://`) is refused until the proxy can dial it.
+fn is_routable_pool_url(pool_url: &str) -> bool {
+    let Some(rest) = pool_url.strip_prefix("stratum+tcp://") else {
+        return false;
+    };
+    match rest.rsplit_once(':') {
+        Some((host, port)) => {
+            !host.is_empty() && !rest.contains('/') && port.parse::<u16>().is_ok_and(|p| p > 0)
+        }
+        None => false,
     }
 }
 
@@ -440,6 +456,14 @@ mod tests {
         // Wrong scheme.
         let http = r#"{"pool_url":"https://p","worker_name":"w","amount_thh":1}"#;
         assert!(HashrateRequest::parse(http).is_err());
+        // TLS stratum: the proxy can't dial it yet, so refuse at quote time.
+        let tls = r#"{"pool_url":"stratum+ssl://p:1300","worker_name":"w","amount_thh":1}"#;
+        assert!(HashrateRequest::parse(tls).is_err());
+        // No port, or a path (e.g. an SV2 URL with a key).
+        let no_port = r#"{"pool_url":"stratum+tcp://p","worker_name":"w","amount_thh":1}"#;
+        assert!(HashrateRequest::parse(no_port).is_err());
+        let path = r#"{"pool_url":"stratum+tcp://p:3333/key","worker_name":"w","amount_thh":1}"#;
+        assert!(HashrateRequest::parse(path).is_err());
         // Empty worker.
         let no_worker = r#"{"pool_url":"stratum+tcp://p:1","worker_name":"","amount_thh":1}"#;
         assert!(HashrateRequest::parse(no_worker).is_err());
