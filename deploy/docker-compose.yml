@@ -1,7 +1,9 @@
 # Live Hashu demo on one internet-facing machine.
 #
 #   cp .env.example .env && $EDITOR .env
-#   docker compose up -d --build
+#   docker compose up -d --build        # build from this checkout, or
+#   docker compose pull && docker compose up -d   # use the images CI publishes
+#                                                 # (.github/workflows/images.yml)
 #
 # What is reachable from the internet:
 #   80/443  Caddy (TLS)  -> mint API (hashu:8085) at https://$HASHU_DOMAIN/
@@ -26,7 +28,7 @@ services:
       context: ./phoenixd
       args:
         PHOENIXD_VERSION: ${PHOENIXD_VERSION:-0.9.1}
-    image: hashu/phoenixd:${PHOENIXD_VERSION:-0.9.1}
+    image: ${HASHU_REGISTRY:-ghcr.io/asherp}/hashu-phoenixd:${HASHU_IMAGE_TAG:-latest}
     environment:
       PHOENIXD_PASSWORD: ${PHOENIXD_PASSWORD:?set PHOENIXD_PASSWORD in .env}
       PHOENIXD_LIMITED_PASSWORD: ${PHOENIXD_LIMITED_PASSWORD:?set PHOENIXD_LIMITED_PASSWORD in .env}
@@ -45,7 +47,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: hashu/hashu:latest
+    image: ${HASHU_REGISTRY:-ghcr.io/asherp}/hashu:${HASHU_IMAGE_TAG:-latest}
     depends_on: [phoenixd]
     environment:
       RUST_LOG: ${RUST_LOG:-info}
@@ -97,7 +99,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/mdk/Dockerfile
-    image: hashu/mdk:latest
+    image: ${HASHU_REGISTRY:-ghcr.io/asherp}/hashu-mdk:${HASHU_IMAGE_TAG:-latest}
     environment:
       MDK_DEMO_USER: ${MDK_DEMO_USER:-demo@hashu.io}
       MDK_DEMO_PASSWORD: ${MDK_DEMO_PASSWORD:-hashu-demo-2026}
@@ -108,9 +110,8 @@ services:
   # is the fake home pool. POST /redemptions is on so the dashboard's Redeem
   # button works; it is reachable only from the mdk network.
   mdk-hashu:
-    # Same image as `hashu` (built by that service, not pulled).
-    image: hashu/hashu:latest
-    pull_policy: never
+    # Same image as `hashu` (built or pulled by that service).
+    image: ${HASHU_REGISTRY:-ghcr.io/asherp}/hashu:${HASHU_IMAGE_TAG:-latest}
     depends_on: [hashu]
     command:
       - mint
@@ -132,7 +133,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/caddy/Dockerfile
-    image: hashu/caddy:latest
+    image: ${HASHU_REGISTRY:-ghcr.io/asherp}/hashu-caddy:${HASHU_IMAGE_TAG:-latest}
     depends_on: [hashu, mdk]
     environment:
       HASHU_DOMAIN: ${HASHU_DOMAIN}

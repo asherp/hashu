@@ -5,6 +5,9 @@ Compose: `hashu mint run` (mint, Lightning + Tether rails, Stratum proxy,
 control API and operator GUI), a mainnet **phoenixd** for Lightning, and
 **Caddy** for TLS.
 
+Moving it to a DigitalOcean droplet (sizing, cloud firewall, DNS, moving the
+mint and phoenixd state): see [DIGITALOCEAN.md](DIGITALOCEAN.md).
+
 ```
                 internet
    wallets ──https──┐        miners ──stratum+tcp:3335──┐
@@ -419,6 +422,7 @@ docker compose logs -f hashu            # mint + proxy
 docker compose logs -f phoenixd
 docker compose restart hashu            # open redemptions resume after the restart
 git pull && docker compose up -d --build hashu   # deploy a new version
+docker compose pull && docker compose up -d      # or: use the images CI published
 ```
 
 Caveats for the demo:
