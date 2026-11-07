@@ -29,14 +29,17 @@ melts with the `hashrate` method sends the same fields as JSON:
 | Field | What Hashu accepts | Notes |
 |---|---|---|
 | Token | a `cashuB…` token, pasted or scanned | Links like `cashu:…` work too. |
-| Pool URL | `stratum+tcp://host:port` | **Plain TCP only, with a port.** See the warning below. |
+| Pool URL | `stratum+tcp://host:port` or `stratum+ssl://host:port` | **Must have a port.** See the note below. |
 | Worker name | any non-empty string | Sent to your pool in `mining.authorize` in place of the miner's own name. This is how the pool knows the work is yours. |
 | Worker password | optional, defaults to `x` | Only matters if your pool checks it. |
 
-> **Use a `stratum+tcp://` URL.** The mint accepts `stratum+ssl://` in a
-> request, but the proxy cannot dial TLS stratum yet, so a TLS redemption
-> is skipped and never fills. A URL without a port (or with a path) is
-> also unroutable. Every guide below lists a plain-TCP endpoint.
+> **Plain TCP or TLS, with a port.** The proxy dials `stratum+ssl://` pools
+> over TLS and checks the pool's certificate against the public CA roots. A
+> pool with a self-signed or expired certificate fails the handshake, and
+> your redemption waits on the operator's pool instead of filling, so use
+> its `stratum+tcp://` endpoint. The mint refuses a URL without a port, with
+> a path, or with another scheme (such as Stratum V2's `stratum2+tcp://`)
+> when you ask for a quote, before you pay anything.
 
 The redemption must be at least the mint's minimum (`min_redeem_thh`, shown
 by `GET /checkout/api/info`; 1 THH by default).

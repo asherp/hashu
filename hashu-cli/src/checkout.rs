@@ -568,7 +568,7 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
     if upstream_for_pool_url(&pool_url).is_none() {
         return err(
             StatusCode::BAD_REQUEST,
-            "pool must be stratum+tcp://host:port",
+            "pool must be stratum+tcp://host:port or stratum+ssl://host:port",
         );
     }
     if worker.is_empty() {

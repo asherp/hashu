@@ -1,6 +1,7 @@
 //! Stratum V1 listener and upstream relay. ARCHITECTURE.md §4.2.
 //!
-//! V2 (via SRI) is a fast-follow.
+//! Upstream may be plain TCP or TLS (see [`crate::upstream`]). V2 (via
+//! SRI) is a fast-follow.
 
 pub mod committer;
 pub mod compact;
