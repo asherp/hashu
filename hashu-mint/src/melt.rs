@@ -354,7 +354,11 @@ mod tests {
         let (m, _) = melter();
         let mut events = m.wait_payment_event().await.unwrap();
         let next = tokio::time::timeout(std::time::Duration::from_millis(50), events.next()).await;
-        assert!(next.is_err(), "stream ended or yielded: {:?}", next.map(|e| e.is_some()));
+        assert!(
+            next.is_err(),
+            "stream ended or yielded: {:?}",
+            next.map(|e| e.is_some())
+        );
     }
 
     fn request(amount_thh: u64) -> String {
