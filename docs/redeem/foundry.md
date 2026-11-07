@@ -12,8 +12,8 @@ already have a Foundry account, the shape is the usual one.
 | Worker password | `x` |
 
 Foundry's connection details are in its customer portal, so take them from
-there rather than from this page. Make sure the URL is plain
-`stratum+tcp://`.
+there rather than from this page. Make sure the URL is
+`stratum+tcp://` or `stratum+ssl://` with a port.
 
 ## Check it arrived
 

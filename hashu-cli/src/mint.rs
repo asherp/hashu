@@ -50,7 +50,8 @@ use hashu_proxy::control::ControlState;
 use hashu_proxy::credit::{CreditContext, ShareCrediter};
 use hashu_proxy::meter::HashrateMeter;
 use hashu_proxy::router::Router;
-use hashu_proxy::stratum::{run_routed_listener, strip_stratum_prefix};
+use hashu_proxy::stratum::run_routed_listener;
+use hashu_proxy::upstream::normalize_upstream;
 use hashu_proxy::ProxyMetrics;
 
 use crate::checkout::{self, CheckoutState};
@@ -514,10 +515,12 @@ fn spawn_mrr_sync(args: &RunArgs, capacity: &Arc<CapacityBook>) {
 
 async fn run_daemon(args: RunArgs) -> Result<()> {
     // ---- shared state -------------------------------------------------
-    let upstream = strip_stratum_prefix(&args.upstream).to_string();
-    if !upstream.contains(':') {
-        bail!("--upstream must include a port (got {upstream})");
-    }
+    let Some(upstream) = normalize_upstream(&args.upstream) else {
+        bail!(
+            "--upstream must be stratum+tcp://host:port or stratum+ssl://host:port (got {})",
+            args.upstream
+        );
+    };
     std::fs::create_dir_all(&args.data_dir)
         .with_context(|| format!("create {:?}", args.data_dir))?;
     let ledger_path = args.data_dir.join("redemptions.jsonl");

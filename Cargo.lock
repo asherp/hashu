@@ -1533,13 +1533,16 @@ dependencies = [
  "anyhow",
  "hashu-core",
  "hex",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-rustls",
  "tracing",
+ "webpki-roots 1.0.7",
 ]
 
 [[package]]

@@ -9,8 +9,8 @@ Create one and a sub-account for mining.
 | Worker name | `<your sub-account>.hashu` |
 | Worker password | `x` **(unverified: ViaBTC's docs suggest `123`; any value is believed to work)** |
 
-ViaBTC also lists ports 25 and 443 **(unverified)**. Use a `stratum+tcp://`
-URL; its SSL endpoints won't route through Hashu.
+ViaBTC also lists ports 25 and 443 **(unverified)**. Its SSL endpoints
+should work as `stratum+ssl://` **(unverified: certificate)**.
 
 ## Check it arrived
 

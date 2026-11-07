@@ -10,6 +10,7 @@ pub mod credit;
 pub mod meter;
 pub mod router;
 pub mod stratum;
+pub mod upstream;
 
 /// Counters maintained by the proxy. Updated atomically; readable
 /// concurrently from any task.
