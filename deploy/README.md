@@ -319,16 +319,22 @@ minutes to ramp up after the rental starts, so start it ~15 minutes early.
 **What the proxy does with an MRR rig** (it is a pass-through Stratum V1
 proxy, one upstream connection per miner connection):
 
-- `mining.subscribe`/`configure` (version rolling), `extranonce`
-  handling and `mining.set_difficulty` are forwarded unchanged, so
+- `mining.configure` (version rolling) and `mining.set_difficulty` are
+  forwarded unchanged; the rig gets a small proxy-owned extranonce so it
+  can be moved between pools in place. So
   difficulty is whatever the upstream pool's vardiff sets (Braiins handles
   big rigs fine). Crediting is by
   share difficulty (`difficulty × 2^32` hashes), so a THH is a THH at any
   difficulty.
-- When a redemption opens or fills, the proxy **closes the rig's
-  connection** so it reconnects to the new route, with the worker name
-  rewritten to the redeemer's. MRR rigs reconnect in seconds; the MRR
-  rental page may briefly show the pool as down. That is expected.
+- When a redemption opens or fills, the proxy **switches the rig's pool
+  in place**: the rig's connection stays up and gets the new pool's
+  difficulty and a clean job, with the worker name rewritten to the
+  redeemer's. The log shows `switched pool without reconnecting the
+  miner` with `switch_ms`. If the new pool can't take the rig in place
+  (extranonce2 under 6 bytes, version rolling not granted) the proxy
+  closes the connection instead and the rig reconnects in seconds; the
+  MRR rental page may then briefly show the pool as down. Set
+  `HASHU_SWITCH_MODE=reconnect` to always reconnect.
 - The redemption pool in the demo is Braiins too, under a different
   worker (`<braiins-user>.redeem`), so the Braiins dashboard shows the
   redeemed hashrate as its own worker.
@@ -344,7 +350,7 @@ proxy, one upstream connection per miner connection):
 4. Operator GUI at `https://mint.hashu.io/operator/`: the live hashrate
    graph tracks the rented TH/s (averaged over `--hashrate-window`,
    default 60 s). Open a redemption (e.g. `buy_and_redeem` above): the
-   rig reconnects, `shares_credited` starts rising and the cumulative THH
+   rig switches pools, `shares_credited` starts rising and the cumulative THH
    graph climbs to the target, then the rig goes back to the idle route.
 
 ## 9. Demo script (mainnet)
@@ -383,7 +389,7 @@ On stage:
 
    (does buy + redeem in one go: it prints the invoice, waits for payment,
    then redeems).
-3. **Watch it fill.** Operator GUI: the rig reconnects within seconds, the
+3. **Watch it fill.** Operator GUI: the rig switches to the redemption pool, the
    cumulative THH graph climbs to 5 over ~3 minutes, the melt turns
    `PAID`, and the rig goes back to the idle route. On Braiins the
    `redeem` worker appears with ~100 TH/s for those minutes.

@@ -1,7 +1,8 @@
 //! End-to-end redirect test: a melt opens a redemption, the proxy moves the
 //! miner from the operator's default pool to the redeemer's pool (with the
 //! redeemer's worker name), credits the shares accepted there, and moves
-//! the miner back once the redemption is filled.
+//! the miner back once the redemption is filled. These tests use
+//! [`SwitchMode::Reconnect`]; `tests/seamless.rs` covers in-place switching.
 //!
 //! Topology (all on 127.0.0.1):
 //!     fake miner ⇄ routed proxy ⇄ { default pool | redeemer pool }
@@ -11,7 +12,7 @@ use std::time::Duration;
 
 use hashu_core::redemption::{Redemption, RedemptionId, RedemptionLedger, RedemptionState};
 use hashu_proxy::credit::{CreditContext, ShareCrediter};
-use hashu_proxy::router::Router;
+use hashu_proxy::router::{Router, SwitchMode};
 use hashu_proxy::stratum::run_routed_listener;
 use hashu_proxy::ProxyMetrics;
 use serde_json::Value;
@@ -153,7 +154,8 @@ async fn melt_redirects_miner_to_redeemer_pool_and_back() {
     let redeemer_pool = fake_pool("redeemer", (1u64 << 19) as f64, tx).await;
 
     let ledger = Arc::new(RedemptionLedger::new());
-    let router = Arc::new(Router::new(default_pool, ledger.clone()));
+    let router =
+        Arc::new(Router::new(default_pool, ledger.clone()).with_switch_mode(SwitchMode::Reconnect));
     let credit = CreditContext::new(Arc::new(ShareCrediter::new(ledger.clone())), router.clone());
     let proxy = spawn_proxy(router, Some(credit)).await;
 
