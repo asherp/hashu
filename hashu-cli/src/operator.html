@@ -37,6 +37,11 @@ h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacin
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .card-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.capbar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--line); margin: 10px 0 6px; }
+.capbar .alloc { background: var(--target); }
+.capbar .avail { background: var(--brand); }
+.caplegend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--ink-2); margin-bottom: 8px; }
+.caplegend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
 .tile { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-width: 0; }
 .tile label { display: block; font-size: 12px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.04em; }
 .tile b { display: block; font-size: 24px; font-variant-numeric: tabular-nums; margin-top: 2px; }
@@ -167,6 +172,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
         <h2 id="h-cap">Hashrate capacity</h2>
         <div class="seg" id="cap-limit"><button data-v="auto">Auto</button><button data-v="on">Cap on</button><button data-v="off">Off</button></div>
       </div>
+      <div id="cap-bar"></div>
       <dl class="kv" id="cap"></dl>
       <div class="scroll">
         <table>
@@ -180,7 +186,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
         <input type="text" id="cap-label" placeholder="label (optional)" aria-label="Label">
         <button class="act primary" id="btn-cap">Add rental</button>
       </div>
-      <p class="note" id="cap-note">Capacity = rented TH/s × hours left. Mint quotes beyond capacity minus THH owed are refused, so with no rentals nothing is sold (checkout shows Sold out). Off sells uncapped.</p>
+      <p class="note" id="cap-note">Capacity = rented TH/s × hours left. Allocated + available = total. Mint quotes beyond what is available are refused, so with no rentals nothing is sold (checkout shows Sold out). Off sells uncapped.</p>
     </section>
 
     <section class="card" aria-labelledby="h-heat">
@@ -455,6 +461,15 @@ function render () {
   $('pause-note').textContent = ctl.issuance_paused ? 'New mint quotes are refused.' : 'Selling THH on every rail.'
   if (!state.markupDirty && document.activeElement !== $('markup')) $('markup').value = ctl.markup_bps / 100
 
+// Capacity split: allocated (sold, or still being delivered) + available
+  // (left to buy) = total (rented TH/s × hours left).
+  function capBar (total, allocated, available, fmtN) {
+    const t = Math.max(total, allocated, 0)
+    const pa = t > 0 ? Math.min(100, allocated / t * 100) : 0
+    const pv = t > 0 ? Math.min(100 - pa, available / t * 100) : 0
+    return `<div class="capbar" role="img" aria-label="${fmtN(allocated)} THH allocated, ${fmtN(available)} THH available of ${fmtN(total)} THH total"><span class="alloc" style="width:${pa}%"></span><span class="avail" style="width:${pv}%"></span></div>` +
+      `<div class="caplegend"><span><i style="background:var(--target)"></i>Allocated ${fmtN(allocated)} THH</span><span><i style="background:var(--brand)"></i>Available ${fmtN(available)} THH</span><span>Total ${fmtN(total)} THH</span></div>`
+  }
   const kv = (rows) => rows.map(([k, v, cls]) => `<dt class="${cls || ''}">${k}</dt><dd class="${cls || ''}">${v}</dd>`).join('')
   $('obl').innerHTML = kv([
     ['THH ecash held by users', fmtThh(o.thh_in_circulation, 0)],
@@ -470,11 +485,12 @@ function render () {
     $('t-avail-sub').textContent = cap.limit
       ? `${fmtThh(cap.rented_ths, 1)} TH/s rented${cap.ends_ms ? ` · ends in ${fmtDur((cap.ends_ms - op.now_ms) / 1000)}` : ''}`
       : 'sales not capped'
+    $('cap-bar').innerHTML = capBar(cap.capacity_thh, cap.owed_thh, Math.max(cap.headroom_thh, 0), (n) => fmtThh(n, 1))
     $('cap').innerHTML = kv([
       ['Rented now', `${fmtThh(cap.rented_ths, 2)} TH/s`],
-      ['Capacity left (TH/s × hours)', fmtThh(cap.capacity_thh)],
-      ['THH owed', fmtThh(cap.owed_thh)],
-      [cap.headroom_thh < 0 ? 'Oversold by' : 'Available to sell', cap.limit ? fmtThh(Math.abs(cap.headroom_thh)) : `${fmtThh(Math.max(cap.headroom_thh, 0))} (not enforced)`, 'total'],
+      ['Total capacity (TH/s × hours left)', fmtThh(cap.capacity_thh)],
+      ['Allocated (sold, or still being delivered)', fmtThh(cap.owed_thh)],
+      [cap.headroom_thh < 0 ? 'Oversold by' : 'Available to buy', cap.limit ? fmtThh(Math.abs(cap.headroom_thh)) : `${fmtThh(Math.max(cap.headroom_thh, 0))} (not enforced)`, 'total'],
       ...(cap.mrr_enabled ? [['MRR sync', cap.mrr_error ? `<span style="color:var(--bad)">${esc(cap.mrr_error)}</span>` : cap.mrr_synced_ms ? `${fmtDur((op.now_ms - cap.mrr_synced_ms) / 1000)} ago` : 'waiting…']] : [])
     ])
     const mode = cap.limit_explicit ? (cap.limit ? 'on' : 'off') : 'auto'
