@@ -37,6 +37,7 @@ nav .links a:hover { color: var(--ink); }
 .btn { display: inline-block; text-decoration: none; border: 1px solid var(--line); border-radius: 10px; padding: 12px 20px; font-weight: 600; font-size: 15px; }
 .btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
 .btn:hover { filter: brightness(1.05); }
+.btn.soldout { background: transparent; border-color: var(--line); color: var(--ink-3, #888); cursor: not-allowed; pointer-events: none; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 40px 0 8px; }
 .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
 .stat .k { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); }
@@ -96,6 +97,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       <a href="#how">How it works</a>
       <a href="#run">Run a mint</a>
       <a class="mint-link" data-path="slides/" href="https://mint.hashu.io/slides/">Slides</a>
+      <a href="/redeem/">Pool guides</a>
       <a href="https://github.com/asherp/hashu">GitHub</a>
       <a class="mint-link" href="https://mint.hashu.io/">Live mint</a>
     </div>
@@ -107,7 +109,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     <p>Hashu turns hashrate into private ecash. A Hashu mint issues terahash-hours (THH) as Cashu tokens backed only by the hashrate of its miners, and the only way to redeem them is as real work delivered to the holder's pool. No bitcoin is held for users and none is paid out.</p>
     <p class="live">Live on mainnet: Lightning purchases verified, redemptions mining to Braiins Pool</p>
     <div class="cta">
-      <a class="btn primary mint-link" data-path="checkout/" href="https://mint.hashu.io/checkout/">Buy hashrate</a>
+      <a class="btn primary mint-link" data-path="checkout/" data-buy href="https://mint.hashu.io/checkout/">Buy hashrate</a>
       <a class="btn mint-link" data-path="slides/" href="https://mint.hashu.io/slides/">Slides</a>
       <a class="btn" href="https://github.com/asherp/hashu">Source on GitHub</a>
     </div>
@@ -156,7 +158,8 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       <a href="https://github.com/asherp/hashu"><b>Source</b><span>github.com/asherp/hashu</span></a>
       <a class="mint-link" data-path="slides/" href="https://mint.hashu.io/slides/"><b>Slides</b><span>The bitcoin++ Seoul pitch deck</span></a>
       <a class="mint-link" href="https://mint.hashu.io/"><b>Live mint</b><span class="mint-host">mint.hashu.io</span></a>
-      <a class="mint-link" data-path="checkout/" href="https://mint.hashu.io/checkout/"><b>Buy hashrate</b><span>Checkout with Lightning or USDT</span></a>
+      <a class="mint-link" data-path="checkout/" data-buy href="https://mint.hashu.io/checkout/"><b>Buy hashrate</b><span>Checkout with Lightning or USDT</span></a>
+      <a href="/redeem/"><b>Redeem at your pool</b><span>Setup guides for OCEAN, Braiins, F2Pool and more</span></a>
       <a class="mint-link" data-path="v1/info" href="https://mint.hashu.io/v1/info"><b>Mint API</b><span>/v1/info</span></a>
     </div>
   </section>
@@ -167,12 +170,28 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
   </footer>
 </div>
 <script>
+// No hashrate left to sell: buy links say so instead of opening checkout.
+function markSoldOut(soldOut) {
+  document.querySelectorAll('a[data-buy]').forEach((a) => {
+    if (!a.dataset.label) a.dataset.label = a.innerHTML;
+    a.classList.toggle('soldout', soldOut && a.classList.contains('btn'));
+    a.setAttribute('aria-disabled', soldOut ? 'true' : 'false');
+    a.title = soldOut ? 'Sold out: the mint has no hashrate available to sell right now' : '';
+    a.innerHTML = soldOut ? a.dataset.label.replace('Buy hashrate', 'Sold out') : a.dataset.label;
+  });
+}
+document.addEventListener('click', (ev) => {
+  const a = ev.target.closest('a[data-buy][aria-disabled="true"]');
+  if (a) ev.preventDefault();
+});
 // Point mint links at this deployment's mint (its advertised URL), so the
 // page also works on a stand-in host.
 fetch('/checkout/api/info', { cache: 'no-store' })
   .then((r) => (r.ok ? r.json() : null))
   .then((i) => {
-    if (!i || !/^https?:\/\//.test(i.mint_url || '')) return;
+    if (!i) return;
+    markSoldOut(i.available_thh === 0 || !!i.issuance_paused);
+    if (!/^https?:\/\//.test(i.mint_url || '')) return;
     const base = i.mint_url.replace(/\/+$/, '') + '/';
     document.querySelectorAll('a.mint-link').forEach((a) => { a.href = base + (a.dataset.path || ''); });
     document.querySelectorAll('.mint-host').forEach((s) => { s.textContent = base.replace(/^https?:\/\//, '').replace(/\/$/, ''); });
