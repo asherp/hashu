@@ -46,7 +46,15 @@ button.act.primary { background: var(--brand); border-color: var(--brand); color
 button.act:disabled { opacity: 0.5; cursor: default; }
 .price { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
 .price b { font-size: 26px; font-variant-numeric: tabular-nums; }
+.capbar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--line); margin: 10px 0 6px; }
+.capbar .alloc { background: var(--target); }
+.capbar .avail { background: var(--brand); }
+.caplegend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--ink-2); margin-bottom: 8px; }
+.caplegend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
 .note { color: var(--ink-3); font-size: 13px; margin: 0; }
+.note.soldout { color: var(--bad); background: var(--bad-bg); border: 1px solid var(--bad); border-radius: 8px; padding: 10px 14px; font-size: 14px; }
+.chips button:disabled { opacity: 0.4; cursor: not-allowed; }
+#amount:disabled { opacity: 0.5; }
 .tok { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-radius: 10px; background: var(--good-bg); border: 1px solid var(--good); }
 .tok .amt { font-size: 26px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .tok .amt small { font-size: 15px; font-weight: 600; color: var(--ink-2); }
@@ -109,7 +117,9 @@ button.act:disabled { opacity: 0.45; cursor: not-allowed; }
     <div class="price"><span class="note" id="price-label">Price</span><b id="price">—</b></div>
     <button class="act primary" id="btn-buy">Get invoice</button>
     <p class="note" id="paused" hidden>Sales are paused by the mint operator.</p>
+    <div id="cap-bar" hidden></div>
     <p class="note" id="avail" hidden></p>
+    <p class="note" id="over" hidden></p>
   </section>
 
   <!-- 2. pay -->
@@ -216,6 +226,31 @@ function renderPrice () {
     $('price-label').textContent = `${i.sats_per_thh.toLocaleString()} sats per THH`
     $('price').textContent = `${(n * i.sats_per_thh).toLocaleString()} sats`
   } else { $('price').textContent = '—' }
+  updateBuy()
+}
+// Capacity split: allocated (sold, or still being delivered) + available
+// (left to buy) = total (rented TH/s × hours left).
+function capBar (total, allocated, available, fmtN) {
+  const t = Math.max(total, allocated, 0)
+  const pa = t > 0 ? Math.min(100, allocated / t * 100) : 0
+  const pv = t > 0 ? Math.min(100 - pa, available / t * 100) : 0
+  return `<div class="capbar" role="img" aria-label="${fmtN(allocated)} THH allocated, ${fmtN(available)} THH available of ${fmtN(total)} THH total"><span class="alloc" style="width:${pa}%"></span><span class="avail" style="width:${pv}%"></span></div>` +
+    `<div class="caplegend"><span><i style="background:var(--target)"></i>Allocated ${fmtN(allocated)} THH</span><span><i style="background:var(--brand)"></i>Available ${fmtN(available)} THH</span><span>Total ${fmtN(total)} THH</span></div>`
+}
+// Buying needs hashrate to sell: with none left (or an amount above what
+// is left) the button stays off. The mint refuses such quotes too.
+function updateBuy () {
+  const i = st.info; if (!i) return
+  const av = i.available_thh
+  const n = Math.floor(Number($('amount').value) || 0)
+  const soldOut = av === 0
+  const over = av != null && av > 0 && n > av
+  $('btn-buy').disabled = !!st.buying || i.issuance_paused || !i.methods.length || soldOut || over || n < 1
+  $('btn-buy').textContent = soldOut ? 'Sold out' : i.issuance_paused ? 'Sales paused' : 'Get invoice'
+  $('amount').disabled = soldOut
+  for (const b of $('chips').querySelectorAll('button')) b.disabled = soldOut || (av != null && Number(b.dataset.v) > av)
+  $('over').hidden = !over
+  if (over) $('over').textContent = `Only ${av.toLocaleString()} THH available right now. Lower the amount to buy.`
 }
 // Delivery estimate: redemptions are served oldest first, so this order
 // waits for the THH still owed to open ones, then fills at the proxy's
@@ -244,9 +279,12 @@ async function loadInfo () {
     $('avail').hidden = av == null
     if (av != null) {
       const ends = st.info.capacity_ends_ms ? `, mining for another ${Math.max(0, (st.info.capacity_ends_ms - Date.now()) / 3.6e6).toFixed(1)} h` : ''
-      $('avail').textContent = av > 0 ? `${av.toLocaleString()} THH available now (${(st.info.rented_ths || 0).toFixed(1)} TH/s rented${ends}).` : 'Sold out: no rented hashrate left to sell right now.'
+      $('avail').textContent = av > 0 ? `${av.toLocaleString()} THH available now (${(st.info.rented_ths || 0).toFixed(1)} TH/s rented${ends}).` : 'Sold out: the mint has no hashrate available to sell right now. Purchases reopen when new hashrate is rented; this page updates on its own.'
     }
-    $('btn-buy').disabled = st.info.issuance_paused || !ms.length || av === 0
+    $('avail').classList.toggle('soldout', av === 0)
+    const total = st.info.capacity_thh
+    $('cap-bar').hidden = av == null || total == null
+    if (av != null && total != null) $('cap-bar').innerHTML = capBar(total, st.info.allocated_thh || 0, av, (n) => Math.floor(n).toLocaleString())
     $('amount').max = av != null ? Math.min(st.info.max_thh, av) : st.info.max_thh
     renderPrice()
   } catch (e) { alertMsg(`Cannot reach the mint: ${e.message}`) }
@@ -257,14 +295,14 @@ $('amount').addEventListener('input', renderPrice)
 
 $('btn-buy').addEventListener('click', async () => {
   const amount = Math.floor(Number($('amount').value))
-  $('btn-buy').disabled = true
+  st.buying = true; updateBuy()
   try {
     st.checkout = await post('api/buy', { amount_thh: amount, method: st.method })
     alertMsg('')
     showPay()
     history.replaceState(null, '', `#buy=${encodeURIComponent(st.checkout.id)}`)
     pollBuy()
-  } catch (e) { alertMsg(e.message) } finally { $('btn-buy').disabled = false }
+  } catch (e) { alertMsg(e.message); loadInfo() } finally { st.buying = false; updateBuy() }
 })
 
 // ---- 2. pay -------------------------------------------------------------

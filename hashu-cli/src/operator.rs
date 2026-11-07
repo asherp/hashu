@@ -774,6 +774,7 @@ mod tests {
     #[test]
     fn markup_applies_and_pause_refuses() {
         let c = Arc::new(MintControls::new(0));
+        c.capacity.set_limit(Some(false));
         let p = ControlledPricer::new(Arc::new(Flat(40)), c.clone());
         assert_eq!(p.price(2).unwrap(), 80);
         c.set_markup_bps(2_500).unwrap();
@@ -791,8 +792,14 @@ mod tests {
         let book = Arc::new(CapacityBook::new());
         let c = Arc::new(MintControls::with_capacity(0, book.clone()));
         let p = ControlledPricer::new(Arc::new(Flat(40)), c);
-        // No rentals configured: no cap.
-        assert_eq!(p.price(500).unwrap(), 20_000);
+        // No rentals configured: nothing to sell.
+        assert!(matches!(
+            p.price(1),
+            Err(PricingError::SoldOut {
+                requested: 1,
+                available: 0
+            })
+        ));
         book.set_manual(vec![hashu_mint::capacity::Rental {
             id: "r1".into(),
             label: String::new(),
@@ -827,6 +834,7 @@ mod tests {
         assert!(c.set_markup_bps(-10_000).is_err());
         assert!(c.set_markup_bps(MAX_MARKUP_BPS + 1).is_err());
         c.set_markup_bps(MIN_MARKUP_BPS).unwrap();
+        c.capacity.set_limit(Some(false));
         let p = ControlledPricer::new(Arc::new(Flat(1)), c);
         assert_eq!(p.price(1).unwrap(), 1);
     }

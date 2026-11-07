@@ -16,6 +16,10 @@
 //! Rentals come from the operator (control API / GUI) and, when an MRR API
 //! key is configured, from the account's active MRR rentals. Both are kept
 //! in `capacity.json` in the data dir so a restart keeps the limit.
+//!
+//! With no rentals configured nothing can be sold: a mint must not take
+//! payment for hashrate it has no machines to deliver. The operator can
+//! turn the limit off explicitly (`limit: false`) to sell uncapped.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -53,7 +57,7 @@ impl Rental {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct Persisted {
-    /// `None`: limit on once any capacity source is configured.
+    /// `None` (auto): the limit is on, so without rentals nothing is sold.
     #[serde(default)]
     limit: Option<bool>,
     #[serde(default)]
@@ -85,8 +89,7 @@ pub struct CapacityBook {
 pub struct CapacitySnapshot {
     /// Whether quotes beyond `available_thh` are refused.
     pub limit: bool,
-    /// The operator set `limit` explicitly (otherwise it follows whether a
-    /// source is configured).
+    /// The operator set `limit` explicitly (otherwise it is on).
     pub limit_explicit: bool,
     pub rentals: Vec<RentalView>,
     /// TH/s of rentals still running.
@@ -122,7 +125,7 @@ pub fn now_ms() -> u64 {
 }
 
 impl CapacityBook {
-    /// In memory only, no limit until a rental is set.
+    /// In memory only, limit on: nothing to sell until a rental is set.
     pub fn new() -> Self {
         Self::default()
     }
@@ -198,9 +201,8 @@ impl CapacityBook {
 
     pub fn snapshot(&self, now_ms: u64) -> CapacitySnapshot {
         let g = self.inner.lock().unwrap();
-        let limit =
-            g.p.limit
-                .unwrap_or(g.mrr_enabled || !g.p.manual.is_empty() || !g.p.mrr.is_empty());
+        // Auto means on: no rented hashrate, nothing to sell.
+        let limit = g.p.limit.unwrap_or(true);
         let rentals: Vec<RentalView> =
             g.p.manual
                 .iter()
@@ -297,11 +299,21 @@ mod tests {
     }
 
     #[test]
-    fn no_rentals_means_no_limit() {
+    fn no_rentals_means_nothing_to_sell() {
         let b = CapacityBook::new();
         let s = b.snapshot(0);
-        assert!(!s.limit);
-        assert_eq!(s.available_thh, None);
+        assert!(s.limit);
+        assert_eq!(s.available_thh, Some(0));
+        assert_eq!(
+            b.check(1, 0),
+            Err(PricingError::SoldOut {
+                requested: 1,
+                available: 0
+            })
+        );
+        // Only an explicit "off" sells without rentals.
+        b.set_limit(Some(false));
+        assert_eq!(b.snapshot(0).available_thh, None);
         assert!(b.check(1_000_000, 0).is_ok());
     }
 

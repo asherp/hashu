@@ -411,14 +411,17 @@ landing page shows the same number. Two ways to set it:
 
   `rentals` replaces the hand-entered list (`end_ms` in unix ms works
   instead of `hours`). `{"limit": false}` stops capping, `{"limit": null}`
-  goes back to automatic. It is saved in `/data/capacity.json`.
+  goes back to automatic (capped). It is saved in `/data/capacity.json`.
 
 The other operator settings (issuance paused, markup, heat J/TH) are saved in
 `/data/operator-settings.json` whenever they change in the GUI, and reloaded
 on start. A saved value wins over its flag or env var (`--markup-bps`,
 `HASHU_HEAT_J_PER_TH`); delete the file to go back to the flags.
 
-With no rentals and no MRR key, sales stay uncapped as before.
+With no rentals (no MRR key, or no active MRR rental) nothing can be
+sold: the mint refuses quotes and the checkout and landing page show
+"Sold out" with the buy button off. Set `{"limit": false}` (Capacity
+card → Off) only to sell without a cap, for example in local testing.
 
 ## Operations
 
