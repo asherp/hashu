@@ -12,7 +12,7 @@ WORKDIR /src
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p hashu-cli \
+    cargo build --release --locked -p hashu \
  && cp target/release/hashu /usr/local/bin/hashu
 
 FROM debian:bookworm-slim

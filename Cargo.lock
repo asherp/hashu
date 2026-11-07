@@ -1455,7 +1455,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hashu-cli"
+name = "hashu"
 version = "0.1.0"
 dependencies = [
  "anyhow",

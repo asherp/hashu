@@ -6,7 +6,7 @@
 # with the publish-new and publish-update scopes.
 #
 # `cargo publish --workspace` publishes in dependency order:
-# hashu-core, hashu-proxy, hashu-mint, then hashu-cli (which installs `hashu`).
+# hashu-core, hashu-proxy, hashu-mint, then hashu (the CLI, from hashu-cli/).
 # Run it with `dry_run` from the Actions tab to check without uploading.
 
 name: release-crates
