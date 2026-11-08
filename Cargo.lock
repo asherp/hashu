@@ -1465,6 +1465,7 @@ dependencies = [
  "cdk-axum",
  "cdk-fake-wallet",
  "cdk-sqlite",
+ "ciborium",
  "clap",
  "crc32fast",
  "dialoguer",

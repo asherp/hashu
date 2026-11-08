@@ -76,7 +76,7 @@ pub const SEPOLIA_CHAIN_ID: u64 = 11_155_111;
 pub const SEPOLIA_PUBLIC_RPC: &str = "https://ethereum-sepolia-rpc.publicnode.com";
 
 /// `THH` denominations the keyset signs: powers of two up to 2^20.
-const DENOMS: [u64; 21] = {
+pub(crate) const DENOMS: [u64; 21] = {
     let mut d = [0u64; 21];
     let mut i = 0;
     while i < 21 {
@@ -634,7 +634,11 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             thh_unit(),
             PaymentMethod::Custom(HASHRATE.into()),
             MintMeltLimits::new(args.min_redeem_thh.max(1), args.max_thh),
-            Arc::new(HashrateMelter::new(ledger.clone()).with_min_thh(args.min_redeem_thh)),
+            Arc::new(
+                HashrateMelter::new(ledger.clone())
+                    .with_min_thh(args.min_redeem_thh)
+                    .with_max_thh(args.max_thh),
+            ),
         )
         .await
         .context("register hashrate melt")?;

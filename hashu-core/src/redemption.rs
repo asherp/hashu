@@ -5,6 +5,12 @@
 //! shares, and completes once the accumulated hashes cover the amount
 //! melted. Progress is kept in *hashes* (exact integers), not in floating
 //! point THH, so completion is decided without rounding drift.
+//!
+//! A redemption that stops receiving hashrate can instead be *settled*:
+//! its delivered work is frozen, and the melt reports only that much as
+//! spent, so cdk signs the redeemer's blank outputs (NUT-08) for the rest.
+//! The part of a redemption that can come back this way is everything above
+//! its [`Redemption::floor_thh`].
 
 use std::collections::HashMap;
 use std::fmt;
@@ -78,6 +84,26 @@ pub enum RedemptionState {
     Active,
     /// Accumulated hashes ≥ target. Terminal.
     Completed,
+    /// Stopped before reaching target; the undelivered part goes back to
+    /// the redeemer as change. Terminal.
+    Settled,
+}
+
+impl RedemptionState {
+    /// Lowercase name for status APIs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Active => "active",
+            Self::Completed => "completed",
+            Self::Settled => "settled",
+        }
+    }
+
+    /// Completed or settled: no more routing or crediting.
+    pub fn is_finished(self) -> bool {
+        matches!(self, Self::Completed | Self::Settled)
+    }
 }
 
 /// One redemption's target and progress.
@@ -93,6 +119,11 @@ pub struct Redemption {
     pub worker_password: Option<String>,
     /// `THH` melted.
     pub amount_thh: u64,
+    /// `THH` the redeemer pays even if the redemption settles early: the
+    /// melt quote's amount, with the rest of `amount_thh` in its fee
+    /// reserve. Equal to `amount_thh` for redemptions opened without a
+    /// reserve, which can't return change.
+    pub floor_thh: u64,
     /// `amount_thh × HASHES_PER_THH`.
     pub target_hashes: u128,
     /// Hashes credited so far from accepted shares.
@@ -108,6 +139,7 @@ impl Redemption {
             worker_name,
             worker_password: None,
             amount_thh,
+            floor_thh: amount_thh,
             target_hashes: u128::from(amount_thh) * HASHES_PER_THH,
             accumulated_hashes: 0,
             state: RedemptionState::Pending,
@@ -117,6 +149,12 @@ impl Redemption {
     /// Set the worker password (`None` or empty: the default `x`).
     pub fn with_password(mut self, password: Option<String>) -> Self {
         self.worker_password = password.filter(|p| !p.is_empty());
+        self
+    }
+
+    /// Set the non-refundable part (clamped to `amount_thh`).
+    pub fn with_floor(mut self, floor_thh: u64) -> Self {
+        self.floor_thh = floor_thh.min(self.amount_thh);
         self
     }
 
@@ -132,9 +170,10 @@ impl Redemption {
         self.credit_hashes(hashes_for_difficulty(difficulty))
     }
 
-    /// Credit `hashes` directly. Same rules as [`Self::credit_share`].
+    /// Credit `hashes` directly. Same rules as [`Self::credit_share`];
+    /// settled redemptions ignore credits too.
     pub fn credit_hashes(&mut self, hashes: u128) -> RedemptionState {
-        if self.state == RedemptionState::Completed {
+        if self.state.is_finished() {
             return self.state;
         }
         self.accumulated_hashes = self.accumulated_hashes.saturating_add(hashes);
@@ -148,6 +187,43 @@ impl Redemption {
 
     pub fn is_complete(&self) -> bool {
         self.state == RedemptionState::Completed
+    }
+
+    /// Completed or settled.
+    pub fn is_finished(&self) -> bool {
+        self.state.is_finished()
+    }
+
+    /// Delivered work in whole `THH`, rounded up: a started unit counts as
+    /// spent.
+    pub fn delivered_thh(&self) -> u64 {
+        let whole = self.accumulated_hashes.div_ceil(HASHES_PER_THH);
+        u64::try_from(whole).unwrap_or(u64::MAX)
+    }
+
+    /// `THH` the melt reports as spent. A settled redemption is charged for
+    /// what it was delivered, but never less than its floor; anything else
+    /// is charged the full amount.
+    pub fn spent_thh(&self) -> u64 {
+        match self.state {
+            RedemptionState::Settled => self.delivered_thh().clamp(self.floor_thh, self.amount_thh),
+            _ => self.amount_thh,
+        }
+    }
+
+    /// `THH` returned to the redeemer as change: `amount_thh − spent_thh`.
+    pub fn change_thh(&self) -> u64 {
+        self.amount_thh - self.spent_thh()
+    }
+
+    /// Stop the redemption where it stands. Returns false if it had
+    /// already finished.
+    fn settle(&mut self) -> bool {
+        if self.is_finished() {
+            return false;
+        }
+        self.state = RedemptionState::Settled;
+        true
     }
 }
 
@@ -179,6 +255,18 @@ pub enum LedgerError {
     Unknown(RedemptionId),
 }
 
+/// Result of [`RedemptionLedger::settle`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettleOutcome {
+    /// State after the call: `Settled`, or `Completed` if it had already
+    /// reached target.
+    pub state: RedemptionState,
+    /// True only for the call that settled it.
+    pub newly_settled: bool,
+    pub spent_thh: u64,
+    pub change_thh: u64,
+}
+
 /// One line of the ledger journal. Credits record hashes, not difficulty,
 /// so replay is exact.
 #[derive(Debug, Serialize, Deserialize)]
@@ -191,12 +279,17 @@ enum LedgerRecord {
         worker_name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         worker_password: Option<String>,
+        /// Absent in journals from before settling existed: no reserve.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        floor_thh: Option<u64>,
     },
     Credit {
         id: RedemptionId,
         /// Decimal string: u128 does not fit a JSON number portably.
         hashes: String,
     },
+    /// Frozen at the hashes credited before this record.
+    Settle { id: RedemptionId },
 }
 
 /// Store of redemptions, shared between the melt method (which opens
@@ -234,13 +327,20 @@ impl RedemptionLedger {
                     pool_url,
                     worker_name,
                     worker_password,
+                    floor_thh,
                 } => {
                     // A duplicate open can only come from a hand-edited
                     // file; keep the first.
                     let _ = ledger.open(
                         Redemption::new(id, amount_thh, pool_url, worker_name)
-                            .with_password(worker_password),
+                            .with_password(worker_password)
+                            .with_floor(floor_thh.unwrap_or(amount_thh)),
                     );
+                }
+                LedgerRecord::Settle { id } => {
+                    if let Some(r) = ledger.lock().get_mut(&id) {
+                        r.settle();
+                    }
                 }
                 LedgerRecord::Credit { id, hashes } => {
                     let Ok(hashes) = hashes.parse::<u128>() else {
@@ -262,19 +362,22 @@ impl RedemptionLedger {
                     pool_url: r.pool_url.clone(),
                     worker_name: r.worker_name.clone(),
                     worker_password: r.worker_password.clone(),
+                    floor_thh: Some(r.floor_thh),
                 };
                 let credit = (r.accumulated_hashes > 0).then(|| LedgerRecord::Credit {
                     id: r.id,
                     hashes: r.accumulated_hashes.to_string(),
                 });
-                std::iter::once(open).chain(credit)
+                let settle = (r.state == RedemptionState::Settled)
+                    .then_some(LedgerRecord::Settle { id: r.id });
+                std::iter::once(open).chain(credit).chain(settle)
             })
             .collect();
         journal.rewrite(&compact)?;
         tracing::info!(
             path = ?journal.path(),
             redemptions = snapshot.len(),
-            open = snapshot.iter().filter(|r| !r.is_complete()).count(),
+            open = snapshot.iter().filter(|r| !r.is_finished()).count(),
             "restored redemption ledger"
         );
         ledger.journal = Some(journal);
@@ -302,6 +405,7 @@ impl RedemptionLedger {
             pool_url: redemption.pool_url.clone(),
             worker_name: redemption.worker_name.clone(),
             worker_password: redemption.worker_password.clone(),
+            floor_thh: Some(redemption.floor_thh),
         });
         map.insert(id, redemption);
         // Take `order` while still holding `inner` so the two never
@@ -313,7 +417,7 @@ impl RedemptionLedger {
         Ok(())
     }
 
-    /// Snapshots of every redemption that is not yet complete, oldest
+    /// Snapshots of every redemption that is not yet finished, oldest
     /// first. The pool router polls this to decide where to send hashrate.
     pub fn active(&self) -> Vec<Redemption> {
         let map = self.lock();
@@ -321,7 +425,7 @@ impl RedemptionLedger {
         order
             .iter()
             .filter_map(|id| map.get(id))
-            .filter(|r| !r.is_complete())
+            .filter(|r| !r.is_finished())
             .cloned()
             .collect()
     }
@@ -354,10 +458,10 @@ impl RedemptionLedger {
     ) -> Result<CreditOutcome, LedgerError> {
         let mut map = self.lock();
         let redemption = map.get_mut(id).ok_or(LedgerError::Unknown(*id))?;
-        let was_complete = redemption.is_complete();
+        let was_finished = redemption.is_finished();
         let hashes = hashes_for_difficulty(difficulty);
         let state = redemption.credit_hashes(hashes);
-        if !was_complete && hashes > 0 {
+        if !was_finished && hashes > 0 {
             self.record(&LedgerRecord::Credit {
                 id: *id,
                 hashes: hashes.to_string(),
@@ -365,9 +469,33 @@ impl RedemptionLedger {
         }
         Ok(CreditOutcome {
             state,
-            newly_completed: !was_complete && state == RedemptionState::Completed,
+            newly_completed: !was_finished && state == RedemptionState::Completed,
             accumulated_hashes: redemption.accumulated_hashes,
             target_hashes: redemption.target_hashes,
+        })
+    }
+
+    /// Stop crediting `id` and charge it only for the work delivered so
+    /// far; the melt then returns the rest as change. Settling a finished
+    /// redemption changes nothing.
+    pub fn settle(&self, id: &RedemptionId) -> Result<SettleOutcome, LedgerError> {
+        let mut map = self.lock();
+        let redemption = map.get_mut(id).ok_or(LedgerError::Unknown(*id))?;
+        let newly_settled = redemption.settle();
+        if newly_settled {
+            self.record(&LedgerRecord::Settle { id: *id });
+            tracing::info!(
+                redemption = %id,
+                spent_thh = redemption.spent_thh(),
+                change_thh = redemption.change_thh(),
+                "redemption settled"
+            );
+        }
+        Ok(SettleOutcome {
+            state: redemption.state,
+            newly_settled,
+            spent_thh: redemption.spent_thh(),
+            change_thh: redemption.change_thh(),
         })
     }
 
@@ -556,6 +684,114 @@ mod tests {
         let ledger = RedemptionLedger::persistent(&path).unwrap();
         assert_eq!(ledger.active().len(), 1);
         assert!(ledger.get(&id(5)).unwrap().is_complete());
+    }
+
+    #[test]
+    fn settle_charges_delivered_work_rounded_up_above_the_floor() {
+        let ledger = RedemptionLedger::new();
+        let open = |n: u8, amount: u64, floor: u64| {
+            ledger
+                .open(Redemption::new(id(n), amount, "p".into(), "w".into()).with_floor(floor))
+                .unwrap()
+        };
+        // 10 THH, floor 1, 3.5 THH delivered: spent 4, change 6.
+        open(1, 10, 1);
+        ledger
+            .lock()
+            .get_mut(&id(1))
+            .unwrap()
+            .credit_hashes(HASHES_PER_THH * 7 / 2);
+        let s = ledger.settle(&id(1)).unwrap();
+        assert_eq!(
+            s,
+            SettleOutcome {
+                state: RedemptionState::Settled,
+                newly_settled: true,
+                spent_thh: 4,
+                change_thh: 6,
+            }
+        );
+        // Nothing delivered: charged the floor.
+        open(2, 10, 1);
+        assert_eq!(ledger.settle(&id(2)).unwrap().change_thh, 9);
+        // No reserve (floor = amount): settles, but nothing comes back.
+        open(3, 10, 10);
+        assert_eq!(ledger.settle(&id(3)).unwrap().change_thh, 0);
+        // Floor above amount is clamped.
+        assert_eq!(
+            Redemption::new(id(4), 2, "p".into(), "w".into())
+                .with_floor(5)
+                .floor_thh,
+            2
+        );
+    }
+
+    #[test]
+    fn settled_redemption_is_terminal() {
+        let ledger = RedemptionLedger::new();
+        ledger
+            .open(Redemption::new(id(1), 2, "p".into(), "w".into()).with_floor(1))
+            .unwrap();
+        ledger.credit_share(&id(1), 1.0).unwrap();
+        assert!(ledger.settle(&id(1)).unwrap().newly_settled);
+        // Late shares are ignored, so the charge can't move after settle.
+        let late = ledger.credit_share_outcome(&id(1), 1e9).unwrap();
+        assert_eq!(late.state, RedemptionState::Settled);
+        assert!(!late.newly_completed);
+        assert_eq!(late.accumulated_hashes, HASHES_PER_DIFF_ONE);
+        assert!(ledger.active().is_empty(), "settled is not routed");
+        // A second settle is a no-op.
+        let again = ledger.settle(&id(1)).unwrap();
+        assert!(!again.newly_settled);
+        assert_eq!((again.spent_thh, again.change_thh), (1, 1));
+        // Settling a completed redemption leaves it completed, no change.
+        ledger
+            .open(Redemption::new(id(2), 1, "p".into(), "w".into()).with_floor(0))
+            .unwrap();
+        ledger.credit_share(&id(2), 1e9).unwrap();
+        let done = ledger.settle(&id(2)).unwrap();
+        assert_eq!(done.state, RedemptionState::Completed);
+        assert_eq!(done.change_thh, 0);
+        assert_eq!(ledger.settle(&id(9)), Err(LedgerError::Unknown(id(9))));
+    }
+
+    #[test]
+    fn settle_survives_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("redemptions.jsonl");
+        {
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            ledger
+                .open(Redemption::new(id(1), 8, "p".into(), "w".into()).with_floor(1))
+                .unwrap();
+            ledger.lock().get_mut(&id(1)).unwrap().state = RedemptionState::Active;
+            ledger.credit_share(&id(1), 2_000_000.0).unwrap();
+            ledger.settle(&id(1)).unwrap();
+            ledger.credit_share(&id(1), 1e9).unwrap(); // ignored, not journaled
+        }
+        for _ in 0..2 {
+            // Twice: once from the raw journal, once from the compacted one.
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            let r = ledger.get(&id(1)).unwrap();
+            assert_eq!(r.state, RedemptionState::Settled);
+            assert_eq!(r.floor_thh, 1);
+            assert_eq!(r.accumulated_hashes, hashes_for_difficulty(2_000_000.0));
+            assert_eq!((r.spent_thh(), r.change_thh()), (3, 5));
+        }
+    }
+
+    #[test]
+    fn journal_from_before_settling_has_no_reserve() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("redemptions.jsonl");
+        let line = format!(
+            r#"{{"op":"open","id":"{}","amount_thh":4,"pool_url":"p","worker_name":"w"}}"#,
+            id(1)
+        );
+        std::fs::write(&path, line + "\n").unwrap();
+        let ledger = RedemptionLedger::persistent(&path).unwrap();
+        assert_eq!(ledger.get(&id(1)).unwrap().floor_thh, 4);
+        assert_eq!(ledger.settle(&id(1)).unwrap().change_thh, 0);
     }
 
     #[test]

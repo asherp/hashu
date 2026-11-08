@@ -18,6 +18,10 @@
 //! - `GET  /checkout/api/buy/{id}`: quote state; once paid, the token.
 //! - `POST /checkout/api/redeem` `{ token, pool_url, worker_name }`.
 //! - `GET  /checkout/api/redemption/{id}`: progress and delivered work.
+//! - `POST /api/redeem` `{ pool_url, worker_name, amount_thh? }`: the same
+//!   redemption paid over HTTP 402 (Cashu NUT-24): no `X-Cashu` header
+//!   gets a `402` with a payment request, a `cashuB` THH token in
+//!   `X-Cashu` opens the redemption. See [`crate::paid`].
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -26,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::Json;
@@ -36,7 +40,7 @@ use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, State as ProofSpentState, Token};
 use cdk::wallet::{KeysetFilter, MeltOutcome, ReceiveOptions, Wallet};
 use cdk::Amount;
-use hashu_core::redemption::{RedemptionId, RedemptionLedger, RedemptionState, HASHES_PER_THH};
+use hashu_core::redemption::{RedemptionId, RedemptionLedger, HASHES_PER_THH};
 use hashu_mint::melt::{redemption_id_for, METHOD as HASHRATE};
 use hashu_mint::tether::{METHOD as USDT, USDC_METHOD as USDC};
 use hashu_proxy::meter::HashrateMeter;
@@ -45,6 +49,7 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use crate::operator::{ControlledPricer, MintControls};
+use crate::paid::{self, CashuScheme, Credential, Price, Rejection, Scheme};
 
 const PAGE: &str = include_str!("checkout.html");
 /// QR reader plus UR decoder, bundled so pages load nothing from a CDN.
@@ -244,6 +249,14 @@ impl CheckoutState {
     }
 }
 
+impl CheckoutState {
+    /// NUT-24 payments this mint takes: its own THH, named by the URL its
+    /// tokens carry.
+    fn cashu_scheme(&self) -> anyhow::Result<CashuScheme> {
+        Ok(CashuScheme::thh(MintUrl::from_str(&self.public_url)?))
+    }
+}
+
 pub fn router(state: Arc<CheckoutState>) -> axum::Router {
     axum::Router::new()
         .route(
@@ -258,6 +271,7 @@ pub fn router(state: Arc<CheckoutState>) -> axum::Router {
         .route("/checkout/api/token", post(check_token))
         .route("/checkout/api/redeem", post(redeem))
         .route("/checkout/api/redemption/{id}", get(redemption))
+        .route("/api/redeem", post(paid_redeem))
         .with_state(state)
 }
 
@@ -554,26 +568,11 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
         Ok(v) => v,
         Err(e) => return err(StatusCode::BAD_REQUEST, format!("invalid JSON: {e}")),
     };
+    let target = match RedeemTarget::from_json(&v) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
     let raw_token = v["token"].as_str().unwrap_or_default();
-    let pool_url = v["pool_url"]
-        .as_str()
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let worker = v["worker_name"]
-        .as_str()
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if upstream_for_pool_url(&pool_url).is_none() {
-        return err(
-            StatusCode::BAD_REQUEST,
-            "pool must be stratum+tcp://host:port or stratum+ssl://host:port",
-        );
-    }
-    if worker.is_empty() {
-        return err(StatusCode::BAD_REQUEST, "worker name is required");
-    }
     let wallet = match fresh_wallet(&s.internal_url).await {
         Ok(w) => w,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
@@ -595,19 +594,144 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
             format!("redeem at least {} THH", s.min_redeem_thh),
         );
     }
+    spend_for_hashrate(&s, &wallet, checked, &target).await
+}
 
+/// `POST /api/redeem`, paid per NUT-24: redeem a THH voucher sent in the
+/// `X-Cashu` header, as hashrate to the pool in the JSON body
+/// `{ pool_url, worker_name, worker_password?, amount_thh? }`.
+///
+/// Without `X-Cashu` it answers `402` with a NUT-18 request for
+/// `amount_thh` (default: the smallest redemption) in unit `thh` from this
+/// mint. With one, the token must be a `cashuB` token from this mint, in
+/// `thh`, worth at least `amount_thh`, or the answer is `400`. Every
+/// unspent THH in the token is redeemed, so sending more than asked buys
+/// more hashrate rather than tipping the mint.
+pub(crate) async fn paid_redeem(
+    State(s): State<Arc<CheckoutState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let v: Value = if body.iter().all(u8::is_ascii_whitespace) {
+        json!({})
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(v) => v,
+            Err(e) => return err(StatusCode::BAD_REQUEST, format!("invalid JSON: {e}")),
+        }
+    };
+    let target = match RedeemTarget::from_json(&v) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let amount_thh = match &v["amount_thh"] {
+        Value::Null => s.min_redeem_thh,
+        n => match n.as_u64().filter(|a| *a > 0) {
+            Some(a) => a,
+            None => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "amount_thh must be a positive integer",
+                )
+            }
+        },
+    };
+    if amount_thh < s.min_redeem_thh {
+        return err(
+            StatusCode::BAD_REQUEST,
+            format!("redeem at least {} THH", s.min_redeem_thh),
+        );
+    }
+    let price = Price {
+        amount_thh,
+        description: format!(
+            "{amount_thh} THH of hashrate to {} as {}",
+            target.pool_url, target.worker
+        ),
+    };
+    let cashu = match s.cashu_scheme() {
+        Ok(c) => c,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let schemes: [&dyn Scheme; 1] = [&cashu];
+    let raw = match paid::credential(&headers, &schemes) {
+        None => return paid::payment_required(&price, &schemes),
+        Some(Credential::Cashu(raw)) => raw,
+    };
+    if let Err(r) = cashu.accept(&raw, &price) {
+        return r.into_response();
+    }
+    let wallet = match fresh_wallet(&s.internal_url).await {
+        Ok(w) => w,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    // Same checks as the page before anything is spent: the face value
+    // passed, now count only what the mint says is unspent.
+    let checked = match inspect_token(&wallet, &raw).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if checked.unspent_thh < amount_thh {
+        return Rejection::Insufficient {
+            have: checked.unspent_thh,
+            need: amount_thh,
+        }
+        .into_response();
+    }
+    spend_for_hashrate(&s, &wallet, checked, &target).await
+}
+
+/// Where a redemption sends its hashrate.
+pub(crate) struct RedeemTarget {
+    pub pool_url: String,
+    pub worker: String,
+    pub password: Option<String>,
+}
+
+impl RedeemTarget {
+    /// `{ pool_url, worker_name, worker_password? }` from a request body.
+    #[allow(clippy::result_large_err)]
+    fn from_json(v: &Value) -> Result<Self, Response> {
+        let field = |k: &str| v[k].as_str().unwrap_or_default().trim().to_string();
+        let pool_url = field("pool_url");
+        let worker = field("worker_name");
+        if upstream_for_pool_url(&pool_url).is_none() {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "pool must be stratum+tcp://host:port or stratum+ssl://host:port",
+            ));
+        }
+        if worker.is_empty() {
+            return Err(err(StatusCode::BAD_REQUEST, "worker name is required"));
+        }
+        // Optional; the proxy sends `x` without one.
+        let password = Some(field("worker_password")).filter(|p| !p.is_empty());
+        Ok(Self {
+            pool_url,
+            worker,
+            password,
+        })
+    }
+}
+
+/// Melt every unspent proof of `checked` as hashrate to `target`. The
+/// melt quote comes first, so a refusal there leaves the token untouched;
+/// a failure after the proofs are received hands them back as a new token.
+async fn spend_for_hashrate(
+    s: &CheckoutState,
+    wallet: &Wallet,
+    checked: CheckedToken,
+    target: &RedeemTarget,
+) -> Response {
+    let amount = checked.unspent_thh;
+    let pool_url = &target.pool_url;
     let mut request = json!({
         "pool_url": pool_url,
-        "worker_name": worker,
+        "worker_name": target.worker,
         "amount_thh": amount,
         "nonce": hex::encode(rand::random::<[u8; 8]>()),
     });
-    // Optional; the proxy sends `x` without one.
-    if let Some(pw) = v["worker_password"]
-        .as_str()
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-    {
+    if let Some(pw) = &target.password {
         request["worker_password"] = json!(pw);
     }
     let request = request.to_string();
@@ -641,25 +765,30 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
     };
     if received != amount {
         let msg = format!("token held {received} THH, expected {amount}");
-        return refund(&s, &wallet, StatusCode::BAD_REQUEST, msg).await;
+        return refund(s, wallet, StatusCode::BAD_REQUEST, msg).await;
     }
 
     let prepared = match wallet.prepare_melt(&quote.id, HashMap::new()).await {
         Ok(p) => p,
         Err(e) => {
             let msg = format!("redeem failed: {e}");
-            return refund(&s, &wallet, StatusCode::BAD_GATEWAY, msg).await;
+            return refund(s, wallet, StatusCode::BAD_GATEWAY, msg).await;
         }
     };
     match prepared.confirm_prefer_async().await {
         Ok(MeltOutcome::Paid(_)) | Ok(MeltOutcome::Pending(_)) => {}
         Err(e) => {
             let msg = format!("redeem failed: {e}");
-            return refund(&s, &wallet, StatusCode::BAD_GATEWAY, msg).await;
+            return refund(s, wallet, StatusCode::BAD_GATEWAY, msg).await;
         }
     }
     tracing::info!(redemption = %rid, amount_thh = amount, %pool_url, "checkout redemption opened");
-    Json(json!({ "redemption_id": rid.to_string(), "amount_thh": amount })).into_response()
+    Json(json!({
+        "redemption_id": rid.to_string(),
+        "amount_thh": amount,
+        "status_url": format!("/checkout/api/redemption/{rid}"),
+    }))
+    .into_response()
 }
 
 /// Why a pasted token can't be redeemed. `code` is stable for the page;
@@ -968,11 +1097,9 @@ async fn redemption(State(s): State<Arc<CheckoutState>>, Path(id): Path<String>)
             "amount_thh": r.amount_thh,
             "filled_thh": filled,
             "progress": if r.target_hashes == 0 { 1.0 } else { (r.accumulated_hashes as f64 / r.target_hashes as f64).min(1.0) },
-            "state": match r.state {
-                RedemptionState::Pending => "pending",
-                RedemptionState::Active => "active",
-                RedemptionState::Completed => "completed",
-            },
+            "state": r.state.as_str(),
+            "spent_thh": r.is_finished().then(|| r.spent_thh()),
+            "change_thh": r.is_finished().then(|| r.change_thh()),
             "track": track,
             "now_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or_default(),
         })),
@@ -1014,5 +1141,231 @@ mod tests {
         assert!(is_thh(&CurrencyUnit::Custom("thh".into())));
         assert!(is_thh(&CurrencyUnit::Custom("THH".into())));
         assert!(!is_thh(&CurrencyUnit::Sat));
+    }
+
+    /// A whole mint in-process: THH unit, the `hashrate` melt and a fake
+    /// Lightning rail, its API on a loopback port, and the checkout state
+    /// the handlers run on.
+    mod live {
+        use super::super::*;
+        use axum::http::HeaderValue;
+        use cdk::mint::{MintBuilder, MintMeltLimits, UnitConfig};
+        use hashu_mint::lightning::add_lightning_issuance;
+        use hashu_mint::melt::HashrateMelter;
+        use hashu_mint::payment::{thh_unit, ThhIssuer};
+        use hashu_mint::pricing::{PricingError, ThhPricer};
+        use hashu_proxy::ProxyMetrics;
+
+        #[derive(Debug)]
+        struct TenSatsPerThh;
+        impl ThhPricer for TenSatsPerThh {
+            fn price(&self, amount_thh: u64) -> Result<u64, PricingError> {
+                Ok(amount_thh * 10)
+            }
+        }
+
+        async fn start() -> Arc<CheckoutState> {
+            let ledger = Arc::new(RedemptionLedger::new());
+            let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+            let mut builder = MintBuilder::new(db.clone());
+            builder
+                .configure_unit(
+                    thh_unit(),
+                    UnitConfig {
+                        amounts: crate::mint::DENOMS.to_vec(),
+                        input_fee_ppk: 0,
+                    },
+                )
+                .unwrap();
+            builder
+                .add_payment_processor(
+                    thh_unit(),
+                    PaymentMethod::Custom(HASHRATE.into()),
+                    MintMeltLimits::new(1, 1000),
+                    Arc::new(HashrateMelter::new(ledger.clone())),
+                )
+                .await
+                .unwrap();
+            // Sell uncapped: there are no rentals in a test.
+            let capacity = Arc::new(hashu_mint::capacity::CapacityBook::new());
+            capacity.set_limit(Some(false));
+            let controls = Arc::new(MintControls::with_capacity(0, capacity));
+            let pricer = Arc::new(ControlledPricer::new(
+                Arc::new(TenSatsPerThh),
+                controls.clone(),
+            ));
+            let node = cdk_fake_wallet::FakeWallet::new(
+                cdk::types::FeeReserve {
+                    min_fee_reserve: 1.into(),
+                    percent_fee_reserve: 0.0,
+                },
+                Default::default(),
+                Default::default(),
+                2,
+                CurrencyUnit::Sat,
+            );
+            let issuer = ThhIssuer::new(pricer.clone(), Arc::new(node), CurrencyUnit::Sat);
+            builder = add_lightning_issuance(builder, issuer, MintMeltLimits::new(1, 1000))
+                .await
+                .unwrap();
+            let mut info = builder.current_mint_info();
+            let hashrate = PaymentMethod::Custom(HASHRATE.into());
+            info.nuts.nut04.methods.retain(|m| m.method != hashrate);
+            info.nuts.nut05.methods.retain(|m| m.method == hashrate);
+            builder = builder.with_mint_info(info);
+            let seed: [u8; 64] = std::array::from_fn(|_| rand::random());
+            let mint = Arc::new(builder.build_with_seed(db, &seed).await.unwrap());
+            mint.start().await.unwrap();
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let app = cdk_axum::create_mint_router(
+                mint.clone(),
+                vec![HASHRATE.to_string(), "bolt11".into()],
+            )
+            .await
+            .unwrap();
+            tokio::spawn(async move { axum::serve(listener, app).await });
+
+            let meter = Arc::new(HashrateMeter::new(
+                Arc::new(ProxyMetrics::default()),
+                ledger.clone(),
+                Duration::from_secs(60),
+            ));
+            Arc::new(CheckoutState::new(
+                url.clone(),
+                url,
+                controls,
+                Some(pricer),
+                None,
+                vec!["bolt11".into()],
+                1,
+                1000,
+                ledger,
+                mint,
+                meter,
+            ))
+        }
+
+        async fn token(s: &CheckoutState, thh: u64) -> String {
+            operator_test_mint(s, &s.mint, thh).await.unwrap().0
+        }
+
+        fn body(amount_thh: Option<u64>) -> Bytes {
+            let mut v = json!({
+                "pool_url": "stratum+tcp://pool.example:3333",
+                "worker_name": "alice.rig1",
+            });
+            if let Some(a) = amount_thh {
+                v["amount_thh"] = json!(a);
+            }
+            Bytes::from(v.to_string())
+        }
+
+        fn paying(token: &str) -> HeaderMap {
+            let mut h = HeaderMap::new();
+            h.insert(paid::X_CASHU, HeaderValue::from_str(token).unwrap());
+            h
+        }
+
+        async fn call(
+            s: &Arc<CheckoutState>,
+            h: HeaderMap,
+            b: Bytes,
+        ) -> (StatusCode, HeaderMap, Value) {
+            let r = paid_redeem(State(s.clone()), h, b).await;
+            let (parts, body) = r.into_parts();
+            let bytes = axum::body::to_bytes(body, 1 << 20).await.unwrap();
+            (
+                parts.status,
+                parts.headers,
+                serde_json::from_slice(&bytes).unwrap(),
+            )
+        }
+
+        async fn unspent(s: &CheckoutState, t: &str) -> u64 {
+            let w = fresh_wallet(&s.internal_url).await.unwrap();
+            match inspect_token(&w, t).await {
+                Ok(c) => c.unspent_thh,
+                Err(_) => 0,
+            }
+        }
+
+        #[tokio::test]
+        async fn unpaid_request_gets_a_402_for_this_mint() {
+            let s = start().await;
+            let (code, h, v) = call(&s, HeaderMap::new(), body(Some(3))).await;
+            assert_eq!(code, StatusCode::PAYMENT_REQUIRED, "{v}");
+            let req =
+                cdk::nuts::nut18::PaymentRequest::from_str(h["x-cashu"].to_str().unwrap()).unwrap();
+            assert_eq!(req.amount, Some(Amount::from(3)));
+            assert_eq!(req.unit, Some(thh_unit()));
+            assert_eq!(req.mints, vec![MintUrl::from_str(&s.public_url).unwrap()]);
+            assert!(req.transports.is_empty());
+            // No amount: the smallest redemption.
+            let (_, h, _) = call(&s, HeaderMap::new(), body(None)).await;
+            let req =
+                cdk::nuts::nut18::PaymentRequest::from_str(h["x-cashu"].to_str().unwrap()).unwrap();
+            assert_eq!(req.amount, Some(Amount::from(1)));
+            // A bad target is a 400 before any payment is asked for.
+            let bad = Bytes::from(json!({ "pool_url": "nope", "worker_name": "w" }).to_string());
+            assert_eq!(
+                call(&s, HeaderMap::new(), bad).await.0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+
+        #[tokio::test]
+        async fn x_cashu_token_opens_the_redemption() {
+            let s = start().await;
+            let t = token(&s, 4).await;
+            let (code, _, v) = call(&s, paying(&t), body(Some(4))).await;
+            assert_eq!(code, StatusCode::OK, "{v}");
+            assert_eq!(v["amount_thh"], 4);
+            let rid = parse_id(v["redemption_id"].as_str().unwrap()).unwrap();
+            let r = s.ledger.get(&rid).expect("redemption in the ledger");
+            assert_eq!(r.amount_thh, 4);
+            assert_eq!(r.pool_url, "stratum+tcp://pool.example:3333");
+            assert_eq!(r.worker_name, "alice.rig1");
+            assert_eq!(unspent(&s, &t).await, 0);
+            // The same token again is spent: 400, no second redemption.
+            let (code, _, v) = call(&s, paying(&t), body(Some(4))).await;
+            assert_eq!(code, StatusCode::BAD_REQUEST, "{v}");
+            assert_eq!(s.ledger.all().len(), 1);
+        }
+
+        #[tokio::test]
+        async fn overpaying_redeems_the_whole_token() {
+            let s = start().await;
+            let t = token(&s, 6).await;
+            let (code, _, v) = call(&s, paying(&t), body(Some(2))).await;
+            assert_eq!(code, StatusCode::OK, "{v}");
+            assert_eq!(v["amount_thh"], 6);
+        }
+
+        #[tokio::test]
+        async fn short_or_foreign_tokens_get_400_and_stay_unspent() {
+            let s = start().await;
+            let t = token(&s, 2).await;
+            let (code, _, v) = call(&s, paying(&t), body(Some(3))).await;
+            assert_eq!(code, StatusCode::BAD_REQUEST);
+            assert_eq!(v["code"], "insufficient");
+            // Same proofs, other mint URL: not in `m`.
+            let tok = Token::from_str(&t).unwrap();
+            let w = fresh_wallet(&s.internal_url).await.unwrap();
+            let keysets = w.get_mint_keysets(KeysetFilter::All).await.unwrap();
+            let moved = Token::new(
+                MintUrl::from_str("https://other.example").unwrap(),
+                tok.proofs(&keysets).unwrap(),
+                None,
+                thh_unit(),
+            )
+            .to_string();
+            let (code, _, v) = call(&s, paying(&moved), body(Some(1))).await;
+            assert_eq!(code, StatusCode::BAD_REQUEST);
+            assert_eq!(v["code"], "wrong_mint");
+            assert_eq!(unspent(&s, &t).await, 2);
+            assert!(s.ledger.all().is_empty());
+        }
     }
 }

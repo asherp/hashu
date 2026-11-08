@@ -201,7 +201,7 @@ hashu mint run \
 
 | Port | What |
 |---|---|
-| `0.0.0.0:8085` (`--listen`) | Cashu mint API: `/v1/info`, `/v1/keys`, `/v1/mint/quote/{bolt11,usdt,usdc}`, `/v1/melt/quote/hashrate`, …, and the buyer **checkout page** at `/checkout/` |
+| `0.0.0.0:8085` (`--listen`) | Cashu mint API: `/v1/info`, `/v1/keys`, `/v1/mint/quote/{bolt11,usdt,usdc}`, `/v1/melt/quote/hashrate`, …, the buyer **checkout page** at `/checkout/`, and the NUT-24 paid redeem endpoint `POST /api/redeem` |
 | `0.0.0.0:3333` (`--stratum-bind`) | Stratum proxy for miners |
 | `127.0.0.1:3334` (`--control-bind`) | **Operator GUI** at `/`, its API under `/api/`, and the control API: `GET /status`, `GET /redemptions/{id}/root`, `GET /redemptions/{id}/proof/{n}` |
 
@@ -212,8 +212,8 @@ hashu mint run \
   `--usdc-deposit` is set, as methods `usdt` and `usdc`. Each coin has its
   own chain: USDT defaults to Ethereum mainnet (12 confirmations), USDC to
   Circle's native USDC on Base (30 confirmations); change one with
-  `--usdc-token`, `--usdc-rpc`, `--usdc-chain-id` (same for `usdt`). Open quotes are kept in `<data-dir>/{usdt,usdc}-quotes.json`
-  so a restart loses none. Price both with `--usdt-per-thh 0.05` or derive
+  `--usdc-token`, `--usdc-rpc`, `--usdc-chain-id` (same for `usdt`).
+  Open quotes are kept in `<data-dir>/{usdt,usdc}-quotes.json` so a restart loses none. Price both with `--usdt-per-thh 0.05` or derive
   it from sats with `--usd-per-btc`.
 - **Price** (`--price mrr|esplora|fixed`): MRR rental floor by default;
   `--sats-per-thh` is the fixed price, and the fallback while a live
@@ -222,6 +222,25 @@ hashu mint run \
   `{"pool_url", "worker_name", "amount_thh", "nonce"?}`. The proxy routes
   miners to that pool under that worker until the amount is filled, then
   the melt turns `PAID`. `--upstream` is where miners go otherwise.
+- **Redeem over HTTP 402** ([NUT-24](https://github.com/cashubtc/nuts/blob/main/24.md)):
+  `POST /api/redeem` with `{"pool_url", "worker_name", "worker_password"?, "amount_thh"?}`.
+  Without payment it answers `402 Payment Required` and an `X-Cashu`
+  header holding a NUT-18 request (`creqA…`: `a` = `amount_thh`, default
+  the smallest redemption; `u` = `thh`; `m` = this mint). Retry with a
+  `cashuB…` THH token in `X-Cashu` to open the redemption; the reply has
+  `redemption_id` and a `status_url`. A token from another mint, in
+  another unit or worth less than `a` gets `400`. The whole unspent token
+  is redeemed, so paying more buys more hashrate. Any NUT-24 client
+  works, and so does `curl`:
+
+  ```bash
+  body='{"pool_url":"stratum+tcp://pool.example:3333","worker_name":"me.rig1","amount_thh":2}'
+  curl -si -X POST https://mint.hashu.io/api/redeem -d "$body"          # 402 + X-Cashu: creqA…
+  curl -s  -X POST https://mint.hashu.io/api/redeem -d "$body" -H "X-Cashu: cashuB…"
+  ```
+
+  The 402 plumbing (`hashu-cli/src/paid.rs`) takes any number of payment
+  schemes, so L402 can be added next to Cashu on the same endpoint.
 - State lives in `--data-dir` (`mint.sqlite`, `seed.hex`, plus
   `redemptions.jsonl` and `share-audit.jsonl`). Open redemptions and their
   share trees are replayed on startup, so a restart resumes them.
