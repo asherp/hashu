@@ -195,6 +195,8 @@ struct Checkout {
     price: Option<u64>,
     request: String,
     token: Option<String>,
+    /// The token as English words (see [`crate::words`]), made once.
+    token_words: Option<String>,
     started: Instant,
 }
 
@@ -470,6 +472,7 @@ async fn buy(State(s): State<Arc<CheckoutState>>, body: Bytes) -> Response {
         price,
         request: quote.1.clone(),
         token: None,
+        token_words: None,
         started: Instant::now(),
     };
     let body = checkout_json(&id, &c, "unpaid");
@@ -503,6 +506,7 @@ fn checkout_json(id: &str, c: &Checkout, state: &str) -> Value {
         "state": state,
         "token": c.token,
         "token_qr": c.token.as_deref().map(token_qr_frames),
+        "token_words": c.token_words,
     })
 }
 
@@ -558,7 +562,9 @@ async fn buy_status(State(s): State<Arc<CheckoutState>>, Path(id): Path<String>)
         Some("Hashu THH".into()),
         CurrencyUnit::Custom("thh".into()),
     );
-    c.token = Some(token.to_string());
+    let token = token.to_string();
+    c.token_words = crate::words::to_words(&token);
+    c.token = Some(token);
     tracing::info!(quote = %id, amount_thh = c.amount_thh, "checkout paid; token issued");
     Json(checkout_json(&id, &c, "issued")).into_response()
 }
@@ -818,7 +824,7 @@ impl TokenIssue {
     fn message(self) -> &'static str {
         match self {
             Self::Empty => "Paste or scan a Cashu token.",
-            Self::NotToken => "That isn't a Cashu token. Copy the cashuB… text from your wallet's send screen.",
+            Self::NotToken => "That isn't a Cashu token. Copy the cashuB… text from your wallet's send screen, or paste the voucher's words in full.",
             Self::NotThh => "This token isn't THH, so it can't be redeemed for hashrate here.",
             Self::WrongMint => "This token is from a different mint.",
             Self::Spent => "This token is already spent. If your wallet claimed it, send a fresh token from the wallet.",
@@ -862,6 +868,8 @@ pub(crate) struct CheckedToken {
     pub unspent_thh: u64,
     pub unspent: cdk::nuts::Proofs,
     pub memo: Option<String>,
+    /// Set when the token was pasted as words: how many parity repaired.
+    pub repaired_words: Option<usize>,
 }
 
 /// Parse a pasted token and ask the mint (NUT-07) which of its proofs are
@@ -872,8 +880,13 @@ pub(crate) async fn inspect_token(wallet: &Wallet, raw: &str) -> Result<CheckedT
     if raw.trim().is_empty() {
         return problem(TokenIssue::Empty);
     }
-    let Some(text) = extract_token(raw) else {
-        return problem(TokenIssue::NotToken);
+    // A pasted token, or the same token as Glossia words.
+    let (text, repaired_words) = match extract_token(raw) {
+        Some(t) => (t, None),
+        None => match crate::words::from_words(raw) {
+            Some(w) => (w.token, Some(w.repaired)),
+            None => return problem(TokenIssue::NotToken),
+        },
     };
     let token = match Token::from_str(&text) {
         Ok(t) => t,
@@ -920,6 +933,7 @@ pub(crate) async fn inspect_token(wallet: &Wallet, raw: &str) -> Result<CheckedT
         unspent_thh,
         unspent,
         memo: token.memo().clone(),
+        repaired_words,
     })
 }
 
@@ -943,6 +957,8 @@ pub(crate) async fn check_token(State(s): State<Arc<CheckoutState>>, body: Bytes
         "memo": c.memo,
         "min_redeem_thh": s.min_redeem_thh,
         "redeemable": !below_min,
+        "from_words": c.repaired_words.is_some(),
+        "repaired_words": c.repaired_words,
     }))
     .into_response()
 }
@@ -991,6 +1007,7 @@ async fn refund(s: &CheckoutState, wallet: &Wallet, status: StatusCode, msg: Str
         status,
         Json(json!({
             "error": format!("{msg}. Your THH is safe: the token box now holds a fresh token for it (the old one is spent)."),
+            "refund_words": crate::words::to_words(&token),
             "refund_token": token,
         })),
     )
@@ -1289,6 +1306,25 @@ mod tests {
                 Ok(c) => c.unspent_thh,
                 Err(_) => 0,
             }
+        }
+
+        #[tokio::test]
+        async fn a_voucher_pasted_as_words_checks_and_redeems() {
+            let s = start().await;
+            let t = token(&s, 10).await;
+            let words = crate::words::to_words(&t).unwrap();
+            assert!(!words.contains("cashu"));
+            let r = check_token(
+                State(s.clone()),
+                Bytes::from(json!({ "token": format!("Here you go:\n\n{words}") }).to_string()),
+            )
+            .await;
+            let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+            let v: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(v["amount_thh"], 10, "{v}");
+            assert_eq!(v["from_words"], true);
+            assert_eq!(v["repaired_words"], 0);
+            assert_eq!(unspent(&s, &words).await, 10);
         }
 
         #[tokio::test]

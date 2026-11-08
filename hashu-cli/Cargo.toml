@@ -46,3 +46,6 @@ rand = "0.8"
 qrcode = { version = "0.14", default-features = false }
 crc32fast = "1"
 ciborium = "0.2"
+# THH vouchers as English words (see src/words.rs). No nlprule or image.
+glossia = { version = "0.6", default-features = false }
+base64 = "0.22"

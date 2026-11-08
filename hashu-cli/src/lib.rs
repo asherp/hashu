@@ -24,3 +24,4 @@ pub mod paid;
 pub mod proxy;
 mod ur;
 pub mod wallet;
+pub mod words;
