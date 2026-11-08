@@ -42,7 +42,7 @@ use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, State as ProofSpentState, Token};
-use cdk::wallet::{KeysetFilter, MeltOutcome, ReceiveOptions, Wallet};
+use cdk::wallet::{KeysetFilter, Wallet};
 use cdk::Amount;
 use hashu_core::redemption::{RedemptionId, RedemptionLedger, HASHES_PER_THH};
 use hashu_mint::melt::{redemption_id_for, METHOD as HASHRATE};
@@ -69,6 +69,23 @@ pub(crate) async fn scan_js() -> Response {
             (header::CACHE_CONTROL, "public, max-age=3600"),
         ],
         SCAN_JS,
+    )
+        .into_response()
+}
+
+/// The browser-side change wallet (secp256k1 blinding, NUT-09 unblinding,
+/// cashuB encoding, QR), built from `assets/change.src.js`. The checkout
+/// loads it to make blank outputs and the order page to unblind change, so
+/// the keys to the change never leave the browser.
+pub(crate) const CHANGE_JS: &str = include_str!("assets/change.js");
+
+pub(crate) async fn change_js() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        CHANGE_JS,
     )
         .into_response()
 }
@@ -274,6 +291,7 @@ pub fn router(state: Arc<CheckoutState>) -> axum::Router {
         )
         .route("/checkout/", get(page))
         .route("/checkout/scan.js", get(scan_js))
+        .route("/checkout/change.js", get(change_js))
         .route("/checkout/api/info", get(info))
         .route("/checkout/api/buy", post(buy))
         .route("/checkout/api/buy/{id}", get(buy_status))
@@ -295,13 +313,7 @@ fn err(code: StatusCode, msg: impl ToString) -> Response {
 }
 
 async fn fresh_wallet(url: &str) -> anyhow::Result<Wallet> {
-    wallet_with_seed(url, std::array::from_fn(|_| rand::random())).await
-}
-
-/// A wallet with an empty in-memory store and the given seed. Its outputs
-/// are derived from the seed (NUT-13), so a later wallet with the same seed
-/// can restore them.
-async fn wallet_with_seed(url: &str, seed: [u8; 64]) -> anyhow::Result<Wallet> {
+    let seed: [u8; 64] = std::array::from_fn(|_| rand::random());
     let db = cdk_sqlite::wallet::memory::empty().await?;
     Ok(Wallet::new(
         url,
@@ -589,17 +601,16 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
         Ok(t) => t,
         Err(r) => return r,
     };
+    let blanks = match blank_outputs(&v) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
     let raw_token = v["token"].as_str().unwrap_or_default();
-    // Keep the seed: the melt's blank outputs come from it, and so does any
-    // change the mint signs on them.
-    let seed: [u8; 64] = std::array::from_fn(|_| rand::random());
-    let wallet = match wallet_with_seed(&s.internal_url, seed).await {
+    let wallet = match fresh_wallet(&s.internal_url).await {
         Ok(w) => w,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
     };
-    // Refuse a token we can't redeem before taking it: once its proofs are
-    // received they belong to a throwaway wallet, so a later refusal would
-    // lose the buyer's THH.
+    // Refuse a token we can't redeem before spending any of it.
     let checked = match inspect_token(&wallet, raw_token).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
@@ -614,12 +625,37 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
             format!("redeem at least {} THH", s.min_redeem_thh),
         );
     }
-    spend_for_hashrate(&s, &wallet, seed, checked, &target).await
+    spend_for_hashrate(&s, &wallet, checked, &target, blanks).await
+}
+
+/// Most blank outputs a redemption may send: enough for change up to 2^64.
+const MAX_BLANKS: usize = 64;
+
+/// The optional `outputs` field: NUT-08 blank outputs made by the
+/// redeemer's own wallet (the checkout page makes them in the browser).
+/// The mint signs the redemption's change on them, so only their maker can
+/// unblind it. Without them, an early settle returns nothing.
+fn blank_outputs(v: &Value) -> Result<Option<Vec<cdk::nuts::BlindedMessage>>, Response> {
+    match &v["outputs"] {
+        Value::Null => Ok(None),
+        o => {
+            let outs: Vec<cdk::nuts::BlindedMessage> = serde_json::from_value(o.clone())
+                .map_err(|e| err(StatusCode::BAD_REQUEST, format!("bad outputs: {e}")))?;
+            if outs.len() > MAX_BLANKS {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    format!("at most {MAX_BLANKS} blank outputs"),
+                ));
+            }
+            Ok((!outs.is_empty()).then_some(outs))
+        }
+    }
 }
 
 /// `POST /api/redeem`, paid per NUT-24: redeem a THH voucher sent in the
 /// `X-Cashu` header, as hashrate to the pool in the JSON body
-/// `{ pool_url, worker_name, worker_password?, amount_thh? }`.
+/// `{ pool_url, worker_name, worker_password?, amount_thh?, outputs? }`,
+/// where `outputs` are blank outputs for change (see [`blank_outputs`]).
 ///
 /// Without `X-Cashu` it answers `402` with a NUT-18 request for
 /// `amount_thh` (default: the smallest redemption) in unit `thh` from this
@@ -642,6 +678,10 @@ pub(crate) async fn paid_redeem(
     };
     let target = match RedeemTarget::from_json(&v) {
         Ok(t) => t,
+        Err(r) => return r,
+    };
+    let blanks = match blank_outputs(&v) {
+        Ok(b) => b,
         Err(r) => return r,
     };
     let amount_thh = match &v["amount_thh"] {
@@ -681,8 +721,7 @@ pub(crate) async fn paid_redeem(
     if let Err(r) = cashu.accept(&raw, &price) {
         return r.into_response();
     }
-    let seed: [u8; 64] = std::array::from_fn(|_| rand::random());
-    let wallet = match wallet_with_seed(&s.internal_url, seed).await {
+    let wallet = match fresh_wallet(&s.internal_url).await {
         Ok(w) => w,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
     };
@@ -699,7 +738,7 @@ pub(crate) async fn paid_redeem(
         }
         .into_response();
     }
-    spend_for_hashrate(&s, &wallet, seed, checked, &target).await
+    spend_for_hashrate(&s, &wallet, checked, &target, blanks).await
 }
 
 /// Where a redemption sends its hashrate.
@@ -741,10 +780,9 @@ impl RedeemTarget {
 async fn spend_for_hashrate(
     s: &CheckoutState,
     wallet: &Wallet,
-    // The wallet's seed, kept on the order so its change can be restored.
-    seed: [u8; 64],
     checked: CheckedToken,
     target: &RedeemTarget,
+    blanks: Option<Vec<cdk::nuts::BlindedMessage>>,
 ) -> Response {
     let amount = checked.unspent_thh;
     let pool_url = &target.pool_url;
@@ -768,54 +806,34 @@ async fn spend_for_hashrate(
         Ok(q) => q,
         Err(e) => return err(StatusCode::BAD_GATEWAY, format!("redeem quote failed: {e}")),
     };
-
-    // Receive only the proofs the mint still counts as unspent, so a
-    // partly spent token redeems what is left of it.
-    let proofs = checked.unspent;
-    let received = match wallet
-        .receive_proofs(proofs, ReceiveOptions::default(), None, None)
-        .await
-    {
-        Ok(a) => u64::from(a),
-        Err(e) => {
-            return err(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "token rejected: {e}. If your wallet already claimed it, send a fresh token from the wallet"
-                ),
-            )
-        }
+    let quote_id = match cdk::mint::QuoteId::from_str(&quote.id) {
+        Ok(q) => q,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
     };
-    if received != amount {
-        let msg = format!("token held {received} THH, expected {amount}");
-        return refund(s, wallet, StatusCode::BAD_REQUEST, msg).await;
-    }
-
-    let prepared = match wallet.prepare_melt(&quote.id, HashMap::new()).await {
-        Ok(p) => p,
-        Err(e) => {
-            let msg = format!("redeem failed: {e}");
-            return refund(s, wallet, StatusCode::BAD_GATEWAY, msg).await;
-        }
-    };
-    match prepared.confirm_prefer_async().await {
-        Ok(MeltOutcome::Paid(_)) | Ok(MeltOutcome::Pending(_)) => {}
-        Err(e) => {
-            let msg = format!("redeem failed: {e}");
-            return refund(s, wallet, StatusCode::BAD_GATEWAY, msg).await;
-        }
+    // Melt the token's unspent proofs as they are, with the redeemer's
+    // blanks. Nothing passes through a server-side wallet, so the server
+    // never holds the redeemer's THH or the keys to its change, and a
+    // refused melt leaves the token spendable.
+    let with_change = blanks.is_some();
+    let melt = cdk::nuts::MeltRequest::new(quote_id, checked.unspent, blanks);
+    if let Err(e) = s.mint.melt(&melt).await {
+        return err(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "redeem failed: {e}. If your wallet already spent this token, send a fresh one"
+            ),
+        );
     }
     let order_id = new_order_id();
     s.orders.insert(Order {
         order_id: order_id.clone(),
         redemption_id: rid,
         quote_id: quote.id.clone(),
-        seed_hex: hex::encode(seed),
         created_ms: now_ms(),
-        change_token: None,
-        change_thh: None,
+        with_change,
+        finalized: false,
     });
-    tracing::info!(redemption = %rid, amount_thh = amount, %pool_url, "checkout redemption opened");
+    tracing::info!(redemption = %rid, amount_thh = amount, %pool_url, with_change, "checkout redemption opened");
     Json(json!({
         "redemption_id": rid.to_string(),
         "amount_thh": amount,
@@ -1004,34 +1022,6 @@ fn is_thh(unit: &CurrencyUnit) -> bool {
     matches!(unit, CurrencyUnit::Custom(u) if u.eq_ignore_ascii_case("thh"))
 }
 
-/// A redeem failed after its token was received: hand the THH back as a
-/// fresh token so it isn't stranded in the throwaway wallet.
-async fn refund(s: &CheckoutState, wallet: &Wallet, status: StatusCode, msg: String) -> Response {
-    let proofs = match wallet.get_unspent_proofs().await {
-        Ok(p) if !p.is_empty() => p,
-        _ => return err(status, msg),
-    };
-    let Ok(mint_url) = MintUrl::from_str(&s.public_url) else {
-        return err(status, msg);
-    };
-    let token = Token::new(
-        mint_url,
-        proofs,
-        Some("Hashu THH".into()),
-        CurrencyUnit::Custom("thh".into()),
-    )
-    .to_string();
-    tracing::warn!(error = %msg, "checkout redeem failed after receiving the token; returned a new one");
-    (
-        status,
-        Json(json!({
-            "error": format!("{msg}. Your THH is safe: the token box now holds a fresh token for it (the old one is spent)."),
-            "refund_token": token,
-        })),
-    )
-        .into_response()
-}
-
 /// Mint `amount_thh` of test THH without a payment, for the operator to
 /// rehearse a redemption on a live mint. It opens a mint quote on the first
 /// rail and marks it paid from inside the mint, so cdk's books stay
@@ -1155,10 +1145,10 @@ async fn order(State(s): State<Arc<CheckoutState>>, Path(order_id): Path<String>
         )
             .into_response();
     };
-    let change = match claim_change(&s, &o).await {
+    let change = match change_state(&s, &o).await {
         Ok(c) => c,
         Err(e) => {
-            tracing::warn!(order = %order_id, error = %e, "claiming change failed; will retry");
+            tracing::warn!(order = %order_id, error = %e, "finalizing the melt failed; will retry");
             Change::Waiting
         }
     };
@@ -1166,11 +1156,12 @@ async fn order(State(s): State<Arc<CheckoutState>>, Path(order_id): Path<String>
         Change::Open => json!({ "state": "open" }),
         Change::Waiting => json!({ "state": "waiting" }),
         Change::None => json!({ "state": "none", "thh": 0 }),
-        Change::Ready { thh, token } => json!({
+        Change::Unclaimable { thh } => json!({ "state": "unclaimable", "thh": thh }),
+        Change::Ready { thh } => json!({
             "state": "ready",
             "thh": thh,
-            "token_qr": token_qr_frames(&token),
-            "token": token,
+            "mint_url": s.public_url,
+            "unit": "thh",
         }),
     };
     redemption["order_id"] = json!(order_id);
@@ -1178,7 +1169,9 @@ async fn order(State(s): State<Arc<CheckoutState>>, Path(order_id): Path<String>
     ([(header::CACHE_CONTROL, "no-store")], Json(redemption)).into_response()
 }
 
-/// Where an order's change stands.
+/// Where an order's change stands. The server only reports it: the change
+/// is signed on the redeemer's blanks, and the order page restores and
+/// unblinds it in the browser (NUT-09) with a key the server never sees.
 #[derive(Debug, PartialEq, Eq)]
 enum Change {
     /// The redemption is still running.
@@ -1187,67 +1180,42 @@ enum Change {
     Waiting,
     /// It ended with nothing to return.
     None,
-    Ready { thh: u64, token: String },
+    /// `thh` came back, signed on the redeemer's blanks.
+    Ready { thh: u64 },
+    /// `thh` was undelivered, but the redemption sent no blanks to sign it on.
+    Unclaimable { thh: u64 },
 }
 
-/// Finalize the order's melt and, if it returned change, restore the
-/// change proofs from the order's wallet seed and keep them as a token.
-async fn claim_change(s: &CheckoutState, o: &Order) -> anyhow::Result<Change> {
+/// Make sure the mint has finalized the order's melt (so the change is
+/// signed), and say what came back.
+async fn change_state(s: &CheckoutState, o: &Order) -> anyhow::Result<Change> {
     let Some(r) = s.ledger.get(&o.redemption_id) else {
         return Ok(Change::Waiting);
     };
     if !r.is_finished() {
         return Ok(Change::Open);
     }
-    let _one_at_a_time = s.orders.claim.lock().await;
-    let o = s.orders.get(&o.order_id).unwrap_or_else(|| o.clone());
-    match (o.change_thh, &o.change_token) {
-        (Some(thh), Some(token)) => {
-            return Ok(Change::Ready {
-                thh,
-                token: token.clone(),
-            })
+    if !o.finalized {
+        // cdk finalizes a pending melt while checking it, but answers with
+        // the state it read first: the second check reports the outcome.
+        let quote = cdk::mint::QuoteId::from_str(&o.quote_id)?;
+        let mut state = cdk::nuts::MeltQuoteState::Unknown;
+        for _ in 0..2 {
+            state = s.mint.check_melt_quote(&quote).await?.state;
+            if state == cdk::nuts::MeltQuoteState::Paid {
+                break;
+            }
         }
-        (Some(_), None) => return Ok(Change::None),
-        _ => {}
-    }
-    // cdk finalizes a pending melt while checking it, but answers with the
-    // state it read first: the second check reports the outcome.
-    let quote = cdk::mint::QuoteId::from_str(&o.quote_id)?;
-    let mut state = cdk::nuts::MeltQuoteState::Unknown;
-    for _ in 0..2 {
-        state = s.mint.check_melt_quote(&quote).await?.state;
-        if state == cdk::nuts::MeltQuoteState::Paid {
-            break;
+        if state != cdk::nuts::MeltQuoteState::Paid {
+            return Ok(Change::Waiting);
         }
+        s.orders.set_finalized(&o.order_id);
     }
-    if state != cdk::nuts::MeltQuoteState::Paid {
-        return Ok(Change::Waiting);
-    }
-    if r.change_thh() == 0 {
-        s.orders.set_change(&o.order_id, 0, None);
-        return Ok(Change::None);
-    }
-    let seed = o
-        .seed()
-        .ok_or_else(|| anyhow::anyhow!("order has a bad wallet seed"))?;
-    let wallet = wallet_with_seed(&s.internal_url, seed).await?;
-    wallet.restore().await?;
-    let proofs = wallet.get_unspent_proofs().await?;
-    let thh: u64 = proofs.iter().map(|p| u64::from(p.amount)).sum();
-    if thh == 0 {
-        return Ok(Change::Waiting);
-    }
-    let token = Token::new(
-        MintUrl::from_str(&s.public_url)?,
-        proofs,
-        Some("Hashu THH change".into()),
-        CurrencyUnit::Custom("thh".into()),
-    )
-    .to_string();
-    tracing::info!(order = %o.order_id, redemption = %o.redemption_id, change_thh = thh, "claimed redemption change");
-    s.orders.set_change(&o.order_id, thh, Some(token.clone()));
-    Ok(Change::Ready { thh, token })
+    Ok(match r.change_thh() {
+        0 => Change::None,
+        thh if o.with_change => Change::Ready { thh },
+        thh => Change::Unclaimable { thh },
+    })
 }
 
 /// A redemption's progress for the page, or `None` if unknown.
@@ -1488,7 +1456,16 @@ mod tests {
             assert_eq!(code, StatusCode::OK, "{v}");
             assert_eq!(v["amount_thh"], 4);
             let rid = parse_id(v["redemption_id"].as_str().unwrap()).unwrap();
-            let r = s.ledger.get(&rid).expect("redemption in the ledger");
+            // The melt opens the redemption in the background.
+            let mut r = None;
+            for _ in 0..100 {
+                r = s.ledger.get(&rid);
+                if r.is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            let r = r.expect("redemption in the ledger");
             assert_eq!(r.amount_thh, 4);
             assert_eq!(r.pool_url, "stratum+tcp://pool.example:3333");
             assert_eq!(r.worker_name, "alice.rig1");

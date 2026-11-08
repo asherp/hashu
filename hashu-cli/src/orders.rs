@@ -1,22 +1,18 @@
 //! Redemption orders made from the checkout page.
 //!
-//! The checkout redeems a pasted token from a throwaway cdk wallet, and that
-//! wallet also makes the melt's blank outputs. When a redemption settles
-//! early, the mint signs change on those blanks, and only that wallet's seed
-//! can unblind it. So each checkout redemption is kept as an *order*: a
-//! random order id (the private link the redeemer watches), the redemption
-//! and melt quote it opened, and the wallet seed. When the redemption ends
-//! with change, the checkout restores the wallet from the seed (NUT-09),
-//! takes the unspent change proofs, and keeps them as a token on the order.
+//! Each checkout redemption is kept as an *order*: a random order id (the
+//! link the redeemer watches) and the redemption and melt quote it opened.
 //!
-//! The order id is a bearer secret, since the page behind it hands out the
-//! change. It is never derived from the redemption id, which the public
-//! status API lists. Holding the seed means the operator could take the
-//! change: redeem from your own wallet if that matters.
+//! The change is non-custodial. The browser makes the melt's blank outputs
+//! (NUT-08) from a key that lives only in the order link's `#fragment`,
+//! which browsers never send to a server. If the redemption settles early,
+//! the mint signs the change on those blanks, and the order page restores
+//! (NUT-09) and unblinds it in the browser. The server keeps no seed or
+//! token: all it does for the change is make the mint finalize the melt.
 //!
-//! Orders live in one JSON file, rewritten atomically on each change and
-//! readable by the owner only. A redemption opens a few orders a day, not
-//! thousands a second.
+//! The order id is never derived from the redemption id, which the public
+//! status API lists. Orders live in one JSON file, rewritten atomically on
+//! each change.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -33,20 +29,14 @@ pub struct Order {
     pub redemption_id: RedemptionId,
     /// The cdk melt quote, used to make the mint finalize the melt.
     pub quote_id: String,
-    /// Seed of the wallet that melted the token and made the blanks, hex.
-    pub seed_hex: String,
     pub created_ms: u64,
-    /// The change as a token, once claimed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub change_token: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub change_thh: Option<u64>,
-}
-
-impl Order {
-    pub fn seed(&self) -> Option<[u8; 64]> {
-        hex::decode(&self.seed_hex).ok()?.try_into().ok()
-    }
+    /// Whether the melt carried the redeemer's blank outputs, so an early
+    /// settle can return change.
+    #[serde(default)]
+    pub with_change: bool,
+    /// The mint has finalized the melt (signed any change).
+    #[serde(default)]
+    pub finalized: bool,
 }
 
 /// A random order id in UUID v4 form.
@@ -78,8 +68,6 @@ pub fn is_order_id(s: &str) -> bool {
 pub struct OrderBook {
     path: Option<PathBuf>,
     orders: Mutex<HashMap<String, Order>>,
-    /// Serializes change claims so one order is restored once at a time.
-    pub claim: tokio::sync::Mutex<()>,
 }
 
 impl OrderBook {
@@ -102,7 +90,6 @@ impl OrderBook {
         Ok(Self {
             path: Some(path.to_path_buf()),
             orders: Mutex::new(orders),
-            claim: Default::default(),
         })
     }
 
@@ -129,19 +116,17 @@ impl OrderBook {
         self.lock().get(order_id).cloned()
     }
 
-    /// Record the claimed change on an order.
-    pub fn set_change(&self, order_id: &str, change_thh: u64, token: Option<String>) {
+    /// Note that the mint has finalized the order's melt.
+    pub fn set_finalized(&self, order_id: &str) {
         let mut orders = self.lock();
         if let Some(o) = orders.get_mut(order_id) {
-            o.change_thh = Some(change_thh);
-            o.change_token = token;
+            o.finalized = true;
             self.save(&orders);
         }
     }
 }
 
-/// Write `bytes` to `path` via a temp file and rename, mode 0600 on Unix:
-/// the file holds wallet seeds.
+/// Write `bytes` to `path` via a temp file and rename, mode 0600 on Unix.
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
@@ -170,10 +155,9 @@ mod tests {
             order_id: id.into(),
             redemption_id: RedemptionId::from_bytes([1; 16]),
             quote_id: "q".into(),
-            seed_hex: hex::encode([9u8; 64]),
             created_ms: 5,
-            change_token: None,
-            change_thh: None,
+            with_change: true,
+            finalized: false,
         }
     }
 
@@ -189,20 +173,22 @@ mod tests {
     }
 
     #[test]
-    fn orders_survive_reopen_and_keep_change() {
+    fn orders_survive_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("orders.json");
         let id = new_order_id();
         {
             let book = OrderBook::persistent(&path).unwrap();
             book.insert(order(&id));
-            book.set_change(&id, 6, Some("cashuBxyz".into()));
+            book.set_finalized(&id);
         }
         let book = OrderBook::persistent(&path).unwrap();
         let o = book.get(&id).unwrap();
-        assert_eq!(o.change_thh, Some(6));
-        assert_eq!(o.change_token.as_deref(), Some("cashuBxyz"));
-        assert_eq!(o.seed(), Some([9u8; 64]));
+        assert!(o.with_change && o.finalized);
+        assert_eq!(o.quote_id, "q");
+        // The file holds no secrets.
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("seed"), "{text}");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

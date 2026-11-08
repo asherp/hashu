@@ -199,6 +199,29 @@ button.act:disabled { opacity: 0.45; cursor: not-allowed; }
 const $ = (id) => document.getElementById(id)
 const ORDER = (location.pathname.match(/\/order\/([0-9a-f-]{36})\/?$/) || [])[1]
 const BASE = ORDER ? '../' : ''
+// The mint's own API (NUT-01/09/07), served at the site root.
+const MINT = BASE + '../'
+// The change wallet (change.js): makes blank outputs and unblinds change in
+// the browser, so the keys to the change never reach the server.
+let changeLib
+function loadChange () {
+  if (!changeLib) {
+    changeLib = new Promise((resolve, reject) => {
+      const s = document.createElement('script')
+      s.src = BASE + 'change.js'
+      s.onload = () => resolve(window.HashuChange)
+      s.onerror = () => { changeLib = null; reject(new Error('Could not load the change wallet. Reload and try again.')) }
+      document.head.appendChild(s)
+    })
+  }
+  return changeLib
+}
+async function mintApi (path, body) {
+  const r = await fetch(MINT + path, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : undefined)
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(j.detail || j.error || `${r.status} ${r.statusText}`)
+  return j
+}
 const HASHES_PER_THH = 3.6e15
 const st = { info: null, method: null, checkout: null, redemption: null, pollT: null }
 
@@ -434,6 +457,7 @@ async function checkToken () {
       : (etaText(r.amount_thh) || 'Checked with the mint.')
     tokMsg('')
     showTokenCard(true)
+    st.tokenAmount = r.amount_thh
     st.tokenOk = true
     $('btn-redeem').disabled = false
   } catch (e) {
@@ -455,12 +479,17 @@ $('btn-redeem').disabled = true
 $('btn-redeem').addEventListener('click', async () => {
   $('btn-redeem').disabled = true
   try {
-    const r = await post('api/redeem', { token: $('r-token').value, pool_url: $('r-pool').value, worker_name: $('r-worker').value, worker_password: $('r-password').value })
+    // Blank outputs for change, made here from a fresh key. The key goes
+    // only into the order link's #fragment, which the server never sees.
+    const C = await loadChange()
+    const ks = ((await mintApi('v1/keysets')).keysets || []).find((k) => k.active && String(k.unit).toLowerCase() === 'thh')
+    if (!ks) throw new Error('The mint has no active THH keyset.')
+    const key = C.newKey(), n = C.blankCount(st.tokenAmount || 2 ** 20)
+    const outputs = C.blanks(key, n, ks.id)
+    const r = await post('api/redeem', { token: $('r-token').value, pool_url: $('r-pool').value, worker_name: $('r-worker').value, worker_password: $('r-password').value, outputs })
+    if (r.order_id) { location.href = `order/${r.order_id}#k=${key}&n=${n}&i=${ks.id}`; return }
     alertMsg('')
     st.tokenOk = false
-    // The order page is the redemption's private link: it shows delivery
-    // and, if it settles early, hands back the change.
-    if (r.order_id) { location.href = `order/${r.order_id}`; return }
     st.redemption = r.redemption_id
     history.replaceState(null, '', `#redemption=${r.redemption_id}`)
     step('redeem')
@@ -562,28 +591,60 @@ async function pollRedemption () {
 function showChange (r) {
   const c = r.change || {}
   $('p-order').hidden = false
-  $('p-order').innerHTML = 'Bookmark this page: it is the private link to this redemption, and the only place its change shows up.'
+  $('p-order').innerHTML = 'Bookmark this page. Its link holds the key to your change (after the #, which never reaches the server), so it is the only place the change can be opened.'
   if (c.state === 'open') { $('s-change').hidden = true; return false }
   $('s-change').hidden = false
+  const pill = (t, ok) => { $('ch-state').textContent = t; $('ch-state').className = `pill ${ok ? 'ok' : 'wait'}` }
   if (c.state === 'waiting') {
-    $('ch-state').textContent = 'signing'; $('ch-state').className = 'pill wait'
+    pill('signing')
     $('ch-note').textContent = `Delivery stopped at ${fmtThh(r.filled_thh)} THH. The mint is signing your change…`
     return false
   }
   if (c.state === 'none') {
-    $('ch-state').textContent = 'none'; $('ch-state').className = 'pill ok'
+    pill('none', true)
     $('ch-note').textContent = r.state === 'completed' ? `All ${r.amount_thh} THH were delivered, so there is no change.` : `Charged ${r.spent_thh} of ${r.amount_thh} THH; nothing to return.`
     return true
   }
-  $('ch-state').textContent = `${c.thh} THH`; $('ch-state').className = 'pill ok'
-  $('ch-note').innerHTML = `Delivery stopped after ${fmtThh(r.filled_thh)} THH, so you were charged <b>${r.spent_thh} THH</b> and get <b>${c.thh} THH</b> back as fresh Chaumian hashrate vouchers. Save the token now: anyone holding it can spend it. Redeem it later here or in any Cashu wallet.`
-  $('ch-token-box').hidden = false
-  if ($('ch-token').value !== c.token) {
-    $('ch-token').value = c.token
-    $('ch-redeem').href = `../#token=${encodeURIComponent(c.token)}`
-    playQr($('ch-qr'), $('ch-qr-note'), c.token_qr)
+  if (c.state === 'unclaimable') {
+    pill('none')
+    $('ch-note').textContent = `${c.thh} THH went undelivered, but this redemption was made without blank outputs, so there is no change to open. Redeem from the checkout page or your own wallet to get change back.`
+    return true
   }
+  pill(`${c.thh} THH`, true)
+  if (!st.changeShown) openChange(r).catch((e) => { st.changeShown = false; $('ch-note').textContent = `Couldn't open your change: ${e.message}. Reload to try again.` })
+  st.changeShown = true
   return true
+}
+// Restore the signatures on our blanks (NUT-09), unblind them with the key
+// in the #fragment, drop anything already spent, and show a cashuB token.
+async function openChange (r) {
+  const f = new URLSearchParams(location.hash.slice(1))
+  const key = f.get('k'), n = Number(f.get('n')), ksId = f.get('i')
+  const intro = `Delivery stopped after ${fmtThh(r.filled_thh)} THH, so you were charged <b>${r.spent_thh} THH</b> and get <b>${r.change.thh} THH</b> back as fresh Chaumian hashrate vouchers.`
+  if (!/^[0-9a-f]{64}$/.test(key || '') || !(n > 0) || !ksId) {
+    $('ch-note').innerHTML = `${intro} To open them, use the full link you got when you redeemed: the key is in the part after #, and only that link has it.`
+    return
+  }
+  $('ch-note').innerHTML = `${intro} Unblinding them in your browser…`
+  const C = await loadChange()
+  const restored = await mintApi('v1/restore', { outputs: C.blanks(key, n, ksId) })
+  const keys = new Map()
+  const keysFor = async (id) => {
+    if (!keys.has(id)) keys.set(id, ((await mintApi(`v1/keys/${id}`)).keysets || [])[0].keys)
+    return keys.get(id)
+  }
+  const proofs = await C.unblind(key, n, restored, keysFor)
+  if (!proofs.length) throw new Error('the mint returned no change for this link')
+  const states = (await mintApi('v1/checkstate', { Ys: proofs.map((p) => p.Y) })).states || []
+  const unspent = proofs.filter((p) => (states.find((s) => s.Y === p.Y) || {}).state === 'UNSPENT')
+  if (!unspent.length) { $('ch-note').innerHTML = `${intro} They have already been spent: someone, likely you, claimed this change.`; return }
+  const total = unspent.reduce((a, p) => a + p.amount, 0)
+  const token = C.encodeToken(r.change.mint_url, r.change.unit || 'thh', unspent.map(({ amount, id, secret, C: sig }) => ({ amount, id, secret, C: sig })), 'Hashu THH change')
+  $('ch-note').innerHTML = `${intro} ${total < r.change.thh ? `${total} THH of it is still unspent. ` : ''}Save the token now: anyone holding it can spend it. Redeem it later here or in any Cashu wallet.`
+  $('ch-token-box').hidden = false
+  $('ch-token').value = token
+  $('ch-redeem').href = `../#token=${encodeURIComponent(token)}`
+  playQr($('ch-qr'), $('ch-qr-note'), [C.qrSvg(token)])
 }
 $('btn-copy-change').addEventListener('click', (ev) => copy($('ch-token').value, ev.target))
 $('btn-dl-change').addEventListener('click', () => {

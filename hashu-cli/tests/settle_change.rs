@@ -15,7 +15,8 @@ use std::time::{Duration, SystemTime};
 use cdk::amount::SplitTarget;
 use cdk::mint::{MintBuilder, MintMeltLimits, UnitConfig};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::nut00::KnownMethod;
+use cdk::nuts::nut00::PreMintSecrets;
+use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::Token;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, PaymentMethod};
 use cdk::wallet::{MeltOutcome, ReceiveOptions, Wallet};
@@ -291,46 +292,89 @@ async fn get_json(url: &str) -> serde_json::Value {
     r.json().await.unwrap()
 }
 
-/// The checkout page's flow: paste a token, watch the order page, settle,
-/// and the order page hands back the change, also after a restart.
-#[tokio::test(flavor = "multi_thread")]
-async fn checkout_order_page_returns_change_after_settle() {
-    let h = harness(10).await;
-    let dir = tempfile::tempdir().unwrap();
-    let orders_path = dir.path().join("redemption-orders.json");
-    let checkout = serve_checkout(&h, Arc::new(OrderBook::persistent(&orders_path).unwrap())).await;
-
+/// The redeemer's whole token as a cashuB string.
+async fn token_of(h: &Harness) -> String {
     let proofs = h.wallet.get_unspent_proofs().await.unwrap();
-    let token = Token::new(
+    Token::new(
         MintUrl::from_str(&h.url).unwrap(),
         proofs,
         None,
         CurrencyUnit::Custom("thh".into()),
     )
-    .to_string();
-    let r: serde_json::Value = reqwest::Client::new()
-        .post(format!("{checkout}/checkout/api/redeem"))
-        .json(&serde_json::json!({
-            "token": token,
-            "pool_url": "stratum+tcp://pool.example:3333",
-            "worker_name": "bob.rig1",
-        }))
+    .to_string()
+}
+
+async fn post_json(url: &str, body: serde_json::Value) -> serde_json::Value {
+    let r = reqwest::Client::new()
+        .post(url)
+        .json(&body)
         .send()
         .await
-        .unwrap()
-        .json()
-        .await
         .unwrap();
+    let ok = r.status().is_success();
+    let v: serde_json::Value = r.json().await.unwrap();
+    assert!(ok, "{url}: {v}");
+    v
+}
+
+/// The checkout page's flow, with the browser played by this test: it
+/// makes the blank outputs, the server melts the token with them, and once
+/// the redemption settles the "browser" restores and unblinds the change
+/// itself. The server never holds anything that can spend it.
+#[tokio::test(flavor = "multi_thread")]
+async fn checkout_order_change_is_unblinded_by_the_redeemer() {
+    let h = harness(10).await;
+    let dir = tempfile::tempdir().unwrap();
+    let orders_path = dir.path().join("redemption-orders.json");
+    let checkout = serve_checkout(&h, Arc::new(OrderBook::persistent(&orders_path).unwrap())).await;
+
+    // The browser's blanks: 4 cover change below 16 THH.
+    let keyset = h
+        .mint
+        .keysets()
+        .keysets
+        .into_iter()
+        .find(|k| k.unit == thh_unit() && k.active)
+        .unwrap();
+    let blanks = PreMintSecrets::blank(keyset.id, Amount::from(10)).unwrap();
+    assert_eq!(blanks.blinded_messages().len(), 4);
+
+    let r = post_json(
+        &format!("{checkout}/checkout/api/redeem"),
+        serde_json::json!({
+            "token": token_of(&h).await,
+            "pool_url": "stratum+tcp://pool.example:3333",
+            "worker_name": "bob.rig1",
+            "outputs": blanks.blinded_messages(),
+        }),
+    )
+    .await;
     let order_id = r["order_id"].as_str().expect("order id").to_string();
     assert_eq!(r["order_path"], format!("/checkout/order/{order_id}"));
     let rid: hashu_core::redemption::RedemptionId =
         r["redemption_id"].as_str().unwrap().parse().unwrap();
+    // The token was melted as it was: the redeemer's wallet no longer
+    // counts it as spendable, and nothing passed through a server wallet.
+    let state = h
+        .mint
+        .check_state(&cdk::nuts::CheckStateRequest {
+            ys: h.wallet.get_unspent_proofs().await.unwrap().ys().unwrap(),
+        })
+        .await
+        .unwrap();
+    assert!(state
+        .states
+        .iter()
+        .all(|s| s.state != cdk::nuts::State::Unspent));
 
-    // The page itself is served at the private link.
     let page = reqwest::get(format!("{checkout}/checkout/order/{order_id}"))
         .await
         .unwrap();
     assert!(page.status().is_success());
+    let js = reqwest::get(format!("{checkout}/checkout/change.js"))
+        .await
+        .unwrap();
+    assert!(js.status().is_success());
     let order_api = format!("{checkout}/checkout/api/order/{order_id}");
     let o = get_json(&order_api).await;
     assert!(
@@ -338,7 +382,6 @@ async fn checkout_order_page_returns_change_after_settle() {
         "{o}"
     );
     assert_eq!(o["change"]["state"], "open");
-    // Unknown and malformed ids are refused.
     let missing = reqwest::get(format!(
         "{checkout}/checkout/api/order/{}",
         hashu_cli::orders::new_order_id()
@@ -347,26 +390,66 @@ async fn checkout_order_page_returns_change_after_settle() {
     .unwrap();
     assert_eq!(missing.status(), 404);
 
-    // 3.5 THH delivered, then settled: 6 THH of change.
+    // 3.5 THH delivered, then settled: 6 THH of change, signed on our blanks.
     opened(&h.ledger, &rid).await;
     let share = (HASHES_PER_THH * 7 / 2) as f64 / (1u64 << 32) as f64;
     h.ledger.credit_share(&rid, share).unwrap();
     h.ledger.settle(&rid).unwrap();
     let o = get_json(&order_api).await;
     assert_eq!(o["state"], "settled");
-    assert_eq!(o["spent_thh"], 4);
     assert_eq!(o["change"]["state"], "ready", "{o}");
     assert_eq!(o["change"]["thh"], 6);
-    let change = o["change"]["token"].as_str().unwrap().to_string();
-    assert!(!o["change"]["token_qr"].as_array().unwrap().is_empty());
+    assert_eq!(o["change"]["mint_url"], h.url);
+    // The server reports, it doesn't hold: no token, and nothing secret on disk.
+    assert!(o["change"].get("token").is_none());
+    let saved = std::fs::read_to_string(&orders_path).unwrap();
+    assert!(
+        !saved.contains("seed") && !saved.contains("token"),
+        "{saved}"
+    );
 
-    // A restart (new checkout, same orders file) serves the same token.
+    // The "browser" restores the signatures on its blanks over the mint's
+    // public API (NUT-09) and unblinds them.
+    let restored: cdk::nuts::RestoreResponse = serde_json::from_value(
+        post_json(
+            &format!("{}/v1/restore", h.url),
+            serde_json::json!({ "outputs": blanks.blinded_messages() }),
+        )
+        .await,
+    )
+    .unwrap();
+    let mut rs = Vec::new();
+    let mut secrets = Vec::new();
+    for out in &restored.outputs {
+        let p = blanks
+            .iter()
+            .find(|p| p.blinded_message.blinded_secret == out.blinded_secret)
+            .unwrap();
+        rs.push(p.r.clone());
+        secrets.push(p.secret.clone());
+    }
+    let keys = h.mint.keyset_pubkeys(&keyset.id).unwrap().keysets[0]
+        .keys
+        .clone();
+    let proofs = cdk::dhke::construct_proofs(restored.signatures, rs, secrets, &keys).unwrap();
+    let mut amounts: Vec<u64> = proofs.iter().map(|p| u64::from(p.amount)).collect();
+    amounts.sort();
+    assert_eq!(amounts, vec![2, 4]);
+
+    // A restart (same orders file) still reports the change as ready.
     let restarted =
         serve_checkout(&h, Arc::new(OrderBook::persistent(&orders_path).unwrap())).await;
     let again = get_json(&format!("{restarted}/checkout/api/order/{order_id}")).await;
-    assert_eq!(again["change"]["token"], change);
+    assert_eq!(again["change"]["state"], "ready");
 
     // The change is real THH: another wallet can receive it.
+    let change = Token::new(
+        MintUrl::from_str(&h.url).unwrap(),
+        proofs,
+        None,
+        CurrencyUnit::Custom("thh".into()),
+    )
+    .to_string();
     let other = Wallet::new(
         &h.url,
         CurrencyUnit::Custom("thh".into()),
@@ -382,32 +465,48 @@ async fn checkout_order_page_returns_change_after_settle() {
     assert_eq!(u64::from(got), 6);
 }
 
+/// Without blank outputs (an API client that sent none), an early settle
+/// has nowhere to sign the change: the order says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn order_without_blanks_reports_unclaimable_change() {
+    let h = harness(4).await;
+    let checkout = serve_checkout(&h, Arc::new(OrderBook::new())).await;
+    let r = post_json(
+        &format!("{checkout}/checkout/api/redeem"),
+        serde_json::json!({
+            "token": token_of(&h).await,
+            "pool_url": "stratum+tcp://pool.example:3333",
+            "worker_name": "bob.rig1",
+        }),
+    )
+    .await;
+    let rid: hashu_core::redemption::RedemptionId =
+        r["redemption_id"].as_str().unwrap().parse().unwrap();
+    opened(&h.ledger, &rid).await;
+    h.ledger.settle(&rid).unwrap();
+    let o = get_json(&format!(
+        "{checkout}/checkout/api/order/{}",
+        r["order_id"].as_str().unwrap()
+    ))
+    .await;
+    assert_eq!(o["change"]["state"], "unclaimable", "{o}");
+    assert_eq!(o["change"]["thh"], 3);
+}
+
 /// A redemption delivered in full has no change to hand back.
 #[tokio::test(flavor = "multi_thread")]
 async fn order_without_change_reports_none() {
     let h = harness(3).await;
     let checkout = serve_checkout(&h, Arc::new(OrderBook::new())).await;
-    let proofs = h.wallet.get_unspent_proofs().await.unwrap();
-    let token = Token::new(
-        MintUrl::from_str(&h.url).unwrap(),
-        proofs,
-        None,
-        CurrencyUnit::Custom("thh".into()),
-    )
-    .to_string();
-    let r: serde_json::Value = reqwest::Client::new()
-        .post(format!("{checkout}/checkout/api/redeem"))
-        .json(&serde_json::json!({
-            "token": token,
+    let r = post_json(
+        &format!("{checkout}/checkout/api/redeem"),
+        serde_json::json!({
+            "token": token_of(&h).await,
             "pool_url": "stratum+tcp://pool.example:3333",
             "worker_name": "bob.rig1",
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+        }),
+    )
+    .await;
     let rid: hashu_core::redemption::RedemptionId =
         r["redemption_id"].as_str().unwrap().parse().unwrap();
     opened(&h.ledger, &rid).await;
