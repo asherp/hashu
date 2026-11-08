@@ -609,7 +609,11 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             thh_unit(),
             PaymentMethod::Custom(HASHRATE.into()),
             MintMeltLimits::new(args.min_redeem_thh.max(1), args.max_thh),
-            Arc::new(HashrateMelter::new(ledger.clone()).with_min_thh(args.min_redeem_thh)),
+            Arc::new(
+                HashrateMelter::new(ledger.clone())
+                    .with_min_thh(args.min_redeem_thh)
+                    .with_max_thh(args.max_thh),
+            ),
         )
         .await
         .context("register hashrate melt")?;

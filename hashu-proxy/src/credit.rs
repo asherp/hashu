@@ -23,9 +23,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use hashu_core::redemption::{
-    CreditOutcome, LedgerError, RedemptionId, RedemptionLedger, RedemptionState,
-};
+use hashu_core::redemption::{CreditOutcome, LedgerError, RedemptionId, RedemptionLedger};
 use tokio::sync::broadcast;
 
 use crate::audit::ShareAudit;
@@ -135,7 +133,7 @@ impl ShareCrediter {
 
     /// Credit one accepted share and, if the ledger counted it, append its
     /// evidence to the redemption's commitment tree. Shares arriving after
-    /// completion are ignored by the ledger and kept out of the tree.
+    /// completion or settle are ignored by the ledger and kept out of the tree.
     pub fn credit_with_evidence(
         &self,
         id: &RedemptionId,
@@ -143,7 +141,7 @@ impl ShareCrediter {
         evidence: ShareEvidence,
     ) -> Result<CreditOutcome, LedgerError> {
         let outcome = self.credit(id, difficulty)?;
-        let ignored = outcome.state == RedemptionState::Completed && !outcome.newly_completed;
+        let ignored = outcome.state.is_finished() && !outcome.newly_completed;
         if !ignored {
             self.audit
                 .append(*id, evidence.preimage, evidence.target_bits, evidence.ntime);

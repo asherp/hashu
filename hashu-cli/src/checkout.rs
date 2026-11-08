@@ -40,7 +40,7 @@ use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, State as ProofSpentState, Token};
 use cdk::wallet::{KeysetFilter, MeltOutcome, ReceiveOptions, Wallet};
 use cdk::Amount;
-use hashu_core::redemption::{RedemptionId, RedemptionLedger, RedemptionState, HASHES_PER_THH};
+use hashu_core::redemption::{RedemptionId, RedemptionLedger, HASHES_PER_THH};
 use hashu_mint::melt::{redemption_id_for, METHOD as HASHRATE};
 use hashu_mint::tether::METHOD as USDT;
 use hashu_proxy::meter::HashrateMeter;
@@ -1090,11 +1090,9 @@ async fn redemption(State(s): State<Arc<CheckoutState>>, Path(id): Path<String>)
             "amount_thh": r.amount_thh,
             "filled_thh": filled,
             "progress": if r.target_hashes == 0 { 1.0 } else { (r.accumulated_hashes as f64 / r.target_hashes as f64).min(1.0) },
-            "state": match r.state {
-                RedemptionState::Pending => "pending",
-                RedemptionState::Active => "active",
-                RedemptionState::Completed => "completed",
-            },
+            "state": r.state.as_str(),
+            "spent_thh": r.is_finished().then(|| r.spent_thh()),
+            "change_thh": r.is_finished().then(|| r.change_thh()),
             "track": track,
             "now_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or_default(),
         })),

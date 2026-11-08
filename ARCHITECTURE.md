@@ -467,6 +467,15 @@ Redeem (custom melt method "hashrate"):
     Mint   ──▶ marks redemption complete when ∫ hashrate dt ≥ N · 1h
 ```
 
+The melt quote's `amount` is the redemption floor (`min_thh`) and its
+`fee_reserve` is the rest of `N`, so the holder's wallet sends NUT-08 blank
+outputs for the refundable part. If delivery stops, the operator *settles*
+the redemption (`POST /redemptions/{id}/settle` on the control API): the
+mint reports `total_spent = max(floor, ⌈delivered THH⌉)` and cdk signs the
+blanks for the remainder in power-of-two denominations. The holder gets
+fresh, unlinkable `THH` back and can redeem it later. Design and later
+phases (automatic stall detection, finalizer, checkout change): issue #44.
+
 Pricing at mint time: `invoice_sats = N · hashprice_now · 1h + mint_fee`.
 Buyer is locking in *today's* hashprice for *future* hashrate-time —
 this is the product's economic primitive.

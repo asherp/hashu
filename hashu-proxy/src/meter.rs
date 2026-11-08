@@ -20,7 +20,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use hashu_core::redemption::{RedemptionLedger, RedemptionState, HASHES_PER_THH};
+use hashu_core::redemption::{RedemptionLedger, HASHES_PER_THH};
 use serde::Serialize;
 
 use crate::ProxyMetrics;
@@ -156,12 +156,10 @@ impl HashrateMeter {
             if track.completed_ms.is_some() {
                 continue;
             }
-            if acc != track.points.last().map(|p| p.1).unwrap_or(-1.0)
-                || r.state != RedemptionState::Completed
-            {
+            if acc != track.points.last().map(|p| p.1).unwrap_or(-1.0) || !r.state.is_finished() {
                 track.points.push((t_ms, acc));
             }
-            if r.state == RedemptionState::Completed {
+            if r.state.is_finished() {
                 track.completed_ms = Some(t_ms);
             }
             if track.points.len() > MAX_REDEMPTION_POINTS {
