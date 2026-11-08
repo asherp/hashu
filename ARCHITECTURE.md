@@ -229,11 +229,18 @@ a Hashu operator is selling computation, not moving money.
 ### 4.6 Pool routing controller
 
 - Receives "redirect" intents from voucher accounting.
-- *Prototype:* dedicated assignment (below) is what ships first: each
-  new connection goes to the active redemption with the fewest
-  connections, oldest first. With one miner, redemptions are served in
-  melt order. The router polls the ledger for new redemptions and wakes
-  on the share crediter's completion signal.
+- *Prototype:* dedicated assignment (below) is what ships first, sized
+  to the order. Each connection's hashrate is an EWMA of its accepted
+  share work. An order can absorb `remaining / 60 s − assigned` more
+  hashrate; a rig goes to the order with the smallest room it still
+  fits (large rigs to large orders, small to small), and an order whose
+  rigs already finish it within a minute takes no more (extra rigs stay
+  on the default pool). Orders with no rig come first, and one waiting
+  over two minutes jumps the queue, oldest first. A rig with no
+  estimate yet goes to the order with the fewest connections, oldest
+  first, so with one miner redemptions are served in melt order. The
+  router polls the ledger for new redemptions and wakes on the share
+  crediter's completion signal.
 - Maintains a per-redemption allocation. Strategy v0: proportional —
   every connected hashrate source contributes a slice weighted by its
   hashrate EMA, so concurrent redemptions progress at roughly equal

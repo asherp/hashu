@@ -20,11 +20,28 @@
 //! the miner reconnects and [`Router::assign`] picks the new route.
 //!
 //! Strategy is *dedicated assignment* (§4.6 "v1 alternative"): each
-//! connection serves exactly one redemption. A new connection goes to the
-//! active redemption with the fewest connections, oldest first on ties,
-//! so with one miner redemptions are served in melt order and with many
-//! miners concurrent redemptions are spread across them. The
-//! proportional EMA-weighted split in §4.6 stays a TODO.
+//! connection serves exactly one redemption, picked by [`pick_route`]:
+//!
+//! - **Size matching.** Each connection's hashrate is an EWMA of its
+//!   accepted share work ([`RIG_RATE_TAU`]). An order can usefully absorb
+//!   `remaining / TARGET_RUN − assigned rate` more hashrate: anything past
+//!   that just finishes it sooner than [`TARGET_RUN`] and overshoots (about
+//!   one share per rig plus the switch drain). A rig goes to the order with
+//!   the *smallest* such room that still fits it (best fit), so large rigs
+//!   land on large orders and small rigs on small ones. A rig too big for
+//!   every order goes where it overshoots least.
+//! - **Cap.** An order whose assigned rigs already finish it within
+//!   [`TARGET_RUN`] takes no more. If every order is capped, extra rigs
+//!   stay on (or go back to) the default pool.
+//! - **Fairness.** An order with no rig waiting longer than
+//!   [`STARVE_AFTER`] is served first (oldest first), then orders with no
+//!   rig at all, then the rest.
+//! - **Fallback.** Until a rig has a hashrate estimate ([`MIN_RATE_SHARES`]
+//!   shares over [`MIN_RATE_WINDOW`]) it goes to the order with the fewest
+//!   connections, oldest first, as before. With one miner, redemptions are
+//!   served in melt order.
+//!
+//! The proportional EMA-weighted split in §4.6 stays a TODO.
 //!
 //! The router learns about redemptions by polling
 //! [`RedemptionLedger::active`] (see [`Router::reconcile`]). The melt
@@ -46,6 +63,75 @@ use crate::upstream::normalize_upstream;
 /// pool unreachable) stays there before it is retried. Stops a dead pool
 /// URL from turning into a reconnect loop on every reconcile tick.
 pub const FALLBACK_HOLD: Duration = Duration::from_secs(60);
+
+/// How long the rigs on an order should take to finish it. Orders whose
+/// assigned hashrate would finish sooner are capped, and a rig fits an
+/// order only if it would not finish it sooner on its own share of the
+/// order. A minute keeps per-switch costs (a 5 s drain, about one share of
+/// overshoot per rig) small against the run.
+pub const TARGET_RUN: Duration = Duration::from_secs(60);
+
+/// An order with no rig for this long jumps ahead of size matching, so a
+/// small order is not left waiting behind big ones forever.
+pub const STARVE_AFTER: Duration = Duration::from_secs(120);
+
+/// Time constant of the per-connection hashrate EWMA. Long enough to
+/// smooth share noise, short enough to notice a rig going offline.
+pub const RIG_RATE_TAU: Duration = Duration::from_secs(120);
+
+/// Accepted shares a connection needs before its hashrate is trusted.
+pub const MIN_RATE_SHARES: u32 = 4;
+
+/// How long a connection must have been observed before its hashrate is
+/// trusted.
+pub const MIN_RATE_WINDOW: Duration = Duration::from_secs(10);
+
+/// Exponentially weighted hashrate of one connection, from its accepted
+/// shares (`difficulty × 2^32` hashes each). Rate is the decayed work
+/// divided by the decayed time observed, so it is unbiased from the first
+/// share and falls toward zero when shares stop.
+#[derive(Debug, Clone)]
+struct RigRate {
+    since: Instant,
+    last: Instant,
+    /// Work as of `last`, decayed with [`RIG_RATE_TAU`].
+    decayed_hashes: f64,
+    shares: u32,
+}
+
+impl RigRate {
+    fn new(since: Instant) -> Self {
+        Self {
+            since,
+            last: since,
+            decayed_hashes: 0.0,
+            shares: 0,
+        }
+    }
+
+    fn observe(&mut self, hashes: f64, at: Instant) {
+        let at = at.max(self.last);
+        let tau = RIG_RATE_TAU.as_secs_f64();
+        let dt = (at - self.last).as_secs_f64();
+        self.decayed_hashes = self.decayed_hashes * (-dt / tau).exp() + hashes;
+        self.last = at;
+        self.shares = self.shares.saturating_add(1);
+    }
+
+    /// Hashes per second as of `now`, or `None` until there is enough to
+    /// go on.
+    fn rate(&self, now: Instant) -> Option<f64> {
+        let elapsed = now.saturating_duration_since(self.since);
+        if self.shares < MIN_RATE_SHARES || elapsed < MIN_RATE_WINDOW {
+            return None;
+        }
+        let tau = RIG_RATE_TAU.as_secs_f64();
+        let idle = now.saturating_duration_since(self.last).as_secs_f64();
+        let work = self.decayed_hashes * (-idle / tau).exp();
+        let time = tau * (1.0 - (-elapsed.as_secs_f64() / tau).exp());
+        (time > 0.0).then(|| work / time)
+    }
+}
 
 /// Where a connection's shares go.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,6 +265,8 @@ struct Binding {
     fell_back_at: Option<Instant>,
     /// Target of a seamless switch in progress.
     pending: Option<Route>,
+    /// Hashrate estimate from this connection's accepted shares.
+    rate: RigRate,
 }
 
 impl Binding {
@@ -205,6 +293,9 @@ impl Binding {
 #[derive(Default)]
 struct Inner {
     conns: HashMap<ConnectionId, Binding>,
+    /// When each active redemption last had no rig heading to it, or was
+    /// first seen. Drives [`STARVE_AFTER`].
+    unserved_since: HashMap<RedemptionId, Instant>,
 }
 
 /// Shared routing state. One per proxy process.
@@ -257,8 +348,10 @@ impl Router {
     /// Pick a route for a newly accepted miner connection.
     pub fn assign(&self, conn: ConnectionId) -> Assignment {
         let active = self.routable_active();
+        let now = Instant::now();
         let mut inner = self.lock();
-        let route = pick_route(&active, &inner.conns, &self.default_upstream);
+        inner.track_unserved(&active, now);
+        let route = pick_route(&active, &inner, None, now, &self.default_upstream);
         let (tx, rx) = watch::channel(Signal::Stay);
         inner.conns.insert(
             conn,
@@ -267,6 +360,7 @@ impl Router {
                 signal: tx,
                 fell_back_at: None,
                 pending: None,
+                rate: RigRate::new(now),
             },
         );
         if let Some(id) = route.redemption_id() {
@@ -296,6 +390,28 @@ impl Router {
     /// Forget a connection once it has closed.
     pub fn release(&self, conn: ConnectionId) {
         self.lock().conns.remove(&conn);
+    }
+
+    /// Record an accepted share of bdiff `difficulty` from `conn`, on any
+    /// route, for its hashrate estimate.
+    pub fn observe_share(&self, conn: ConnectionId, difficulty: f64) {
+        self.observe_share_at(conn, difficulty, Instant::now());
+    }
+
+    fn observe_share_at(&self, conn: ConnectionId, difficulty: f64, at: Instant) {
+        let hashes = hashu_core::redemption::hashes_for_difficulty(difficulty) as f64;
+        if let Some(b) = self.lock().conns.get_mut(&conn) {
+            b.rate.observe(hashes, at);
+        }
+    }
+
+    /// Estimated hashrate of a live connection in hashes per second, once
+    /// it has enough shares (see [`MIN_RATE_SHARES`]).
+    pub fn hashrate_of(&self, conn: ConnectionId) -> Option<f64> {
+        self.lock()
+            .conns
+            .get(&conn)
+            .and_then(|b| b.rate.rate(Instant::now()))
     }
 
     /// Current route of a live connection.
@@ -343,29 +459,58 @@ impl Router {
     /// switching or kicked is left alone. Returns how many connections
     /// were signalled.
     pub fn reconcile(&self) -> usize {
+        self.reconcile_at(Instant::now())
+    }
+
+    fn reconcile_at(&self, now: Instant) -> usize {
         let active = self.routable_active();
         let mut inner = self.lock();
-        let ids: Vec<ConnectionId> = inner.conns.keys().copied().collect();
+        inner.track_unserved(&active, now);
+        // Place the biggest rigs first so they claim the big orders; rigs
+        // without an estimate go last, oldest connection first.
+        let mut ids: Vec<(ConnectionId, Option<f64>)> = inner
+            .conns
+            .iter()
+            .map(|(c, b)| (*c, b.rate.rate(now)))
+            .collect();
+        ids.sort_by(|a, b| match (a.1, b.1) {
+            (Some(x), Some(y)) => y.total_cmp(&x).then(a.0.cmp(&b.0)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.0.cmp(&b.0),
+        });
         let mut signalled = 0;
-        for conn in ids {
+        for (conn, _) in ids {
             let target = {
                 let b = &inner.conns[&conn];
                 if b.pending.is_some() || *b.signal.borrow() == Signal::Kick {
                     continue;
                 }
-                let stale = match &b.route {
-                    Route::Redemption { id, .. } => !active.iter().any(|r| r.id == *id),
-                    Route::Default { .. } => !active.is_empty() && !b.holding(),
-                };
-                if !stale {
-                    continue;
-                }
-                if b.holding() {
-                    Route::Default {
-                        upstream: self.default_upstream.clone(),
+                match &b.route {
+                    Route::Redemption { id, .. } => {
+                        if active.iter().any(|r| r.id == *id) {
+                            continue;
+                        }
+                        if b.holding() {
+                            Route::Default {
+                                upstream: self.default_upstream.clone(),
+                            }
+                        } else {
+                            pick_route(&active, &inner, Some(conn), now, &self.default_upstream)
+                        }
                     }
-                } else {
-                    pick_route(&active, &inner.conns, &self.default_upstream)
+                    Route::Default { .. } => {
+                        if active.is_empty() || b.holding() {
+                            continue;
+                        }
+                        let t =
+                            pick_route(&active, &inner, Some(conn), now, &self.default_upstream);
+                        // Every order is capped: stay on the default pool.
+                        if t.redemption_id().is_none() {
+                            continue;
+                        }
+                        t
+                    }
                 }
             };
             let b = inner.conns.get_mut(&conn).expect("listed above");
@@ -446,24 +591,122 @@ impl RedemptionBinding for Router {
             .get(&conn)
             .and_then(|b| b.route.redemption_id())
     }
+
+    fn observe_share(&self, conn: ConnectionId, difficulty: f64) {
+        Router::observe_share(self, conn, difficulty);
+    }
 }
 
-/// Fewest-connections-first over active redemptions (oldest wins ties),
-/// else the default pool.
+impl Inner {
+    /// Keep [`Inner::unserved_since`] in step with `active`: start the
+    /// clock for an order that has no rig heading to it, stop it once one
+    /// is, forget orders that are gone.
+    fn track_unserved(&mut self, active: &[Redemption], now: Instant) {
+        let served: std::collections::HashSet<RedemptionId> = self
+            .conns
+            .values()
+            .filter_map(|b| b.effective().redemption_id())
+            .collect();
+        self.unserved_since
+            .retain(|id, _| active.iter().any(|r| r.id == *id) && !served.contains(id));
+        for r in active {
+            if !served.contains(&r.id) {
+                self.unserved_since.entry(r.id).or_insert(now);
+            }
+        }
+    }
+}
+
+/// One active order as [`pick_route`] sees it.
+struct Order<'a> {
+    r: &'a Redemption,
+    /// Index in melt order (oldest first).
+    age: usize,
+    /// Connections heading to it, other than the one being placed.
+    load: usize,
+    /// Hashrate it can still absorb before it finishes within
+    /// [`TARGET_RUN`]; `≤ 0` means capped.
+    room: f64,
+    /// Waited past [`STARVE_AFTER`] with no rig.
+    starving: bool,
+}
+
+/// Choose a route for connection `placing` (or a brand new one when
+/// `None`) over the active redemptions, oldest first. See the module docs
+/// for the rules; the default pool when nothing is active or every order
+/// is capped.
 fn pick_route(
     active: &[Redemption],
-    conns: &HashMap<ConnectionId, Binding>,
+    inner: &Inner,
+    placing: Option<ConnectionId>,
+    now: Instant,
     default_upstream: &str,
 ) -> Route {
-    let load = |id: &RedemptionId| {
-        conns
-            .values()
-            .filter(|b| b.effective().redemption_id().as_ref() == Some(id))
-            .count()
+    let rig = placing
+        .and_then(|c| inner.conns.get(&c))
+        .and_then(|b| b.rate.rate(now));
+    let target_run = TARGET_RUN.as_secs_f64();
+    let orders: Vec<Order> = active
+        .iter()
+        .enumerate()
+        .map(|(age, r)| {
+            let mut load = 0;
+            let mut assigned = 0.0;
+            for (c, b) in &inner.conns {
+                if Some(*c) == placing || b.effective().redemption_id() != Some(r.id) {
+                    continue;
+                }
+                load += 1;
+                assigned += b.rate.rate(now).unwrap_or(0.0);
+            }
+            let remaining = r.target_hashes.saturating_sub(r.accumulated_hashes) as f64;
+            let starving = load == 0
+                && inner
+                    .unserved_since
+                    .get(&r.id)
+                    .is_some_and(|t| now.saturating_duration_since(*t) >= STARVE_AFTER);
+            Order {
+                r,
+                age,
+                load,
+                room: remaining / target_run - assigned,
+                starving,
+            }
+        })
+        .filter(|o| o.room > 0.0)
+        .collect();
+
+    // Tier: starving, then unserved, then served.
+    let tier = |o: &Order| match (o.starving, o.load) {
+        (true, _) => 0u8,
+        (false, 0) => 1,
+        _ => 2,
     };
-    // `min_by_key` keeps the first minimum, i.e. the oldest redemption.
-    let chosen = active.iter().min_by_key(|r| load(&r.id));
-    match chosen.and_then(|r| upstream_for_pool_url(&r.pool_url).map(|u| (r, u))) {
+    let top = orders.iter().map(tier).min();
+    let best = orders
+        .iter()
+        .filter(|o| Some(tier(o)) == top)
+        .min_by(|a, b| {
+            let fit = match rig {
+                // Starving orders go oldest first whatever the rig.
+                _ if a.starving => std::cmp::Ordering::Equal,
+                Some(h) => {
+                    // Fits → smallest room first; too big for both → most
+                    // room first; a fit beats a misfit.
+                    let (fa, fb) = (a.room >= h, b.room >= h);
+                    match (fa, fb) {
+                        (true, true) => a.room.total_cmp(&b.room),
+                        (false, false) => b.room.total_cmp(&a.room),
+                        (true, false) => std::cmp::Ordering::Less,
+                        (false, true) => std::cmp::Ordering::Greater,
+                    }
+                }
+                None => a.load.cmp(&b.load),
+            };
+            fit.then(a.age.cmp(&b.age))
+        });
+
+    match best.and_then(|o| upstream_for_pool_url(&o.r.pool_url).map(|u| (o.r, u))) {
         Some((r, upstream)) => Route::Redemption {
             id: r.id,
             upstream,
@@ -769,6 +1012,197 @@ mod tests {
         // Still bound to the finished redemption: next try is the default pool.
         assert_eq!(router.reconcile(), 1);
         assert_eq!(switch_target(&a).redemption_id(), None);
+    }
+
+    /// 1 TH/s in hashes per second.
+    const TH: f64 = 1e12;
+
+    /// Give `conn` a steady `th_s` TH/s over the last 60 s: one share a
+    /// second at the matching difficulty, ending at `now`.
+    fn warm(router: &Router, conn: ConnectionId, th_s: f64, now: Instant) {
+        let diff = th_s * TH / HASHES_PER_DIFF_ONE as f64;
+        {
+            let mut inner = router.lock();
+            let b = inner.conns.get_mut(&conn).unwrap();
+            b.rate = RigRate::new(now - Duration::from_secs(60));
+        }
+        for s in (0..60).rev() {
+            router.observe_share_at(conn, diff, now - Duration::from_secs(s));
+        }
+    }
+
+    fn open_thh(ledger: &RedemptionLedger, n: u8, thh: u64) {
+        ledger
+            .open(Redemption::new(
+                rid(n),
+                thh,
+                format!("stratum+tcp://pool{n}:3333"),
+                format!("w{n}"),
+            ))
+            .unwrap();
+    }
+
+    use hashu_core::redemption::HASHES_PER_DIFF_ONE;
+
+    #[test]
+    fn rig_rate_tracks_shares_and_decays() {
+        let t0 = Instant::now();
+        let mut r = RigRate::new(t0);
+        assert_eq!(r.rate(t0), None);
+        // 10 TH/s: 1e13 hashes a second.
+        for s in 1..=30 {
+            r.observe(10.0 * TH, t0 + Duration::from_secs(s));
+        }
+        let at = t0 + Duration::from_secs(30);
+        let est = r.rate(at).unwrap();
+        assert!((est / (10.0 * TH) - 1.0).abs() < 0.05, "{est}");
+        // Rig goes quiet: the estimate falls.
+        let later = r.rate(at + RIG_RATE_TAU).unwrap();
+        assert!(later < est * 0.6, "{later} vs {est}");
+    }
+
+    #[test]
+    fn rig_rate_needs_a_few_shares() {
+        let t0 = Instant::now();
+        let mut r = RigRate::new(t0);
+        r.observe(1e15, t0 + Duration::from_secs(20));
+        assert_eq!(r.rate(t0 + Duration::from_secs(20)), None);
+    }
+
+    #[test]
+    fn observed_shares_give_a_hashrate() {
+        let router = Router::new("default:3333", Arc::new(RedemptionLedger::new()));
+        let a = router.assign(ConnectionId::next());
+        assert_eq!(router.hashrate_of(a.conn), None);
+        warm(&router, a.conn, 100.0, Instant::now());
+        let h = router.hashrate_of(a.conn).unwrap();
+        assert!((h / (100.0 * TH) - 1.0).abs() < 0.05, "{h}");
+    }
+
+    #[test]
+    fn large_rigs_take_large_orders_small_rigs_small_ones() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let now = Instant::now();
+        let big = router.assign(ConnectionId::next());
+        let small = router.assign(ConnectionId::next());
+        warm(&router, big.conn, 200.0, now);
+        warm(&router, small.conn, 0.5, now);
+        // Small order first (older), large order second. 1 THH over a
+        // minute absorbs 60 TH/s, too little for the 200 TH/s rig.
+        open_thh(&ledger, 1, 1);
+        open_thh(&ledger, 2, 1000);
+        assert_eq!(router.reconcile_at(now), 2);
+        assert_eq!(switch_target(&big).redemption_id(), Some(rid(2)));
+        assert_eq!(switch_target(&small).redemption_id(), Some(rid(1)));
+    }
+
+    #[test]
+    fn small_order_is_capped_and_extra_rigs_stay_on_default() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let now = Instant::now();
+        // Four 50 TH/s rigs; 1 THH needs 60 TH/s to finish in a minute.
+        let rigs: Vec<_> = (0..4)
+            .map(|_| router.assign(ConnectionId::next()))
+            .collect();
+        for a in &rigs {
+            warm(&router, a.conn, 50.0, now);
+        }
+        open_thh(&ledger, 1, 1);
+        // Two rigs cover it (50 + 50 ≥ 60); the other two stay put.
+        assert_eq!(router.reconcile_at(now), 2);
+        let on_order = rigs
+            .iter()
+            .filter(|a| matches!(&*a.signal.borrow(), Signal::Switch(r) if r.redemption_id() == Some(rid(1))))
+            .count();
+        assert_eq!(on_order, 2);
+        // Not re-signalled on later ticks.
+        assert_eq!(router.reconcile_at(now), 0);
+    }
+
+    #[test]
+    fn capped_orders_send_new_connections_nowhere_once_rates_are_known() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let now = Instant::now();
+        open_thh(&ledger, 1, 1);
+        let a = router.assign(ConnectionId::next());
+        assert_eq!(a.route.redemption_id(), Some(rid(1)));
+        warm(&router, a.conn, 100.0, now);
+        // The 100 TH/s rig alone finishes 1 THH in 36 s: the order is
+        // capped, so a new rig goes to the default pool.
+        let b = router.assign(ConnectionId::next());
+        assert_eq!(b.route.redemption_id(), None);
+    }
+
+    #[test]
+    fn big_rig_with_only_small_orders_takes_the_biggest() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let now = Instant::now();
+        let a = router.assign(ConnectionId::next());
+        warm(&router, a.conn, 500.0, now);
+        open_thh(&ledger, 1, 2);
+        open_thh(&ledger, 2, 5);
+        open_thh(&ledger, 3, 3);
+        assert_eq!(router.reconcile_at(now), 1);
+        assert_eq!(switch_target(&a).redemption_id(), Some(rid(2)));
+    }
+
+    #[test]
+    fn small_rig_picks_the_smallest_order_it_fits() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let now = Instant::now();
+        let a = router.assign(ConnectionId::next());
+        warm(&router, a.conn, 1.0, now);
+        open_thh(&ledger, 1, 100);
+        open_thh(&ledger, 2, 3);
+        open_thh(&ledger, 3, 10);
+        assert_eq!(router.reconcile_at(now), 1);
+        assert_eq!(switch_target(&a).redemption_id(), Some(rid(2)));
+    }
+
+    #[test]
+    fn unserved_orders_come_before_best_fit() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let now = Instant::now();
+        let a = router.assign(ConnectionId::next());
+        open_thh(&ledger, 1, 1000);
+        let on_big = router.assign(ConnectionId::next());
+        assert_eq!(on_big.route.redemption_id(), Some(rid(1)));
+        warm(&router, on_big.conn, 1.0, now);
+        warm(&router, a.conn, 100.0, now);
+        // The 100 TH/s rig fits the 1000 THH order, but the new 10 THH
+        // order has no rig, so it is served first.
+        open_thh(&ledger, 2, 10);
+        assert_eq!(router.reconcile_at(now), 1);
+        assert_eq!(switch_target(&a).redemption_id(), Some(rid(2)));
+    }
+
+    #[test]
+    fn starving_order_jumps_ahead_oldest_first() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let t0 = Instant::now();
+        let a = router.assign(ConnectionId::next());
+        warm(&router, a.conn, 1.0, t0);
+        open_thh(&ledger, 1, 1000);
+        open_thh(&ledger, 2, 3);
+        // Start the waiting clocks with no rig to place: the rig is
+        // still holding on the default pool after a failed switch.
+        router.lock().conns.get_mut(&a.conn).unwrap().fell_back_at = Some(t0);
+        assert_eq!(router.reconcile_at(t0), 0);
+        router.lock().conns.get_mut(&a.conn).unwrap().fell_back_at = None;
+        // Fresh, the 1 TH/s rig would pick the 3 THH order (best fit).
+        let fresh = pick_route(&ledger.active(), &router.lock(), Some(a.conn), t0, "d:1");
+        assert_eq!(fresh.redemption_id(), Some(rid(2)));
+        // Both starved: oldest first.
+        let later = t0 + STARVE_AFTER;
+        assert_eq!(router.reconcile_at(later), 1);
+        assert_eq!(switch_target(&a).redemption_id(), Some(rid(1)));
     }
 
     #[test]
