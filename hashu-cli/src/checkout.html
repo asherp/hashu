@@ -69,6 +69,13 @@ button.act:disabled { opacity: 0.45; cursor: not-allowed; }
 .qr svg { width: 240px; height: 240px; display: block; }
 .qr[hidden] { display: none; }
 details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size: 14px; }
+.words-full { position: fixed; inset: 0; z-index: 50; background: #fff; color: #000; display: flex; flex-direction: column; padding: 12px 14px; }
+.words-full[hidden] { display: none; }
+.words-full .wbar { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; gap: 8px; font: 13px system-ui, sans-serif; color: #555; padding-bottom: 8px; }
+.words-full .wbar button { border: 1px solid #ccc; background: #fff; color: #000; border-radius: 8px; padding: 6px 12px; font: inherit; cursor: pointer; }
+.words-full .fit { flex: 1; min-height: 0; overflow: hidden; }
+.words-full .fit.scroll { overflow-y: auto; }
+.words-full p { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; line-height: 1.3; letter-spacing: 0.01em; }
 .words-text { margin: 8px 0 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; font-size: 15px; line-height: 1.55; white-space: pre-wrap; user-select: all; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; color: var(--ink-2); }
 .pill { border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600; }
@@ -144,8 +151,12 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
       <summary>Show as words</summary>
       <p class="note" style="margin-top:8px">The same voucher as plain English, made with Glossia. Read it aloud, write it down or send it in a message, and paste it into any Hashu redeem box to get the token back; a few mistyped words are repaired. It doesn't look like a token and names no mint, but it is still the voucher: anyone who has it can redeem it.</p>
       <p class="words-text" id="token-words"></p>
-      <div class="row" style="margin-top:8px"><button class="act" id="btn-copy-words">Copy words</button><button class="act" id="btn-dl-words">Download .txt</button></div>
+      <div class="row" style="margin-top:8px"><button class="act" id="btn-copy-words">Copy words</button><button class="act" id="btn-dl-words">Download .txt</button><button class="act" id="btn-full-words">Full screen</button></div>
     </details>
+    <div class="words-full" id="words-full" hidden>
+      <div class="wbar"><span id="words-full-note">Take one screenshot; it reads back into the voucher.</span><button type="button" id="btn-close-words">Close</button></div>
+      <div class="fit" id="words-full-fit"><p id="words-full-text"></p></div>
+    </div>
     <div class="row"><button class="act" id="btn-copy-token">Copy token</button><button class="act primary" id="btn-goto-redeem">Redeem now</button></div>
   </section>
 
@@ -375,6 +386,34 @@ function showToken () {
 }
 $('btn-copy-token').addEventListener('click', (ev) => copy($('token').value, ev.target))
 $('btn-copy-words').addEventListener('click', (ev) => copy(st.checkout.token_words, ev.target))
+// Full screen: the largest font at which the whole passage fits the
+// screen, so one screenshot holds the voucher and OCR can read it back
+// (Glossia's parity repairs a few misread words). Below 12px text OCR
+// gets unreliable, so a longer passage stays at 12px and scrolls.
+const MIN_OCR_PX = 12
+function fitWords () {
+  const box = $('words-full-fit'), p = $('words-full-text')
+  let lo = MIN_OCR_PX, hi = 48
+  box.classList.remove('scroll')
+  const fits = (px) => { p.style.fontSize = px + 'px'; return p.scrollHeight <= box.clientHeight }
+  if (!fits(lo)) {
+    box.classList.add('scroll')
+    $('words-full-note').textContent = 'Too long for one screen: take a screenshot, scroll, and take another.'
+    return
+  }
+  $('words-full-note').textContent = 'Take one screenshot; it reads back into the voucher.'
+  while (hi - lo > 0.5) { const mid = (lo + hi) / 2; if (fits(mid)) lo = mid; else hi = mid }
+  fits(lo)
+}
+function closeWords () { $('words-full').hidden = true; removeEventListener('resize', fitWords) }
+$('btn-full-words').addEventListener('click', () => {
+  $('words-full-text').textContent = st.checkout.token_words
+  $('words-full').hidden = false
+  fitWords()
+  addEventListener('resize', fitWords)
+})
+$('btn-close-words').addEventListener('click', closeWords)
+addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('words-full').hidden) closeWords() })
 $('btn-dl-words').addEventListener('click', () => {
   const c = st.checkout
   const a = document.createElement('a')
