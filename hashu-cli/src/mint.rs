@@ -69,7 +69,7 @@ pub const SEPOLIA_CHAIN_ID: u64 = 11_155_111;
 pub const SEPOLIA_PUBLIC_RPC: &str = "https://ethereum-sepolia-rpc.publicnode.com";
 
 /// `THH` denominations the keyset signs: powers of two up to 2^20.
-const DENOMS: [u64; 21] = {
+pub(crate) const DENOMS: [u64; 21] = {
     let mut d = [0u64; 21];
     let mut i = 0;
     while i < 21 {
