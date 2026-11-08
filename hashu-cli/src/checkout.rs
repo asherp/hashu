@@ -18,6 +18,10 @@
 //! - `GET  /checkout/api/buy/{id}`: quote state; once paid, the token.
 //! - `POST /checkout/api/redeem` `{ token, pool_url, worker_name }`.
 //! - `GET  /checkout/api/redemption/{id}`: progress and delivered work.
+//! - `GET  /checkout/order/{order_id}`: the page for one redemption order,
+//!   a private link: delivery graph, then the change once it settles.
+//! - `GET  /checkout/api/order/{order_id}`: that order's progress and, once
+//!   the redemption has ended, its change token (see [`crate::orders`]).
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -38,6 +42,8 @@ use cdk::wallet::{KeysetFilter, MeltOutcome, ReceiveOptions, Wallet};
 use cdk::Amount;
 use hashu_core::redemption::{RedemptionId, RedemptionLedger, HASHES_PER_THH};
 use hashu_mint::melt::{redemption_id_for, METHOD as HASHRATE};
+
+use crate::orders::{is_order_id, new_order_id, Order, OrderBook};
 use hashu_mint::tether::METHOD as USDT;
 use hashu_proxy::meter::HashrateMeter;
 use hashu_proxy::router::upstream_for_pool_url;
@@ -209,6 +215,8 @@ pub struct CheckoutState {
     pub ledger: Arc<RedemptionLedger>,
     pub mint: Arc<cdk::mint::Mint>,
     pub meter: Arc<HashrateMeter>,
+    /// Checkout redemptions and their wallet seeds, for returning change.
+    pub orders: Arc<OrderBook>,
     checkouts: Mutex<HashMap<String, Arc<Mutex<Checkout>>>>,
 }
 
@@ -226,6 +234,7 @@ impl CheckoutState {
         ledger: Arc<RedemptionLedger>,
         mint: Arc<cdk::mint::Mint>,
         meter: Arc<HashrateMeter>,
+        orders: Arc<OrderBook>,
     ) -> Self {
         Self {
             internal_url,
@@ -239,6 +248,7 @@ impl CheckoutState {
             ledger,
             mint,
             meter,
+            orders,
             checkouts: Mutex::new(HashMap::new()),
         }
     }
@@ -258,6 +268,8 @@ pub fn router(state: Arc<CheckoutState>) -> axum::Router {
         .route("/checkout/api/token", post(check_token))
         .route("/checkout/api/redeem", post(redeem))
         .route("/checkout/api/redemption/{id}", get(redemption))
+        .route("/checkout/order/{id}", get(page))
+        .route("/checkout/api/order/{id}", get(order))
         .with_state(state)
 }
 
@@ -270,7 +282,13 @@ fn err(code: StatusCode, msg: impl ToString) -> Response {
 }
 
 async fn fresh_wallet(url: &str) -> anyhow::Result<Wallet> {
-    let seed: [u8; 64] = std::array::from_fn(|_| rand::random());
+    wallet_with_seed(url, std::array::from_fn(|_| rand::random())).await
+}
+
+/// A wallet with an empty in-memory store and the given seed. Its outputs
+/// are derived from the seed (NUT-13), so a later wallet with the same seed
+/// can restore them.
+async fn wallet_with_seed(url: &str, seed: [u8; 64]) -> anyhow::Result<Wallet> {
     let db = cdk_sqlite::wallet::memory::empty().await?;
     Ok(Wallet::new(
         url,
@@ -574,7 +592,10 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
     if worker.is_empty() {
         return err(StatusCode::BAD_REQUEST, "worker name is required");
     }
-    let wallet = match fresh_wallet(&s.internal_url).await {
+    // Keep the seed: the melt's blank outputs come from it, and so does any
+    // change the mint signs on them.
+    let seed: [u8; 64] = std::array::from_fn(|_| rand::random());
+    let wallet = match wallet_with_seed(&s.internal_url, seed).await {
         Ok(w) => w,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
     };
@@ -658,8 +679,24 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
             return refund(&s, &wallet, StatusCode::BAD_GATEWAY, msg).await;
         }
     }
+    let order_id = new_order_id();
+    s.orders.insert(Order {
+        order_id: order_id.clone(),
+        redemption_id: rid,
+        quote_id: quote.id.clone(),
+        seed_hex: hex::encode(seed),
+        created_ms: now_ms(),
+        change_token: None,
+        change_thh: None,
+    });
     tracing::info!(redemption = %rid, amount_thh = amount, %pool_url, "checkout redemption opened");
-    Json(json!({ "redemption_id": rid.to_string(), "amount_thh": amount })).into_response()
+    Json(json!({
+        "redemption_id": rid.to_string(),
+        "amount_thh": amount,
+        "order_id": order_id,
+        "order_path": format!("/checkout/order/{order_id}"),
+    }))
+    .into_response()
 }
 
 /// Why a pasted token can't be redeemed. `code` is stable for the page;
@@ -947,14 +984,145 @@ async fn redemption(State(s): State<Arc<CheckoutState>>, Path(id): Path<String>)
     let Some(rid) = parse_id(&id) else {
         return err(StatusCode::BAD_REQUEST, "bad redemption id");
     };
-    let Some(r) = s.ledger.get(&rid) else {
-        return err(StatusCode::NOT_FOUND, "unknown redemption");
+    match redemption_json(&s, &rid) {
+        Some(v) => ([(header::CACHE_CONTROL, "no-store")], Json(v)).into_response(),
+        None => err(StatusCode::NOT_FOUND, "unknown redemption"),
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+/// `GET /checkout/api/order/{order_id}`: the redemption's progress, plus
+/// its change once it has ended. Viewing the order is also what makes the
+/// mint finalize the melt and sign the change.
+async fn order(State(s): State<Arc<CheckoutState>>, Path(order_id): Path<String>) -> Response {
+    let Some(o) = is_order_id(&order_id)
+        .then(|| s.orders.get(&order_id))
+        .flatten()
+    else {
+        return err(StatusCode::NOT_FOUND, "unknown order");
     };
+    let Some(mut redemption) = redemption_json(&s, &o.redemption_id) else {
+        // The mint opens the redemption in the background of an async
+        // melt, so a fresh order can briefly have none yet.
+        return (
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(json!({
+                "id": o.redemption_id.to_string(),
+                "order_id": order_id,
+                "state": "opening",
+                "change": { "state": "open" },
+            })),
+        )
+            .into_response();
+    };
+    let change = match claim_change(&s, &o).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(order = %order_id, error = %e, "claiming change failed; will retry");
+            Change::Waiting
+        }
+    };
+    let change = match change {
+        Change::Open => json!({ "state": "open" }),
+        Change::Waiting => json!({ "state": "waiting" }),
+        Change::None => json!({ "state": "none", "thh": 0 }),
+        Change::Ready { thh, token } => json!({
+            "state": "ready",
+            "thh": thh,
+            "token_qr": token_qr_frames(&token),
+            "token": token,
+        }),
+    };
+    redemption["order_id"] = json!(order_id);
+    redemption["change"] = change;
+    ([(header::CACHE_CONTROL, "no-store")], Json(redemption)).into_response()
+}
+
+/// Where an order's change stands.
+#[derive(Debug, PartialEq, Eq)]
+enum Change {
+    /// The redemption is still running.
+    Open,
+    /// It ended, but the mint hasn't signed the change yet.
+    Waiting,
+    /// It ended with nothing to return.
+    None,
+    Ready { thh: u64, token: String },
+}
+
+/// Finalize the order's melt and, if it returned change, restore the
+/// change proofs from the order's wallet seed and keep them as a token.
+async fn claim_change(s: &CheckoutState, o: &Order) -> anyhow::Result<Change> {
+    let Some(r) = s.ledger.get(&o.redemption_id) else {
+        return Ok(Change::Waiting);
+    };
+    if !r.is_finished() {
+        return Ok(Change::Open);
+    }
+    let _one_at_a_time = s.orders.claim.lock().await;
+    let o = s.orders.get(&o.order_id).unwrap_or_else(|| o.clone());
+    match (o.change_thh, &o.change_token) {
+        (Some(thh), Some(token)) => {
+            return Ok(Change::Ready {
+                thh,
+                token: token.clone(),
+            })
+        }
+        (Some(_), None) => return Ok(Change::None),
+        _ => {}
+    }
+    // cdk finalizes a pending melt while checking it, but answers with the
+    // state it read first: the second check reports the outcome.
+    let quote = cdk::mint::QuoteId::from_str(&o.quote_id)?;
+    let mut state = cdk::nuts::MeltQuoteState::Unknown;
+    for _ in 0..2 {
+        state = s.mint.check_melt_quote(&quote).await?.state;
+        if state == cdk::nuts::MeltQuoteState::Paid {
+            break;
+        }
+    }
+    if state != cdk::nuts::MeltQuoteState::Paid {
+        return Ok(Change::Waiting);
+    }
+    if r.change_thh() == 0 {
+        s.orders.set_change(&o.order_id, 0, None);
+        return Ok(Change::None);
+    }
+    let seed = o
+        .seed()
+        .ok_or_else(|| anyhow::anyhow!("order has a bad wallet seed"))?;
+    let wallet = wallet_with_seed(&s.internal_url, seed).await?;
+    wallet.restore().await?;
+    let proofs = wallet.get_unspent_proofs().await?;
+    let thh: u64 = proofs.iter().map(|p| u64::from(p.amount)).sum();
+    if thh == 0 {
+        return Ok(Change::Waiting);
+    }
+    let token = Token::new(
+        MintUrl::from_str(&s.public_url)?,
+        proofs,
+        Some("Hashu THH change".into()),
+        CurrencyUnit::Custom("thh".into()),
+    )
+    .to_string();
+    tracing::info!(order = %o.order_id, redemption = %o.redemption_id, change_thh = thh, "claimed redemption change");
+    s.orders.set_change(&o.order_id, thh, Some(token.clone()));
+    Ok(Change::Ready { thh, token })
+}
+
+/// A redemption's progress for the page, or `None` if unknown.
+fn redemption_json(s: &CheckoutState, rid: &RedemptionId) -> Option<Value> {
+    let r = s.ledger.get(rid)?;
+    let id = rid.to_string();
     let track = s.meter.tracks().into_iter().find(|t| t.id == id);
     let filled = r.accumulated_hashes as f64 / HASHES_PER_THH as f64;
-    (
-        [(header::CACHE_CONTROL, "no-store")],
-        Json(json!({
+    Some(json!({
             "id": id,
             "pool_url": r.pool_url,
             "worker_name": r.worker_name,
@@ -965,10 +1133,8 @@ async fn redemption(State(s): State<Arc<CheckoutState>>, Path(id): Path<String>)
             "spent_thh": r.is_finished().then(|| r.spent_thh()),
             "change_thh": r.is_finished().then(|| r.change_thh()),
             "track": track,
-            "now_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or_default(),
-        })),
-    )
-        .into_response()
+            "now_ms": now_ms(),
+    }))
 }
 
 fn parse_id(s: &str) -> Option<RedemptionId> {

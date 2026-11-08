@@ -45,3 +45,7 @@ cdk-fake-wallet = "0.16"
 rand = "0.8"
 qrcode = { version = "0.14", default-features = false }
 crc32fast = "1"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+reqwest = { workspace = true }

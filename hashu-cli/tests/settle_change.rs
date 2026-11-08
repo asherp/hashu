@@ -8,22 +8,30 @@
 //! change the mint signs on them.
 
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use cdk::amount::SplitTarget;
 use cdk::mint::{MintBuilder, MintMeltLimits, UnitConfig};
+use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::KnownMethod;
+use cdk::nuts::Token;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, PaymentMethod};
-use cdk::wallet::{MeltOutcome, Wallet};
+use cdk::wallet::{MeltOutcome, ReceiveOptions, Wallet};
 use cdk::Amount;
 use cdk_fake_wallet::FakeWallet;
+use hashu_cli::checkout::CheckoutState;
+use hashu_cli::operator::MintControls;
+use hashu_cli::orders::OrderBook;
 use hashu_core::hashprice::{HashpriceOracle, HashpriceSample, SampleBuffer};
 use hashu_core::redemption::{RedemptionLedger, RedemptionState, HASHES_PER_THH};
 use hashu_mint::lightning::{add_lightning_issuance, lightning_issuer};
 use hashu_mint::melt::{redemption_id_for, HashrateMelter, METHOD as HASHRATE};
 use hashu_mint::payment::thh_unit;
 use hashu_mint::pricing::SatsPerThhFromHashprice;
+use hashu_proxy::meter::HashrateMeter;
+use hashu_proxy::ProxyMetrics;
 
 #[derive(Debug)]
 struct FixedOracle(SampleBuffer);
@@ -40,6 +48,8 @@ impl HashpriceOracle for FixedOracle {
 struct Harness {
     ledger: Arc<RedemptionLedger>,
     wallet: Wallet,
+    mint: Arc<cdk::mint::Mint>,
+    url: String,
     _server: tokio::task::JoinHandle<()>,
 }
 
@@ -87,7 +97,11 @@ async fn harness(thh: u64) -> Harness {
     .await
     .unwrap();
     let keystore = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
-    let mint = Arc::new(b.build_with_seed(keystore, &[7u8; 32]).await.unwrap());
+    let mint = Arc::new(
+        b.build_with_seed(keystore, &rand::random::<[u8; 32]>())
+            .await
+            .unwrap(),
+    );
     mint.start().await.unwrap();
 
     let app = cdk_axum::create_mint_router(mint.clone(), vec![HASHRATE.to_string()])
@@ -103,7 +117,7 @@ async fn harness(thh: u64) -> Harness {
         &url,
         CurrencyUnit::Custom("thh".into()),
         Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap()),
-        [3u8; 64],
+        std::array::from_fn(|_| rand::random()),
         None,
     )
     .unwrap();
@@ -131,6 +145,8 @@ async fn harness(thh: u64) -> Harness {
     Harness {
         ledger,
         wallet,
+        mint,
+        url,
         _server: server,
     }
 }
@@ -166,8 +182,24 @@ async fn redeem_all(
         MeltOutcome::Paid(_) => panic!("a redemption can't be paid at once"),
     }
     assert_eq!(u64::from(h.wallet.total_balance().await.unwrap()), 0);
-    assert_eq!(h.ledger.get(&rid).unwrap().floor_thh, 1);
+    // An async melt runs the backend in the background, so the redemption
+    // can open just after the wallet's call returns.
+    assert_eq!(opened(&h.ledger, &rid).await.floor_thh, 1);
     (quote.id, rid)
+}
+
+/// The redemption `rid`, once the mint has opened it.
+async fn opened(
+    ledger: &RedemptionLedger,
+    rid: &hashu_core::redemption::RedemptionId,
+) -> hashu_core::redemption::Redemption {
+    for _ in 0..100 {
+        if let Some(r) = ledger.get(rid) {
+            return r;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("redemption {rid} never opened")
 }
 
 /// The wallet's view of the melt after checking with the mint. cdk 0.16
@@ -222,4 +254,169 @@ async fn completed_redemption_returns_no_change() {
     assert!(h.ledger.get(&rid).unwrap().is_complete());
     assert_eq!(paid_state(&h, &quote_id).await, MeltQuoteState::Paid);
     assert_eq!(u64::from(h.wallet.total_balance().await.unwrap()), 0);
+}
+
+/// Serve the buyer checkout against the harness mint, with `orders`.
+async fn serve_checkout(h: &Harness, orders: Arc<OrderBook>) -> String {
+    let ledger = h.ledger.clone();
+    let meter = Arc::new(HashrateMeter::new(
+        Arc::new(ProxyMetrics::default()),
+        ledger.clone(),
+        Duration::from_secs(60),
+    ));
+    let state = Arc::new(CheckoutState::new(
+        h.url.clone(),
+        h.url.clone(),
+        Arc::new(MintControls::new(0)),
+        None,
+        None,
+        vec!["bolt11".into()],
+        1,
+        1000,
+        ledger,
+        h.mint.clone(),
+        meter,
+        orders,
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let app = hashu_cli::checkout::router(state);
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    url
+}
+
+async fn get_json(url: &str) -> serde_json::Value {
+    let r = reqwest::get(url).await.unwrap();
+    assert!(r.status().is_success(), "{url}: {}", r.status());
+    r.json().await.unwrap()
+}
+
+/// The checkout page's flow: paste a token, watch the order page, settle,
+/// and the order page hands back the change, also after a restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn checkout_order_page_returns_change_after_settle() {
+    let h = harness(10).await;
+    let dir = tempfile::tempdir().unwrap();
+    let orders_path = dir.path().join("redemption-orders.json");
+    let checkout = serve_checkout(&h, Arc::new(OrderBook::persistent(&orders_path).unwrap())).await;
+
+    let proofs = h.wallet.get_unspent_proofs().await.unwrap();
+    let token = Token::new(
+        MintUrl::from_str(&h.url).unwrap(),
+        proofs,
+        None,
+        CurrencyUnit::Custom("thh".into()),
+    )
+    .to_string();
+    let r: serde_json::Value = reqwest::Client::new()
+        .post(format!("{checkout}/checkout/api/redeem"))
+        .json(&serde_json::json!({
+            "token": token,
+            "pool_url": "stratum+tcp://pool.example:3333",
+            "worker_name": "bob.rig1",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let order_id = r["order_id"].as_str().expect("order id").to_string();
+    assert_eq!(r["order_path"], format!("/checkout/order/{order_id}"));
+    let rid: hashu_core::redemption::RedemptionId =
+        r["redemption_id"].as_str().unwrap().parse().unwrap();
+
+    // The page itself is served at the private link.
+    let page = reqwest::get(format!("{checkout}/checkout/order/{order_id}"))
+        .await
+        .unwrap();
+    assert!(page.status().is_success());
+    let order_api = format!("{checkout}/checkout/api/order/{order_id}");
+    let o = get_json(&order_api).await;
+    assert!(
+        ["opening", "pending"].contains(&o["state"].as_str().unwrap()),
+        "{o}"
+    );
+    assert_eq!(o["change"]["state"], "open");
+    // Unknown and malformed ids are refused.
+    let missing = reqwest::get(format!(
+        "{checkout}/checkout/api/order/{}",
+        hashu_cli::orders::new_order_id()
+    ))
+    .await
+    .unwrap();
+    assert_eq!(missing.status(), 404);
+
+    // 3.5 THH delivered, then settled: 6 THH of change.
+    opened(&h.ledger, &rid).await;
+    let share = (HASHES_PER_THH * 7 / 2) as f64 / (1u64 << 32) as f64;
+    h.ledger.credit_share(&rid, share).unwrap();
+    h.ledger.settle(&rid).unwrap();
+    let o = get_json(&order_api).await;
+    assert_eq!(o["state"], "settled");
+    assert_eq!(o["spent_thh"], 4);
+    assert_eq!(o["change"]["state"], "ready", "{o}");
+    assert_eq!(o["change"]["thh"], 6);
+    let change = o["change"]["token"].as_str().unwrap().to_string();
+    assert!(!o["change"]["token_qr"].as_array().unwrap().is_empty());
+
+    // A restart (new checkout, same orders file) serves the same token.
+    let restarted =
+        serve_checkout(&h, Arc::new(OrderBook::persistent(&orders_path).unwrap())).await;
+    let again = get_json(&format!("{restarted}/checkout/api/order/{order_id}")).await;
+    assert_eq!(again["change"]["token"], change);
+
+    // The change is real THH: another wallet can receive it.
+    let other = Wallet::new(
+        &h.url,
+        CurrencyUnit::Custom("thh".into()),
+        Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap()),
+        [5u8; 64],
+        None,
+    )
+    .unwrap();
+    let got = other
+        .receive(&change, ReceiveOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(u64::from(got), 6);
+}
+
+/// A redemption delivered in full has no change to hand back.
+#[tokio::test(flavor = "multi_thread")]
+async fn order_without_change_reports_none() {
+    let h = harness(3).await;
+    let checkout = serve_checkout(&h, Arc::new(OrderBook::new())).await;
+    let proofs = h.wallet.get_unspent_proofs().await.unwrap();
+    let token = Token::new(
+        MintUrl::from_str(&h.url).unwrap(),
+        proofs,
+        None,
+        CurrencyUnit::Custom("thh".into()),
+    )
+    .to_string();
+    let r: serde_json::Value = reqwest::Client::new()
+        .post(format!("{checkout}/checkout/api/redeem"))
+        .json(&serde_json::json!({
+            "token": token,
+            "pool_url": "stratum+tcp://pool.example:3333",
+            "worker_name": "bob.rig1",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rid: hashu_core::redemption::RedemptionId =
+        r["redemption_id"].as_str().unwrap().parse().unwrap();
+    opened(&h.ledger, &rid).await;
+    h.ledger.credit_share(&rid, 1e7).unwrap(); // more than 3 THH
+    let o = get_json(&format!(
+        "{checkout}/checkout/api/order/{}",
+        r["order_id"].as_str().unwrap()
+    ))
+    .await;
+    assert_eq!(o["state"], "completed");
+    assert_eq!(o["change"]["state"], "none");
 }

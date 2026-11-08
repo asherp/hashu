@@ -58,6 +58,7 @@ use crate::checkout::{self, CheckoutState};
 use crate::landing;
 use crate::network::{default_esplora_url, parse_network};
 use crate::operator::{self, ControlledPricer, DaemonInfo, MintControls, OperatorState};
+use crate::orders::OrderBook;
 
 /// Asher's Testnet4 pool at the hackathon. Default upstream for the proxy.
 pub const DEMO_POOL: &str = "stratum+tcp://216.230.225.61:3333";
@@ -733,6 +734,10 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         ledger.clone(),
         mint.clone(),
         meter.clone(),
+        Arc::new(
+            OrderBook::persistent(&args.data_dir.join("redemption-orders.json"))
+                .context("open redemption orders")?,
+        ),
     ));
 
     let app = cdk_axum::create_mint_router(mint.clone(), methods)

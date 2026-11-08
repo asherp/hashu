@@ -673,7 +673,7 @@ $('btn-test-redeem').addEventListener('click', async () => {
   try {
     try { localStorage.setItem('hashu.testPool', $('test-pool').value); localStorage.setItem('hashu.testWorker', $('test-worker').value) } catch {}
     const r = await postJson('api/test-redeem', { token: $('test-token').value, pool_url: $('test-pool').value, worker_name: $('test-worker').value, worker_password: $('test-password').value })
-    $('test-note').textContent = `Redemption ${r.redemption_id.slice(0, 8)} open for ${r.amount_thh} THH.`
+    $('test-note').innerHTML = `Redemption ${esc(r.redemption_id.slice(0, 8))} open for ${r.amount_thh} THH.` + (r.order_path ? ` Its <a href="..${esc(r.order_path)}" target="_blank" rel="noopener">order page</a> shows the change if you settle it.` : '')
     $('test-token').value = ''
     playQr($('test-qr'), $('test-qr-note'), [])
     state.selected = r.redemption_id; state.pinned = true
