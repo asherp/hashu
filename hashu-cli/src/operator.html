@@ -132,7 +132,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
   <section class="card" aria-labelledby="h-red">
     <div class="card-head">
       <h2 id="h-red">Hashrate delivered to the redemption</h2>
-      <span class="pill rail" id="red-state">—</span>
+      <div class="row"><button class="act" id="btn-settle" hidden title="Stop this redemption and return the undelivered THH to the redeemer as change">Settle, return change</button><span class="pill rail" id="red-state">—</span></div>
     </div>
     <div class="row sub" id="red-meta">No redemption yet. A holder redeems by melting THH with the <span class="mono">hashrate</span> method.</div>
     <div class="bar"><div id="red-bar" style="width:0%"></div></div>
@@ -544,11 +544,12 @@ function render () {
   const sel = op.redemptions.find((r) => r.id === state.selected)
   if (sel) {
     const tr = trackRate(state.track)
-    const eta = sel.state === 'completed' ? 'done' : tr > 0 ? `ETA ${fmtDur((sel.remaining_thh * HASHES_PER_THH) / tr)}` : 'waiting for shares'
+    const eta = sel.state === 'completed' ? 'done' : sel.state === 'settled' ? `settled: charged ${sel.spent_thh} THH, ${sel.change_thh} THH returned as change` : tr > 0 ? `ETA ${fmtDur((sel.remaining_thh * HASHES_PER_THH) / tr)}` : 'waiting for shares'
     $('red-meta').innerHTML = `<span class="mono">${esc(shortId(sel.id))}</span> → <span class="mono">${esc(hostOf(sel.pool_url))}</span> as <b>${esc(sel.worker_name)}</b> · <b>${fmtThh(sel.filled_thh)}</b> of ${sel.amount_thh} THH (${(sel.progress * 100).toFixed(1)}%) · ${fmtRate(tr)} · ${eta}`
     $('red-bar').style.width = `${(sel.progress * 100).toFixed(1)}%`
     $('red-state').textContent = sel.state
     $('red-state').className = `pill ${sel.state === 'completed' ? 'on' : 'rail'}`
+    $('btn-settle').hidden = sel.state === 'completed' || sel.state === 'settled'
   }
 }
 
@@ -678,6 +679,15 @@ $('btn-test-redeem').addEventListener('click', async () => {
     state.selected = r.redemption_id; state.pinned = true
     alertMsg('')
   } catch (e) { if (e.body && e.body.refund_token) $('test-token').value = e.body.refund_token; alertMsg(e.message) } finally { b.disabled = false; poll() }
+})
+$('btn-settle').addEventListener('click', async () => {
+  const id = state.selected
+  if (!id || !confirm('Stop this redemption? The redeemer is charged for the THH delivered so far (at least the minimum) and gets the rest back as change.')) return
+  const b = $('btn-settle'); b.disabled = true
+  try {
+    await api(`redemptions/${encodeURIComponent(id)}/settle`, { method: 'POST' })
+    alertMsg('')
+  } catch (e) { alertMsg(e.message) } finally { b.disabled = false; poll() }
 })
 // ---- capacity ---------------------------------------------------------
 async function setCapacity (body) {

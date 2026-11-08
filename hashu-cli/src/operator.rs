@@ -49,7 +49,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Json;
 use cdk::mint::Mint;
-use hashu_core::redemption::{RedemptionLedger, RedemptionState, HASHES_PER_THH};
+use hashu_core::redemption::{RedemptionLedger, HASHES_PER_THH};
 use hashu_mint::capacity::{rental_from_json, CapacityBook};
 use hashu_mint::heat;
 use hashu_mint::payment::thh_unit;
@@ -572,7 +572,7 @@ pub async fn obligations(mint: &Mint, ledger: &RedemptionLedger) -> anyhow::Resu
     let mut open_count = 0;
     let mut open_remaining_thh = 0.0;
     for r in ledger.all() {
-        if r.state != RedemptionState::Completed {
+        if !r.state.is_finished() {
             let filled = r.accumulated_hashes as f64 / HASHES_PER_THH as f64;
             open_remaining_thh += (r.amount_thh as f64 - filled).max(0.0);
             open_count += 1;
@@ -636,11 +636,9 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
                 "progress": if r.target_hashes == 0 { 1.0 } else {
                     (r.accumulated_hashes as f64 / r.target_hashes as f64).min(1.0)
                 },
-                "state": match r.state {
-                    RedemptionState::Pending => "pending",
-                    RedemptionState::Active => "active",
-                    RedemptionState::Completed => "completed",
-                },
+                "state": r.state.as_str(),
+                "spent_thh": r.is_finished().then(|| r.spent_thh()),
+                "change_thh": r.is_finished().then(|| r.change_thh()),
                 "opened_ms": t.map(|t| t.opened_ms),
                 "completed_ms": t.and_then(|t| t.completed_ms),
             })

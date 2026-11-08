@@ -5,14 +5,21 @@
 //! is that backend, registered for `(THH, "hashrate")`:
 //!
 //! - **quote**: the request string carries `{pool_url, worker_name,
-//!   amount_thh}`. The quote amount is `amount_thh`, with zero fee. The
-//!   mint then requires melted proofs ≥ amount, and returns any excess as
-//!   change.
+//!   amount_thh}`. The quote splits `amount_thh` in two: `amount` is the
+//!   floor (`min_thh`), which the redeemer pays however little is
+//!   delivered, and `fee` (cdk's fee reserve) is the rest. The mint
+//!   requires melted proofs ≥ amount + fee, so the redeemer still melts the
+//!   full `amount_thh`. Putting the refundable part in the fee reserve is
+//!   what makes a stock cdk wallet send blank outputs (NUT-08) for it, the
+//!   same way it does for a Lightning fee reserve.
 //! - **melt**: opens a redemption in the shared [`RedemptionLedger`] and
 //!   returns `Pending`. The proofs stay pending while shares accumulate.
 //! - **check**: cdk's pending-melt poller calls `check_outgoing_payment`.
-//!   It reports `Paid` once the redemption completes. Completion is
-//!   driven by the proxy crediting accepted shares to the ledger.
+//!   It reports `Paid` once the redemption completes or is settled.
+//!   Completion is driven by the proxy crediting accepted shares to the
+//!   ledger. A settled redemption reports only its delivered `THH` as
+//!   `total_spent`, and cdk signs the blanks for the difference: the
+//!   redeemer gets the undelivered hashrate back as fresh `THH`.
 //!
 //! Incoming payments, invoices and wait-events do not apply to this
 //! method.
@@ -108,6 +115,7 @@ fn is_routable_pool_url(pool_url: &str) -> bool {
 pub struct HashrateMelter {
     ledger: Arc<RedemptionLedger>,
     min_thh: u64,
+    max_thh: Option<u64>,
 }
 
 impl HashrateMelter {
@@ -115,7 +123,21 @@ impl HashrateMelter {
         Self {
             ledger,
             min_thh: DEFAULT_MIN_THH,
+            max_thh: None,
         }
+    }
+
+    /// Largest accepted redemption. cdk's melt limits only see the quote
+    /// amount, which is the floor, so the melter checks the full amount.
+    pub fn with_max_thh(mut self, max_thh: u64) -> Self {
+        self.max_thh = Some(max_thh);
+        self
+    }
+
+    /// Non-refundable part of a redemption of `amount_thh`: the minimum
+    /// redemption, at least 1 so the quote amount is never zero.
+    fn floor_for(&self, amount_thh: u64) -> u64 {
+        self.min_thh.max(1).min(amount_thh)
     }
 
     pub fn with_min_thh(mut self, min_thh: u64) -> Self {
@@ -143,6 +165,12 @@ impl HashrateMelter {
             return Err(Error::Custom(format!(
                 "amount_thh {} is below the minimum of {}",
                 req.amount_thh, self.min_thh
+            )));
+        }
+        if let Some(max) = self.max_thh.filter(|m| req.amount_thh > *m) {
+            return Err(Error::Custom(format!(
+                "amount_thh {} is above the maximum of {max}",
+                req.amount_thh
             )));
         }
         Ok(req)
@@ -212,10 +240,12 @@ pub fn reopen_pending_quotes(
             tracing::warn!(quote = %quote.id, "pending hashrate quote has an unreadable request");
             continue;
         };
+        let floor = req.amount_thh.saturating_sub(quote.fee_reserve().value());
         if ledger
             .open(
                 Redemption::new(id, req.amount_thh, req.pool_url, req.worker_name)
-                    .with_password(req.worker_password),
+                    .with_password(req.worker_password)
+                    .with_floor(floor),
             )
             .is_ok()
         {
@@ -264,10 +294,11 @@ impl MintPayment for HashrateMelter {
             return Err(Error::UnsupportedPaymentOption);
         }
         let req = self.validated(&custom.request)?;
+        let floor = self.floor_for(req.amount_thh);
         Ok(PaymentQuoteResponse {
             request_lookup_id: Some(lookup_id(&redemption_id_for(&custom.request))),
-            amount: Amount::new(req.amount_thh, unit.clone()),
-            fee: Amount::new(0, unit.clone()),
+            amount: Amount::new(floor, unit.clone()),
+            fee: Amount::new(req.amount_thh - floor, unit.clone()),
             state: MeltQuoteState::Unpaid,
         })
     }
@@ -285,6 +316,11 @@ impl MintPayment for HashrateMelter {
             return Err(Error::UnsupportedPaymentOption);
         }
         let req = self.validated(&custom.request)?;
+        // cdk passes the quote's fee reserve here: the refundable part. A
+        // quote from before the reserve existed has none, so its
+        // redemption can't return change.
+        let reserve = custom.max_fee_amount.as_ref().map_or(0, |a| a.value());
+        let floor = req.amount_thh.saturating_sub(reserve);
 
         let id = redemption_id_for(&custom.request);
         if self.ledger.get(&id).is_some() {
@@ -294,7 +330,8 @@ impl MintPayment for HashrateMelter {
         self.ledger
             .open(
                 Redemption::new(id, req.amount_thh, req.pool_url, req.worker_name)
-                    .with_password(req.worker_password),
+                    .with_password(req.worker_password)
+                    .with_floor(floor),
             )
             .map_err(|e| Error::Custom(e.to_string()))?;
 
@@ -342,13 +379,14 @@ impl MintPayment for HashrateMelter {
 
         let status = match redemption.state {
             RedemptionState::Pending | RedemptionState::Active => MeltQuoteState::Pending,
-            RedemptionState::Completed => MeltQuoteState::Paid,
+            RedemptionState::Completed | RedemptionState::Settled => MeltQuoteState::Paid,
         };
         Ok(MakePaymentResponse {
             payment_lookup_id: payment_identifier.clone(),
             payment_proof: None,
             status,
-            total_spent: Amount::new(redemption.amount_thh, Self::unit()),
+            // Never below the quote amount (the floor): cdk subtracts it.
+            total_spent: Amount::new(redemption.spent_thh(), Self::unit()),
         })
     }
 }
@@ -486,16 +524,97 @@ mod tests {
         assert!(s.custom.contains_key(METHOD));
     }
 
+    /// The quote amount is the floor and the rest of the redemption is the
+    /// fee reserve, so a wallet sends blank outputs for the refundable part.
     #[tokio::test]
-    async fn quote_amount_is_requested_thh_with_zero_fee() {
+    async fn quote_splits_floor_and_refundable_reserve() {
         let (m, _) = melter();
         let q = m
             .get_payment_quote(&HashrateMelter::unit(), custom(request(5)))
             .await
             .unwrap();
-        assert_eq!(q.amount, Amount::new(5, HashrateMelter::unit()));
-        assert_eq!(q.fee, Amount::new(0, HashrateMelter::unit()));
+        assert_eq!(q.amount, Amount::new(1, HashrateMelter::unit()));
+        assert_eq!(q.fee, Amount::new(4, HashrateMelter::unit()));
         assert_eq!(q.state, MeltQuoteState::Unpaid);
+        // A higher minimum raises the floor.
+        let q = m
+            .with_min_thh(3)
+            .get_payment_quote(&HashrateMelter::unit(), custom(request(5)))
+            .await
+            .unwrap();
+        assert_eq!(q.amount, Amount::new(3, HashrateMelter::unit()));
+        assert_eq!(q.fee, Amount::new(2, HashrateMelter::unit()));
+    }
+
+    #[tokio::test]
+    async fn quote_enforces_maximum() {
+        let (m, _) = melter();
+        let m = m.with_max_thh(4);
+        assert!(m
+            .get_payment_quote(&HashrateMelter::unit(), custom(request(5)))
+            .await
+            .is_err());
+        assert!(m
+            .get_payment_quote(&HashrateMelter::unit(), custom(request(4)))
+            .await
+            .is_ok());
+    }
+
+    fn with_reserve(request: String, reserve: u64) -> OutgoingPaymentOptions {
+        let OutgoingPaymentOptions::Custom(mut c) = custom(request) else {
+            unreachable!()
+        };
+        c.max_fee_amount = Some(Amount::new(reserve, HashrateMelter::unit()));
+        OutgoingPaymentOptions::Custom(c)
+    }
+
+    /// cdk hands `make_payment` the quote's fee reserve; the redemption's
+    /// floor is what's left. Settling then reports only delivered THH.
+    #[tokio::test]
+    async fn settled_redemption_reports_delivered_thh_as_spent() {
+        let (m, ledger) = melter();
+        let paid = m
+            .make_payment(&HashrateMelter::unit(), with_reserve(request(10), 9))
+            .await
+            .unwrap();
+        let id = redemption_id_for(&request(10));
+        assert_eq!(ledger.get(&id).unwrap().floor_thh, 1);
+        // 2.5 THH delivered.
+        ledger
+            .credit_share(&id, 9.0e15 / (1u64 << 32) as f64)
+            .unwrap();
+        let check = m
+            .check_outgoing_payment(&paid.payment_lookup_id)
+            .await
+            .unwrap();
+        assert_eq!(check.status, MeltQuoteState::Pending);
+        ledger.settle(&id).unwrap();
+        let check = m
+            .check_outgoing_payment(&paid.payment_lookup_id)
+            .await
+            .unwrap();
+        assert_eq!(check.status, MeltQuoteState::Paid);
+        assert_eq!(check.total_spent, Amount::new(3, HashrateMelter::unit()));
+    }
+
+    /// A quote from before the reserve (no fee) can't return change: its
+    /// floor is the whole amount, so a settle charges all of it.
+    #[tokio::test]
+    async fn redemption_without_reserve_charges_everything() {
+        let (m, ledger) = melter();
+        let paid = m
+            .make_payment(&HashrateMelter::unit(), custom(request(4)))
+            .await
+            .unwrap();
+        let id = redemption_id_for(&request(4));
+        assert_eq!(ledger.get(&id).unwrap().floor_thh, 4);
+        ledger.settle(&id).unwrap();
+        let check = m
+            .check_outgoing_payment(&paid.payment_lookup_id)
+            .await
+            .unwrap();
+        assert_eq!(check.status, MeltQuoteState::Paid);
+        assert_eq!(check.total_spent, Amount::new(4, HashrateMelter::unit()));
     }
 
     #[tokio::test]
