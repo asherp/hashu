@@ -49,7 +49,7 @@ use hashu_proxy::audit::ShareAudit;
 use hashu_proxy::control::ControlState;
 use hashu_proxy::credit::{CreditContext, ShareCrediter};
 use hashu_proxy::meter::HashrateMeter;
-use hashu_proxy::router::Router;
+use hashu_proxy::router::{Router, SwitchMode};
 use hashu_proxy::stratum::run_routed_listener;
 use hashu_proxy::upstream::normalize_upstream;
 use hashu_proxy::ProxyMetrics;
@@ -200,6 +200,12 @@ pub struct RunArgs {
     /// Address the Stratum proxy binds for miners.
     #[arg(long, default_value = "0.0.0.0:3333")]
     pub stratum_bind: SocketAddr,
+    /// How a redemption moves miners between pools: `seamless` swaps the
+    /// upstream behind the open miner connection (no reconnect; falls back
+    /// to a reconnect when the miner can't be switched in place),
+    /// `reconnect` closes the miner's connection so it reconnects.
+    #[arg(long, env = "HASHU_SWITCH_MODE", default_value = "seamless")]
+    pub switch_mode: SwitchMode,
     /// Default pool: where miners point when no redemption is open.
     #[arg(long, env = "HASHU_UPSTREAM", default_value = DEMO_POOL)]
     pub upstream: String,
@@ -736,7 +742,8 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let http_task = tokio::spawn(async move { axum::serve(http, app).await });
 
     // ---- proxy --------------------------------------------------------
-    let router = Arc::new(Router::new(upstream.clone(), ledger.clone()));
+    let router =
+        Arc::new(Router::new(upstream.clone(), ledger.clone()).with_switch_mode(args.switch_mode));
     let crediter = Arc::new(ShareCrediter::with_audit(ledger.clone(), audit.clone()));
     let credit = CreditContext::new(crediter, router.clone());
 
@@ -817,7 +824,8 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         router,
         metrics,
         Some(credit),
-        Duration::from_secs(1),
+        // Reconcile tick: how soon a new redemption starts moving miners.
+        Duration::from_millis(250),
     );
 
     let result = tokio::select! {

@@ -8,12 +8,16 @@
 //!   worker name rewritten to the redeemer's `worker_name` in
 //!   `mining.authorize` and `mining.submit`.
 //!
-//! A connection's route is fixed for its lifetime. To change it, the
-//! router *kicks* the connection: the proxy closes the miner socket and
-//! the miner reconnects (every Stratum V1 miner does this on its own),
-//! at which point [`Router::assign`] picks the new route. This avoids
-//! re-handshaking a live miner onto a new extranonce, which needs
-//! `mining.set_extranonce` support that many miners lack.
+//! To change a live connection's route the router *signals* it (see
+//! [`Signal`]). In [`SwitchMode::Seamless`] (the default) the connection
+//! keeps the miner's socket open, dials and authorizes the new pool
+//! behind it, and cuts over with a clean job, translating extranonces so
+//! the miner never re-subscribes (see [`crate::stratum::extranonce`]). It
+//! reports back with [`Router::switched`] or [`Router::switch_failed`]. A
+//! connection that cannot switch in place (not yet authorized, or the
+//! new pool's extranonce or version-rolling mask doesn't fit the miner)
+//! closes the socket instead, as [`SwitchMode::Reconnect`] always does:
+//! the miner reconnects and [`Router::assign`] picks the new route.
 //!
 //! Strategy is *dedicated assignment* (§4.6 "v1 alternative"): each
 //! connection serves exactly one redemption. A new connection goes to the
@@ -128,12 +132,74 @@ pub fn upstream_for_pool_url(pool_url: &str) -> Option<String> {
     normalize_upstream(pool_url)
 }
 
+/// How the router moves a live connection to a new route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SwitchMode {
+    /// Swap the upstream behind the open miner connection (~one pool
+    /// round trip), falling back to [`SwitchMode::Reconnect`] for a
+    /// connection that can't be switched in place.
+    #[default]
+    Seamless,
+    /// Close the miner's connection; it reconnects onto the new route.
+    Reconnect,
+}
+
+impl std::str::FromStr for SwitchMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "seamless" => Ok(Self::Seamless),
+            "reconnect" | "kick" => Ok(Self::Reconnect),
+            other => Err(format!(
+                "unknown switch mode {other:?} (expected seamless or reconnect)"
+            )),
+        }
+    }
+}
+
+/// What the router wants a live connection to do.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Signal {
+    /// Keep going.
+    #[default]
+    Stay,
+    /// Close the miner's connection so it reconnects.
+    Kick,
+    /// Move to this route without closing the miner's connection, then
+    /// call [`Router::switched`] or [`Router::switch_failed`].
+    Switch(Route),
+}
+
 /// Bookkeeping for one live connection.
 struct Binding {
     route: Route,
-    kick: watch::Sender<bool>,
-    /// Set when this connection fell back to the default pool.
+    signal: watch::Sender<Signal>,
+    /// Set when this connection fell back to the default pool (or failed
+    /// to reach a redeemer's pool in a seamless switch).
     fell_back_at: Option<Instant>,
+    /// Target of a seamless switch in progress.
+    pending: Option<Route>,
+}
+
+impl Binding {
+    /// The route this connection counts towards: where it is heading if
+    /// a switch is in progress, else where it is.
+    fn effective(&self) -> &Route {
+        self.pending.as_ref().unwrap_or(&self.route)
+    }
+
+    fn holding(&self) -> bool {
+        self.fell_back_at
+            .is_some_and(|t| t.elapsed() < FALLBACK_HOLD)
+    }
+
+    /// Clear the signal without waking the connection.
+    fn quiet(&self) {
+        self.signal.send_if_modified(|s| {
+            *s = Signal::Stay;
+            false
+        });
+    }
 }
 
 #[derive(Default)]
@@ -145,6 +211,7 @@ struct Inner {
 pub struct Router {
     default_upstream: String,
     ledger: Arc<RedemptionLedger>,
+    mode: SwitchMode,
     inner: Mutex<Inner>,
 }
 
@@ -152,9 +219,10 @@ pub struct Router {
 pub struct Assignment {
     pub conn: ConnectionId,
     pub route: Route,
-    /// Flips to `true` when the router wants this connection closed so
-    /// the miner reconnects onto a new route.
-    pub kicked: watch::Receiver<bool>,
+    /// Changes when the router wants this connection to move: closed so
+    /// the miner reconnects ([`Signal::Kick`]), or switched in place
+    /// ([`Signal::Switch`]).
+    pub signal: watch::Receiver<Signal>,
 }
 
 impl Router {
@@ -162,8 +230,20 @@ impl Router {
         Self {
             default_upstream: default_upstream.into(),
             ledger,
+            mode: SwitchMode::default(),
             inner: Mutex::new(Inner::default()),
         }
+    }
+
+    /// Use `mode` to move live connections (default
+    /// [`SwitchMode::Seamless`]).
+    pub fn with_switch_mode(mut self, mode: SwitchMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub fn switch_mode(&self) -> SwitchMode {
+        self.mode
     }
 
     pub fn ledger(&self) -> &Arc<RedemptionLedger> {
@@ -179,13 +259,14 @@ impl Router {
         let active = self.routable_active();
         let mut inner = self.lock();
         let route = pick_route(&active, &inner.conns, &self.default_upstream);
-        let (tx, rx) = watch::channel(false);
+        let (tx, rx) = watch::channel(Signal::Stay);
         inner.conns.insert(
             conn,
             Binding {
                 route: route.clone(),
-                kick: tx,
+                signal: tx,
                 fell_back_at: None,
+                pending: None,
             },
         );
         if let Some(id) = route.redemption_id() {
@@ -194,7 +275,7 @@ impl Router {
         Assignment {
             conn,
             route,
-            kicked: rx,
+            signal: rx,
         }
     }
 
@@ -222,34 +303,88 @@ impl Router {
         self.lock().conns.get(&conn).map(|b| b.route.clone())
     }
 
-    /// Compare live connections against the ledger and kick any whose
+    /// A seamless switch finished: `conn` now sends its shares to
+    /// `route`.
+    pub fn switched(&self, conn: ConnectionId, route: Route) {
+        if let Some(b) = self.lock().conns.get_mut(&conn) {
+            if route.redemption_id().is_some() {
+                b.fell_back_at = None;
+            }
+            b.route = route;
+            b.pending = None;
+            b.quiet();
+        }
+    }
+
+    /// A seamless switch to `target` failed and `conn` stayed where it
+    /// was. A redeemer's pool that failed is not retried on this
+    /// connection for [`FALLBACK_HOLD`].
+    pub fn switch_failed(&self, conn: ConnectionId, target: &Route) {
+        if let Some(b) = self.lock().conns.get_mut(&conn) {
+            b.pending = None;
+            if target.redemption_id().is_some() {
+                b.fell_back_at = Some(Instant::now());
+            }
+            b.quiet();
+        }
+    }
+
+    /// Compare live connections against the ledger and signal any whose
     /// route is stale:
     ///
-    /// - bound to a redemption that has completed (or vanished) → back
-    ///   to the default pool on reconnect;
+    /// - bound to a redemption that has completed (or vanished) → to the
+    ///   next redemption waiting for hashrate, else the default pool;
     /// - on the default pool while some redemption is waiting for
-    ///   hashrate → onto that redemption on reconnect.
+    ///   hashrate → onto that redemption.
     ///
-    /// Returns how many connections were kicked.
+    /// In [`SwitchMode::Seamless`] the connection is told where to go
+    /// ([`Signal::Switch`]); in [`SwitchMode::Reconnect`] it is kicked and
+    /// [`Router::assign`] places it on reconnect. A connection already
+    /// switching or kicked is left alone. Returns how many connections
+    /// were signalled.
     pub fn reconcile(&self) -> usize {
         let active = self.routable_active();
-        let inner = self.lock();
-        let mut kicked = 0;
-        for (conn, b) in inner.conns.iter() {
-            let stale = match &b.route {
-                Route::Redemption { id, .. } => !active.iter().any(|r| r.id == *id),
-                Route::Default { .. } => {
-                    let holding = b.fell_back_at.is_some_and(|t| t.elapsed() < FALLBACK_HOLD);
-                    !active.is_empty() && !holding
+        let mut inner = self.lock();
+        let ids: Vec<ConnectionId> = inner.conns.keys().copied().collect();
+        let mut signalled = 0;
+        for conn in ids {
+            let target = {
+                let b = &inner.conns[&conn];
+                if b.pending.is_some() || *b.signal.borrow() == Signal::Kick {
+                    continue;
+                }
+                let stale = match &b.route {
+                    Route::Redemption { id, .. } => !active.iter().any(|r| r.id == *id),
+                    Route::Default { .. } => !active.is_empty() && !b.holding(),
+                };
+                if !stale {
+                    continue;
+                }
+                if b.holding() {
+                    Route::Default {
+                        upstream: self.default_upstream.clone(),
+                    }
+                } else {
+                    pick_route(&active, &inner.conns, &self.default_upstream)
                 }
             };
-            if stale && !*b.kick.borrow() {
-                let _ = b.kick.send(true);
-                kicked += 1;
-                tracing::info!(%conn, from = ?b.route.redemption_id().map(|i| i.to_string()), "kicking connection to re-route");
+            let b = inner.conns.get_mut(&conn).expect("listed above");
+            let from = b.route.redemption_id().map(|i| i.to_string());
+            match self.mode {
+                SwitchMode::Reconnect => {
+                    let _ = b.signal.send(Signal::Kick);
+                    tracing::info!(%conn, ?from, "kicking connection to re-route");
+                }
+                SwitchMode::Seamless => {
+                    let to = target.redemption_id().map(|i| i.to_string());
+                    tracing::info!(%conn, ?from, ?to, upstream = target.upstream(), "switching connection to new route");
+                    b.pending = Some(target.clone());
+                    let _ = b.signal.send(Signal::Switch(target));
+                }
             }
+            signalled += 1;
         }
-        kicked
+        signalled
     }
 
     /// Call [`Router::reconcile`] every `every`, and right away whenever
@@ -323,7 +458,7 @@ fn pick_route(
     let load = |id: &RedemptionId| {
         conns
             .values()
-            .filter(|b| b.route.redemption_id().as_ref() == Some(id))
+            .filter(|b| b.effective().redemption_id().as_ref() == Some(id))
             .count()
     };
     // `min_by_key` keeps the first minimum, i.e. the oldest redemption.
@@ -502,7 +637,8 @@ mod tests {
     #[test]
     fn reconcile_kicks_default_when_redemption_opens_and_back_when_done() {
         let ledger = Arc::new(RedemptionLedger::new());
-        let router = Router::new("default:3333", ledger.clone());
+        let router =
+            Router::new("default:3333", ledger.clone()).with_switch_mode(SwitchMode::Reconnect);
 
         // Idle: miner on the default pool, nothing to kick.
         let a = router.assign(ConnectionId::next());
@@ -513,7 +649,7 @@ mod tests {
         // (once, not on every reconcile).
         open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
         assert_eq!(router.reconcile(), 1);
-        assert!(*a.kicked.borrow());
+        assert_eq!(*a.signal.borrow(), Signal::Kick);
         assert_eq!(router.reconcile(), 0);
 
         // Miner reconnects and lands on the redeemer's pool.
@@ -525,7 +661,7 @@ mod tests {
         // Shares fill the redemption: kicked back to default.
         ledger.credit_share(&rid(1), 1e9).unwrap();
         assert_eq!(router.reconcile(), 1);
-        assert!(*b.kicked.borrow());
+        assert_eq!(*b.signal.borrow(), Signal::Kick);
         router.release(b.conn);
         assert_eq!(
             router.assign(ConnectionId::next()).route.redemption_id(),
@@ -546,5 +682,99 @@ mod tests {
         assert_eq!(router.route_of(a.conn), Some(r));
         // A fresh fallback is not kicked straight back onto the dead pool.
         assert_eq!(router.reconcile(), 0);
+    }
+
+    fn switch_target(a: &Assignment) -> Route {
+        match &*a.signal.borrow() {
+            Signal::Switch(r) => r.clone(),
+            s => panic!("expected a switch, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn seamless_reconcile_switches_in_place() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        assert_eq!(router.switch_mode(), SwitchMode::Seamless);
+        let a = router.assign(ConnectionId::next());
+
+        open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
+        assert_eq!(router.reconcile(), 1);
+        let target = switch_target(&a);
+        assert_eq!(target.redemption_id(), Some(rid(1)));
+        // Mid-switch: not signalled again, and shares still go to default.
+        assert_eq!(router.reconcile(), 0);
+        assert_eq!(router.current(a.conn), None);
+
+        router.switched(a.conn, target);
+        assert_eq!(router.current(a.conn), Some(rid(1)));
+        assert_eq!(*a.signal.borrow(), Signal::Stay);
+        assert_eq!(router.reconcile(), 0);
+
+        // Filled: switched back to the default pool, same connection.
+        ledger.credit_share(&rid(1), 1e9).unwrap();
+        assert_eq!(router.reconcile(), 1);
+        let back = switch_target(&a);
+        assert_eq!(back.redemption_id(), None);
+        router.switched(a.conn, back);
+        assert_eq!(router.current(a.conn), None);
+        assert_eq!(router.reconcile(), 0);
+    }
+
+    #[test]
+    fn seamless_switches_spread_over_redemptions() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let conns: Vec<_> = (0..4)
+            .map(|_| router.assign(ConnectionId::next()))
+            .collect();
+        open(&ledger, 1, "stratum+tcp://alice:3333", "a");
+        open(&ledger, 2, "stratum+tcp://bob:3333", "b");
+        assert_eq!(router.reconcile(), 4);
+        let mut ids: Vec<_> = conns
+            .iter()
+            .map(|a| switch_target(a).redemption_id().unwrap())
+            .collect();
+        ids.sort_by_key(|i| *i.as_bytes());
+        assert_eq!(ids, vec![rid(1), rid(1), rid(2), rid(2)]);
+    }
+
+    #[test]
+    fn failed_seamless_switch_holds_on_default() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let a = router.assign(ConnectionId::next());
+        open(&ledger, 1, "stratum+tcp://dead:3333", "a");
+        assert_eq!(router.reconcile(), 1);
+        let target = switch_target(&a);
+        router.switch_failed(a.conn, &target);
+        // The dead pool is not retried straight away.
+        assert_eq!(router.reconcile(), 0);
+        assert_eq!(router.current(a.conn), None);
+    }
+
+    #[test]
+    fn stale_redemption_with_failed_next_goes_default() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        open(&ledger, 1, "stratum+tcp://alice:3333", "a");
+        let router = Router::new("default:3333", ledger.clone());
+        let a = router.assign(ConnectionId::next());
+        assert_eq!(a.route.redemption_id(), Some(rid(1)));
+        open(&ledger, 2, "stratum+tcp://dead:3333", "b");
+        ledger.credit_share(&rid(1), 1e9).unwrap();
+        assert_eq!(router.reconcile(), 1);
+        let t = switch_target(&a);
+        assert_eq!(t.redemption_id(), Some(rid(2)));
+        router.switch_failed(a.conn, &t);
+        // Still bound to the finished redemption: next try is the default pool.
+        assert_eq!(router.reconcile(), 1);
+        assert_eq!(switch_target(&a).redemption_id(), None);
+    }
+
+    #[test]
+    fn switch_mode_parses() {
+        assert_eq!("seamless".parse::<SwitchMode>(), Ok(SwitchMode::Seamless));
+        assert_eq!("Reconnect".parse::<SwitchMode>(), Ok(SwitchMode::Reconnect));
+        assert!("bogus".parse::<SwitchMode>().is_err());
     }
 }

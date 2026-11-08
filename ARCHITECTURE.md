@@ -109,14 +109,27 @@ inbound Stratum connections it is authorized to direct.
   flow down; share submissions go to the redeemer's pool. On
   redemption end, Hashu reopens the default-pool connection and
   resumes passthrough.
-  *Prototype mechanics:* a connection's upstream is fixed for its
-  lifetime. To switch, the proxy closes the miner's connection and the
-  miner reconnects (every Stratum V1 miner does this unprompted); the
-  router then picks the current route. While routed to a redemption the
-  proxy rewrites the worker name in `mining.authorize` and
-  `mining.submit` to the redeemer's. This avoids `mining.set_extranonce`,
-  which many miners don't support. If the redeemer's pool is
-  unreachable the connection falls back to the default pool for 60 s.
+  *Prototype mechanics (seamless switch, the default):* the miner's
+  connection to the proxy stays open. The proxy dials the new pool,
+  replays the miner's `mining.configure` / `mining.subscribe` and
+  authorizes as the route's worker, and once the pool has sent a job it
+  cuts over: the miner gets the new pool's `mining.set_difficulty` and
+  latest job with `clean_jobs = true`, typically one pool round trip
+  after the redemption opens. Extranonces are translated: at subscribe
+  the miner is given a 2-byte proxy-owned extranonce1 and a 4-byte
+  extranonce2, which the proxy maps into each pool's extranonce2 space
+  (`coinb1 ‖ en1_pool` in the job, `en1_miner ‖ en2 ‖ pad` in the
+  submit). Shares the miner finds on the previous pool's jobs keep going
+  there for 5 s and credit that pool's route. When a pool's extranonce2
+  is under 6 bytes the proxy sends `mining.set_extranonce` if the miner
+  sent `mining.extranonce.subscribe`; otherwise, or if the new pool won't
+  grant the miner's version-rolling mask, it falls back to closing the
+  miner's connection so it reconnects onto the new route (the only
+  behaviour under `--switch-mode reconnect`). While routed to a
+  redemption the proxy rewrites the worker name in `mining.authorize`
+  and `mining.submit` to the redeemer's. If the redeemer's pool is
+  unreachable the miner stays on (or falls back to) the default pool for
+  60 s.
 
 ### 4.3 Voucher accounting
 

@@ -9,7 +9,7 @@ use clap::{Args, Subcommand};
 use hashu_core::redemption::RedemptionLedger;
 use hashu_proxy::control::{serve as serve_control, ControlState};
 use hashu_proxy::credit::{CreditContext, ShareCrediter};
-use hashu_proxy::router::Router;
+use hashu_proxy::router::{Router, SwitchMode};
 use hashu_proxy::stratum::run_routed_listener;
 use hashu_proxy::upstream::normalize_upstream;
 use hashu_proxy::ProxyMetrics;
@@ -35,6 +35,12 @@ pub struct RunArgs {
     /// Upstream pool. Accepts `host:port` or a `stratum+tcp://host:port` URL.
     #[arg(long)]
     pub upstream: String,
+    /// How a redemption moves miners between pools: `seamless` swaps the
+    /// upstream behind the open miner connection (no reconnect; falls back
+    /// to a reconnect when the miner can't be switched in place),
+    /// `reconnect` closes the miner's connection so it reconnects.
+    #[arg(long, env = "HASHU_SWITCH_MODE", default_value = "seamless")]
+    pub switch_mode: SwitchMode,
     /// Periodic metrics log interval (seconds). 0 disables.
     #[arg(long, default_value_t = 30)]
     pub metrics_interval: u64,
@@ -67,7 +73,7 @@ async fn run_listener_cmd(args: RunArgs) -> Result<()> {
     // The ledger is empty until a mint in this process opens redemptions
     // in it; until then every miner goes to the default upstream.
     let ledger = Arc::new(RedemptionLedger::new());
-    let router = Arc::new(Router::new(upstream, ledger.clone()));
+    let router = Arc::new(Router::new(upstream, ledger.clone()).with_switch_mode(args.switch_mode));
     // The router is also the binding: shares credit the redemption the
     // connection was routed to.
     let crediter = Arc::new(ShareCrediter::new(ledger));
@@ -121,7 +127,8 @@ async fn run_listener_cmd(args: RunArgs) -> Result<()> {
         router,
         metrics,
         Some(credit),
-        Duration::from_secs(1),
+        // Reconcile tick: how soon a new redemption starts moving miners.
+        Duration::from_millis(250),
     )
     .await
     .context("listener loop")

@@ -52,6 +52,11 @@ pub struct JobGate {
 }
 
 impl JobGate {
+    /// The miner has had its authorize result; pool lines pass through.
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
     /// Inspect a miner→pool line.
     pub fn on_miner_line(&mut self, line: &str) {
         if self.open {
@@ -131,7 +136,7 @@ impl JobGate {
 }
 
 /// `mining.notify` line with `params[8]` (clean_jobs) set to true.
-fn force_clean(line: &str) -> Option<String> {
+pub(crate) fn force_clean(line: &str) -> Option<String> {
     let mut v = parse(line)?;
     let clean = v.get_mut("params")?.as_array_mut()?.get_mut(8)?;
     if *clean == Value::Bool(true) {

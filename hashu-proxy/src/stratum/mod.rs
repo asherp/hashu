@@ -6,6 +6,7 @@
 pub mod committer;
 pub mod compact;
 pub mod connection;
+pub mod extranonce;
 pub mod header;
 pub mod listener;
 pub mod observe;
