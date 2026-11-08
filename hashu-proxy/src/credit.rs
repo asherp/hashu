@@ -55,6 +55,11 @@ impl std::fmt::Display for ConnectionId {
 /// Implemented by the routing controller.
 pub trait RedemptionBinding: Send + Sync {
     fn current(&self, conn: ConnectionId) -> Option<RedemptionId>;
+
+    /// An accepted share of bdiff `difficulty` from `conn`, on any route
+    /// (the default pool included). The router uses it for each rig's
+    /// hashrate estimate; the default does nothing.
+    fn observe_share(&self, _conn: ConnectionId, _difficulty: f64) {}
 }
 
 /// The simplest binding: every connection serves the same redemption (or
@@ -187,10 +192,11 @@ impl CreditContext {
         evidence: ShareEvidence,
         metrics: &ProxyMetrics,
     ) {
+        let difficulty = difficulty.unwrap_or(DEFAULT_SHARE_DIFFICULTY);
+        self.binding.observe_share(conn, difficulty);
         let Some(id) = bound_to else {
             return;
         };
-        let difficulty = difficulty.unwrap_or(DEFAULT_SHARE_DIFFICULTY);
         match self
             .crediter
             .credit_with_evidence(&id, difficulty, evidence)
