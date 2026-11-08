@@ -4,7 +4,7 @@ The stack in [`docker-compose.yml`](docker-compose.yml) runs unchanged on a
 DigitalOcean droplet. This runbook covers what is different from the devbox
 (216.230.225.61): sizing, the cloud firewall, a stable IP, DNS on Squarespace,
 where state lives, and moving the **existing** mint and phoenixd wallet
-without losing ecash, channel state or sats. Read [README.md](README.md)
+without losing issued vouchers, channel state or sats. Read [README.md](README.md)
 first; it is still the reference for configuration and operations.
 
 The short version:

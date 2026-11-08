@@ -2,7 +2,7 @@
 id: io.hashu.heater
 version: 0.1.0
 displayName: "Hashu Heater"
-description: "Sell your heater's hashrate as THH ecash. Switches the miner to the Hashu proxy while a redemption is filled and back to your pool after, with a thermostat."
+description: "Sell your heater's hashrate as THH vouchers. Switches the miner to the Hashu proxy while a redemption is filled and back to your pool after, with a thermostat."
 main: main.js
 # Reads heater telemetry and sends setupPools / setPowerMode through the Kernel.
 permissions:

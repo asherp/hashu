@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hashu · sell computation, not money</title>
-<meta name="description" content="Hashu is open-source software that turns hashrate into Cashu ecash. A Hashu mint sells terahash-hours of computation, not money: buy with Lightning or USDT, redeem by pointing hashrate at your pool.">
+<meta name="description" content="Hashu is open-source software that turns hashrate into Chaumian vouchers on Cashu. A Hashu mint sells terahash-hours of computation, not money: buy with Lightning or USDT, redeem by pointing hashrate at your pool.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f7931a'/%3E%3Cpath d='M10 7v18M22 7v18M10 16h12' stroke='%23111' stroke-width='3.4' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
 :root {
@@ -106,7 +106,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
   <header class="hero">
     <p class="kicker">Open source · Cashu · Stratum</p>
     <h1>Sell <span>computation</span>, not money.</h1>
-    <p>Hashu turns hashrate into private ecash. A Hashu mint issues terahash-hours (THH) as Cashu tokens backed only by the hashrate of its miners, and the only way to redeem them is as real work delivered to the holder's pool. No bitcoin is held for users and none is paid out.</p>
+    <p>Hashu turns hashrate into Chaumian hashrate vouchers. A Hashu mint issues terahash-hours (THH) as Cashu tokens backed only by the hashrate of its miners, and the only way to redeem them is as real work delivered to the holder's pool. No bitcoin is held for users and none is paid out.</p>
     <p class="live">Live on mainnet: Lightning purchases verified, redemptions mining to Braiins Pool</p>
     <div class="cta">
       <a class="btn primary mint-link" data-path="checkout/" data-buy href="https://mint.hashu.io/checkout/">Buy hashrate</a>
@@ -141,7 +141,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     <h2>How it works</h2>
     <div class="grid4">
       <div class="card"><div class="num">1</div><h3>Buy</h3><p>Pay a mainnet Lightning invoice, or pay in USDT. Dollars go to hashrate and on to bitcoin without an exchange.</p></div>
-      <div class="card"><div class="num">2</div><h3>Hold</h3><p>Receive THH as Cashu ecash. Blind signatures mean the mint can't link who bought to who redeems.</p></div>
+      <div class="card"><div class="num">2</div><h3>Hold</h3><p>Receive THH as Chaumian vouchers (Cashu tokens). Blind signatures mean the mint can't link who bought to who redeems.</p></div>
       <div class="card"><div class="num">3</div><h3>Redeem</h3><p>Melt the tokens with a pool URL and worker name. The mint's Stratum proxy points its miners at your pool until the work is delivered.</p></div>
       <div class="card"><div class="num">4</div><h3>Audit</h3><p>Every share credited to a redemption goes into its own Merkle tree. Holders can fetch the root and inclusion proofs to check the work that reached their pool.</p></div>
     </div>
@@ -151,7 +151,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
   <section id="run">
     <h2>Run your own mint</h2>
     <div class="grid2">
-      <div class="card"><h3>Self-hosted software, not a service</h3><p>Anyone with hashrate can run Hashu and sell it as ecash: one binary runs the Cashu mint, the Lightning and USDT payment rails, the Stratum proxy and an operator dashboard. Pricing follows the live hashrate rental market.</p></div>
+      <div class="card"><h3>Self-hosted software, not a service</h3><p>Anyone with hashrate can run Hashu and sell it as vouchers: one binary runs the Cashu mint, the Lightning and USDT payment rails, the Stratum proxy and an operator dashboard. Pricing follows the live hashrate rental market.</p></div>
       <div class="card"><h3>Built on open pieces</h3><p>Rust on the Cashu Development Kit (cdk), mainnet Lightning through phoenixd, and Tether's Mining Development Kit for the hardware side. Dual-licensed MIT / Apache-2.0.</p></div>
     </div>
     <div class="links-grid" style="margin-top:16px">
