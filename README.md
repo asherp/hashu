@@ -190,26 +190,31 @@ the Stratum proxy that fills redemptions, and the control API the
 [MDK app](mdk/README.md) polls.
 
 ```bash
-# Mainnet Lightning via phoenixd (same variables as overpay), USDT on Sepolia,
+# Mainnet Lightning via phoenixd (same variables as overpay), USDT on
+# Ethereum mainnet and USDC on Base,
 # priced from the MiningRigRentals floor, default pool = the Testnet4 demo pool.
 export PHOENIXD_URL=http://127.0.0.1:9740 PHOENIXD_PASSWORD=...
 hashu mint run \
-  --usdt-deposit 0xYourSepoliaAddress --usd-per-btc 100000 \
+  --usdt-deposit 0xYourAddress --usdc-deposit 0xYourAddress --usd-per-btc 100000 \
   --mint-url https://mint.example.com
 ```
 
 | Port | What |
 |---|---|
-| `0.0.0.0:8085` (`--listen`) | Cashu mint API: `/v1/info`, `/v1/keys`, `/v1/mint/quote/{bolt11,usdt}`, `/v1/melt/quote/hashrate`, …, the buyer **checkout page** at `/checkout/`, and the NUT-24 paid redeem endpoint `POST /api/redeem` |
+| `0.0.0.0:8085` (`--listen`) | Cashu mint API: `/v1/info`, `/v1/keys`, `/v1/mint/quote/{bolt11,usdt,usdc}`, `/v1/melt/quote/hashrate`, …, the buyer **checkout page** at `/checkout/`, and the NUT-24 paid redeem endpoint `POST /api/redeem` |
 | `0.0.0.0:3333` (`--stratum-bind`) | Stratum proxy for miners |
 | `127.0.0.1:3334` (`--control-bind`) | **Operator GUI** at `/`, its API under `/api/`, and the control API: `GET /status`, `GET /redemptions/{id}/root`, `GET /redemptions/{id}/proof/{n}` |
 
 - **Lightning** (`--lightning phoenixd|fake|off`): phoenixd is used when
   `PHOENIXD_URL` or `PHOENIXD_HOSTPORT` is set. It only buys `THH`; the
   mint never pays out. `fake` pays every invoice by itself, for rehearsals.
-- **Tether**: on when `--usdt-deposit` is set. Watches `--usdt-token`
-  (Sepolia test USDT by default) over `--usdt-rpc`. Price with
-  `--usdt-per-thh 0.05` or derive it from sats with `--usd-per-btc`.
+- **Stablecoins** (USDT, USDC): each is on when its `--usdt-deposit` /
+  `--usdc-deposit` is set, as methods `usdt` and `usdc`. Each coin has its
+  own chain: USDT defaults to Ethereum mainnet (12 confirmations), USDC to
+  Circle's native USDC on Base (30 confirmations); change one with
+  `--usdc-token`, `--usdc-rpc`, `--usdc-chain-id` (same for `usdt`).
+  Open quotes are kept in `<data-dir>/{usdt,usdc}-quotes.json` so a restart loses none. Price both with `--usdt-per-thh 0.05` or derive
+  it from sats with `--usd-per-btc`.
 - **Price** (`--price mrr|esplora|fixed`): MRR rental floor by default;
   `--sats-per-thh` is the fixed price, and the fallback while a live
   source has no fresh sample. `--markup-bps` adds the operator's margin.
