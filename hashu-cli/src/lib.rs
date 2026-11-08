@@ -20,6 +20,7 @@ pub mod mint;
 pub mod network;
 pub mod operator;
 pub mod oracle;
+pub mod orders;
 pub mod paid;
 pub mod proxy;
 mod ur;
