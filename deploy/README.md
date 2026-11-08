@@ -107,7 +107,7 @@ openssl rand -hex 32   # -> PHOENIXD_PASSWORD
 openssl rand -hex 32   # -> PHOENIXD_LIMITED_PASSWORD
 docker run --rm caddy:2 caddy hash-password --plaintext 'pick-a-password'
                        # -> OPERATOR_PASSWORD_HASH (keep the single quotes)
-$EDITOR .env           # HASHU_DOMAIN, the above, optional USDT
+$EDITOR .env           # HASHU_DOMAIN, the above, optional USDT/USDC deposit
 ```
 
 ## 3. Start

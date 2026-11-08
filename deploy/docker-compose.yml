@@ -61,8 +61,19 @@ services:
       PHOENIXD_URL: http://phoenixd:9740
       PHOENIXD_PASSWORD: ${PHOENIXD_LIMITED_PASSWORD}
       PHOENIXD_CHAIN: ${PHOENIXD_CHAIN:-mainnet}
-      # Tether: on when HASHU_USDT_DEPOSIT is set (Sepolia test USDT by default).
+      # Stablecoins, mainnet (real funds). USDT (Ethereum by default) is on
+      # when HASHU_USDT_DEPOSIT is set, USDC (Base by default) when
+      # HASHU_USDC_DEPOSIT is set. Each coin's chain is configurable.
       HASHU_USDT_DEPOSIT: ${HASHU_USDT_DEPOSIT:-}
+      HASHU_USDT_TOKEN: ${HASHU_USDT_TOKEN:-0xdAC17F958D2ee523a2206206994597C13D831ec7}
+      HASHU_USDT_RPC: ${HASHU_USDT_RPC:-https://ethereum-rpc.publicnode.com}
+      HASHU_USDT_CHAIN_ID: ${HASHU_USDT_CHAIN_ID:-1}
+      HASHU_USDT_CONFIRMATIONS: ${HASHU_USDT_CONFIRMATIONS:-12}
+      HASHU_USDC_DEPOSIT: ${HASHU_USDC_DEPOSIT:-}
+      HASHU_USDC_TOKEN: ${HASHU_USDC_TOKEN:-0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913}
+      HASHU_USDC_RPC: ${HASHU_USDC_RPC:-https://base-rpc.publicnode.com}
+      HASHU_USDC_CHAIN_ID: ${HASHU_USDC_CHAIN_ID:-8453}
+      HASHU_USDC_CONFIRMATIONS: ${HASHU_USDC_CONFIRMATIONS:-30}
       HASHU_USD_PER_BTC: ${HASHU_USD_PER_BTC:-}
       HASHU_USDT_PER_THH: ${HASHU_USDT_PER_THH:-}
       # Capacity from MRR active rentals (optional; see .env.example).
