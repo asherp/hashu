@@ -453,7 +453,7 @@ function render () {
   $('t-sold-sub').textContent = Object.entries(o.sold_by_rail).map(([k, v]) => `${k} ${v}`).join(' · ') || 'none yet'
   const p = mint.price
   $('t-price').textContent = p.sats_per_thh != null ? `${p.sats_per_thh.toLocaleString()}` : '—'
-  $('t-price-sub').textContent = p.usdt_per_thh != null ? `sats per THH · ${p.usdt_per_thh.toFixed(4)} USDT` : 'sats per THH'
+  $('t-price-sub').textContent = p.usdt_per_thh != null ? `sats per THH · ${p.usdt_per_thh.toFixed(4)} USD (USDT/USDC)` : 'sats per THH'
 
   const btn = $('btn-pause')
   btn.textContent = ctl.issuance_paused ? 'Resume issuance' : 'Pause issuance'

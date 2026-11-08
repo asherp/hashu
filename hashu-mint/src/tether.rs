@@ -1,4 +1,9 @@
-//! Tether (USDT) payment rail: buy `THH` with dollars. ARCHITECTURE.md §4.5.1.
+//! Stablecoin payment rail: buy `THH` with dollars, as USDT (Tether) or
+//! USDC (Circle) on an EVM chain. ARCHITECTURE.md §4.5.1.
+//!
+//! Each coin is its own backend instance and its own NUT-04 method
+//! (`usdt`, `usdc`); both coins have 6 decimals, so "micro-USDT" below
+//! means the token's base unit for either coin.
 //!
 //! The pitch is USD -> hashrate -> BTC without an exchange: a buyer pays
 //! USDT, receives `THH` ecash, and redeems it as hashrate pointed at their
@@ -6,7 +11,7 @@
 //! USDT. Nothing on this rail pays out, so every outgoing call is refused.
 //!
 //! cdk sees this as a payment backend registered for
-//! `(THH, PaymentMethod::Custom("usdt"))`:
+//! `(THH, PaymentMethod::Custom("usdt"))` (or `"usdc"`):
 //!
 //! - **mint quote** (`create_incoming_payment_request`): the wallet asks for
 //!   N `THH`. A [`ThhPricer`] prices that in micro-USDT (USDT has 6
@@ -27,11 +32,16 @@
 //! quote (wrong amount, or after the quote was purged) is logged and left
 //! for the operator to refund by hand.
 //!
-//! Prototype limits: open quotes live in memory, so a restart forgets
-//! them; and [`EvmRpcSource`] trusts its RPC endpoint.
+//! Real funds: with [`TetherPayments::with_persistence`] open quotes,
+//! settled quotes, handled transfers and the next block to scan are
+//! written to a JSON file after every change, so a restart neither forgets
+//! a buyer's quote nor misses transfers made while the mint was down.
+//! Transfers count once they are `confirmations` blocks deep. Remaining
+//! limit: [`EvmRpcSource`] trusts its RPC endpoint.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -52,8 +62,53 @@ use crate::pricing::{PricingError, ThhPricer};
 
 /// Method name as it appears in mint requests and NUT-04 settings.
 pub const METHOD: &str = "usdt";
+/// Method name of the USDC rail.
+pub const USDC_METHOD: &str = "usdc";
 
-/// USDT has 6 decimals on every chain Tether issues on.
+/// Tether USD on Ethereum mainnet (6 decimals).
+pub const MAINNET_USDT: &str = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
+/// Circle USDC on Ethereum mainnet (6 decimals).
+pub const MAINNET_USDC: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+pub const MAINNET_CHAIN_ID: u64 = 1;
+/// Circle's native USDC on Base mainnet (6 decimals).
+pub const BASE_USDC: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+pub const BASE_CHAIN_ID: u64 = 8453;
+
+/// Which dollar stablecoin a rail takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Stablecoin {
+    Usdt,
+    Usdc,
+}
+
+impl Stablecoin {
+    /// NUT-04 method name.
+    pub fn method(self) -> &'static str {
+        match self {
+            Stablecoin::Usdt => METHOD,
+            Stablecoin::Usdc => USDC_METHOD,
+        }
+    }
+
+    /// Ticker shown to buyers.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Stablecoin::Usdt => "USDT",
+            Stablecoin::Usdc => "USDC",
+        }
+    }
+
+    /// The coin's token contract on Ethereum mainnet.
+    pub fn mainnet_token(self) -> &'static str {
+        match self {
+            Stablecoin::Usdt => MAINNET_USDT,
+            Stablecoin::Usdc => MAINNET_USDC,
+        }
+    }
+}
+
+/// USDT and USDC both have 6 decimals on every chain they are issued on.
 pub const MICRO_PER_USDT: u64 = 1_000_000;
 
 /// Quotes are rounded up to whole cents; the digits below carry the tag.
@@ -106,20 +161,27 @@ pub fn format_usdt(micro: u64) -> String {
     format!("{}.{:06}", micro / MICRO_PER_USDT, micro % MICRO_PER_USDT)
 }
 
-/// Where USDT is paid: an ERC-20 token on an EVM chain.
+/// Where a stablecoin is paid: an ERC-20 token on an EVM chain.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsdtRail {
-    /// EIP-155 chain id, e.g. 11155111 for Sepolia.
+    pub coin: Stablecoin,
+    /// EIP-155 chain id, e.g. 1 for Ethereum mainnet.
     pub chain_id: u64,
-    /// USDT token contract.
+    /// Token contract.
     pub token: String,
     /// Operator's address that receives every payment.
     pub deposit_address: String,
 }
 
 impl UsdtRail {
-    pub fn new(chain_id: u64, token: &str, deposit_address: &str) -> Result<Self, Error> {
+    pub fn new(
+        coin: Stablecoin,
+        chain_id: u64,
+        token: &str,
+        deposit_address: &str,
+    ) -> Result<Self, Error> {
         Ok(Self {
+            coin,
             chain_id,
             token: parse_address(token)?,
             deposit_address: parse_address(deposit_address)?,
@@ -138,10 +200,14 @@ impl UsdtRail {
 /// Details of a USDT mint quote, sent to the wallet as `extra_json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsdtPaymentRequest {
+    /// `USDT` or `USDC`.
+    #[serde(default = "default_symbol")]
+    pub symbol: String,
     pub chain_id: u64,
     pub token: String,
     pub to: String,
-    /// Exact amount to send, as a decimal USDT string. Serialized as
+    /// Exact amount to send, as a decimal string of the coin (the name
+    /// says USDT for compatibility; it is USDC on the USDC rail). Serialized as
     /// `amount_usdt`: cdk flattens `extra_json` into the NUT-04 quote,
     /// whose own `amount` is the THH amount, and a second `amount` key made
     /// cdk wallets fail to parse the quote.
@@ -155,7 +221,11 @@ pub struct UsdtPaymentRequest {
     pub expiry: u64,
 }
 
-/// One confirmed ERC-20 transfer of the USDT token.
+fn default_symbol() -> String {
+    "USDT".into()
+}
+
+/// One confirmed ERC-20 transfer of the rail's token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsdtTransfer {
     pub tx_hash: String,
@@ -342,22 +412,59 @@ impl ThhPricer for SatsToUsdt {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct OpenQuote {
     id: String,
     amount_thh: u64,
     expires_at: u64,
 }
 
-#[derive(Debug, Default)]
+/// A settled quote: what cdk is told was paid.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Paid {
+    amount_thh: u64,
+    /// `tx_hash:log_index` of the paying transfer.
+    payment_id: String,
+}
+
+impl Paid {
+    fn response(&self, id: &str) -> WaitPaymentResponse {
+        WaitPaymentResponse {
+            payment_identifier: PaymentIdentifier::CustomId(id.to_string()),
+            payment_amount: Amount::new(self.amount_thh, thh_unit()),
+            payment_id: self.payment_id.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct State {
     /// Open quotes keyed by their exact micro-USDT amount.
     open: HashMap<u64, OpenQuote>,
     /// Settled quotes by lookup id.
-    paid: HashMap<String, WaitPaymentResponse>,
+    paid: HashMap<String, Paid>,
     /// Transfers already handled, as `(tx_hash, log_index)`.
     seen: HashSet<(String, u64)>,
     next_block: Option<u64>,
+}
+
+impl State {
+    fn load(path: &Path) -> Result<Self, Error> {
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| Error::Custom(format!("read {}: {e}", path.display()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(Error::Custom(format!("read {}: {e}", path.display()))),
+        }
+    }
+
+    /// Write atomically (temp file + rename) so a crash mid-write cannot
+    /// leave a torn file.
+    fn save(&self, path: &Path) -> std::io::Result<()> {
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(self)?)?;
+        std::fs::rename(&tmp, path)
+    }
 }
 
 #[derive(Debug)]
@@ -368,6 +475,8 @@ struct Inner {
     quote_ttl: Duration,
     poll_interval: Duration,
     state: Mutex<State>,
+    /// Where `state` is saved, if anywhere.
+    persist: Option<PathBuf>,
     active: AtomicBool,
     /// Set by `cancel_wait_invoice`; checked every tick so a cancel that
     /// lands mid-poll is not lost.
@@ -375,7 +484,7 @@ struct Inner {
     cancel: Notify,
 }
 
-/// `usdt` mint backend. Cheap to clone; clones share state.
+/// `usdt` / `usdc` mint backend. Cheap to clone; clones share state.
 #[derive(Debug, Clone)]
 pub struct TetherPayments {
     inner: Arc<Inner>,
@@ -391,6 +500,7 @@ impl TetherPayments {
                 quote_ttl: DEFAULT_QUOTE_TTL,
                 poll_interval: DEFAULT_POLL_INTERVAL,
                 state: Mutex::new(State::default()),
+                persist: None,
                 active: AtomicBool::new(false),
                 stop: AtomicBool::new(false),
                 cancel: Notify::new(),
@@ -407,6 +517,31 @@ impl TetherPayments {
                 poll_interval,
                 ..inner
             }),
+        }
+    }
+
+    /// Keep quote state in `path` (JSON), loading what is already there.
+    /// Call before sharing clones.
+    pub fn with_persistence(self, path: impl Into<PathBuf>) -> Result<Self, Error> {
+        let path = path.into();
+        let state = State::load(&path)?;
+        let inner = Arc::try_unwrap(self.inner).expect("with_persistence before cloning");
+        Ok(Self {
+            inner: Arc::new(Inner {
+                state: Mutex::new(state),
+                persist: Some(path),
+                ..inner
+            }),
+        })
+    }
+
+    /// Save `state` if persistence is on. A failed save is logged, not
+    /// fatal: the in-memory state is still right until the next restart.
+    fn save(&self, state: &State) {
+        if let Some(path) = &self.inner.persist {
+            if let Err(e) = state.save(path) {
+                tracing::error!(path = %path.display(), "saving {} quotes failed: {e}", self.inner.rail.coin.symbol());
+            }
         }
     }
 
@@ -451,11 +586,13 @@ impl TetherPayments {
                 expires_at: expiry,
             },
         );
+        self.save(&state);
         drop(state);
 
         Ok((
             id,
             UsdtPaymentRequest {
+                symbol: self.inner.rail.coin.symbol().to_string(),
                 chain_id: self.inner.rail.chain_id,
                 token: self.inner.rail.token.clone(),
                 to: self.inner.rail.deposit_address.clone(),
@@ -484,17 +621,18 @@ impl TetherPayments {
                 tracing::warn!(
                     tx = %t.tx_hash,
                     amount = %format_usdt(u64::try_from(t.value).unwrap_or(u64::MAX)),
-                    "USDT transfer matches no open quote; refund by hand"
+                    coin = self.inner.rail.coin.symbol(),
+                    "stablecoin transfer matches no open quote; refund by hand"
                 );
                 continue;
             };
-            let resp = WaitPaymentResponse {
-                payment_identifier: PaymentIdentifier::CustomId(quote.id.clone()),
-                payment_amount: Amount::new(quote.amount_thh, thh_unit()),
+            let paid = Paid {
+                amount_thh: quote.amount_thh,
                 payment_id: format!("{}:{}", t.tx_hash, t.log_index),
             };
-            tracing::info!(quote = %quote.id, thh = quote.amount_thh, tx = %t.tx_hash, "USDT quote paid");
-            state.paid.insert(quote.id, resp.clone());
+            let resp = paid.response(&quote.id);
+            tracing::info!(quote = %quote.id, thh = quote.amount_thh, tx = %t.tx_hash, coin = self.inner.rail.coin.symbol(), "stablecoin quote paid");
+            state.paid.insert(quote.id, paid);
             settled.push(resp);
         }
         let cutoff = now_secs().saturating_sub(GRACE_AFTER_EXPIRY.as_secs());
@@ -512,11 +650,12 @@ impl TetherPayments {
             .next_block;
         let (transfers, next) = self.inner.source.poll(from).await?;
         let settled = self.settle(transfers);
-        self.inner
-            .state
-            .lock()
-            .expect("tether state poisoned")
-            .next_block = Some(next);
+        let mut state = self.inner.state.lock().expect("tether state poisoned");
+        // Settlements and the scan position are saved together, so a crash
+        // can only make the next start rescan blocks (harmless: `seen`
+        // dedups), never skip them.
+        state.next_block = Some(next);
+        self.save(&state);
         Ok(settled)
     }
 }
@@ -528,8 +667,9 @@ impl MintPayment for TetherPayments {
     async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
         let mut custom = HashMap::new();
         custom.insert(
-            METHOD.to_string(),
+            self.inner.rail.coin.method().to_string(),
             serde_json::json!({
+                "symbol": self.inner.rail.coin.symbol(),
                 "chain_id": self.inner.rail.chain_id,
                 "token": self.inner.rail.token,
                 "deposit_address": self.inner.rail.deposit_address,
@@ -551,7 +691,7 @@ impl MintPayment for TetherPayments {
         let IncomingPaymentOptions::Custom(custom) = options else {
             return Err(Error::UnsupportedPaymentOption);
         };
-        if custom.method != METHOD {
+        if custom.method != self.inner.rail.coin.method() {
             return Err(Error::UnsupportedPaymentOption);
         }
         if *custom.amount.unit() != thh_unit() {
@@ -634,7 +774,12 @@ impl MintPayment for TetherPayments {
             return Ok(Vec::new());
         };
         let state = self.inner.state.lock().expect("tether state poisoned");
-        Ok(state.paid.get(id).cloned().into_iter().collect())
+        Ok(state
+            .paid
+            .get(id)
+            .map(|p| p.response(id))
+            .into_iter()
+            .collect())
     }
 
     async fn check_outgoing_payment(
@@ -686,6 +831,7 @@ mod tests {
         // cdk flattens extra_json into the NUT-04 response, which has its
         // own `amount` (THH); a second `amount` broke wallets.
         let req = UsdtPaymentRequest {
+            symbol: "USDT".into(),
             chain_id: 1,
             token: "t".into(),
             to: "a".into(),
@@ -702,7 +848,7 @@ mod tests {
     }
 
     fn rail() -> UsdtRail {
-        UsdtRail::new(11_155_111, TOKEN, DEPOSIT).unwrap()
+        UsdtRail::new(Stablecoin::Usdt, 11_155_111, TOKEN, DEPOSIT).unwrap()
     }
 
     /// $2.50 per THH.
@@ -924,6 +1070,85 @@ mod tests {
         let s = p.get_settings().await.unwrap();
         assert_eq!(s.unit, "THH");
         assert!(s.custom.contains_key(METHOD));
+    }
+
+    #[tokio::test]
+    async fn usdc_rail_answers_only_its_own_method() {
+        let rail = UsdtRail::new(Stablecoin::Usdc, 1, MAINNET_USDC, DEPOSIT).unwrap();
+        let p = TetherPayments::new(
+            rail,
+            Arc::new(FixedUsdtPrice {
+                micro_per_thh: 1_000_000,
+            }),
+            Arc::new(FakeSource::default()),
+        );
+        assert!(p
+            .create_incoming_payment_request(mint_opts(1))
+            .await
+            .is_err());
+        let mut usdc = mint_opts(2);
+        if let IncomingPaymentOptions::Custom(c) = &mut usdc {
+            c.method = USDC_METHOD.into();
+        }
+        let r = p.create_incoming_payment_request(usdc).await.unwrap();
+        let d = details(&r);
+        assert_eq!(d.symbol, "USDC");
+        assert_eq!(d.chain_id, 1);
+        assert_eq!(d.token, MAINNET_USDC.to_ascii_lowercase());
+        let s = p.get_settings().await.unwrap();
+        assert!(s.custom.contains_key(USDC_METHOD));
+        assert!(!s.custom.contains_key(METHOD));
+    }
+
+    #[tokio::test]
+    async fn quotes_survive_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usdt-quotes.json");
+        let open = |src: Arc<FakeSource>| {
+            TetherPayments::new(
+                rail(),
+                Arc::new(FixedUsdtPrice {
+                    micro_per_thh: 2_500_000,
+                }),
+                src,
+            )
+            .with_persistence(&path)
+            .unwrap()
+        };
+
+        // Quote opened, one block scanned, then the mint stops.
+        let src = Arc::new(FakeSource::default());
+        let p = open(src.clone());
+        let r = p
+            .create_incoming_payment_request(mint_opts(3))
+            .await
+            .unwrap();
+        let d = details(&r);
+        p.poll_once().await.unwrap();
+        drop(p);
+
+        // After the restart the buyer's transfer still settles the quote,
+        // and scanning resumes where it stopped.
+        let src = Arc::new(FakeSource::default());
+        let p = open(src.clone());
+        src.push(vec![transfer("0x11", d.amount_micro)]);
+        assert_eq!(p.poll_once().await.unwrap().len(), 1);
+        assert_eq!(*src.polls.lock().unwrap(), vec![Some(101)]);
+        drop(p);
+
+        // And the settlement itself is remembered: cdk can still ask.
+        let p = open(Arc::new(FakeSource::default()));
+        let status = p
+            .check_incoming_payment_status(&r.request_lookup_id)
+            .await
+            .unwrap();
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].payment_amount, Amount::new(3, thh_unit()));
+        // Replaying the transfer after a restart pays nothing twice.
+        let src = Arc::new(FakeSource::default());
+        let p = open(src.clone());
+        src.push(vec![transfer("0x11", d.amount_micro)]);
+        assert!(p.poll_once().await.unwrap().is_empty());
     }
 
     #[test]

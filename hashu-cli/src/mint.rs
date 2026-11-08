@@ -5,7 +5,8 @@
 //! - a **cdk mint** for the `THH` unit, served over HTTP (NUT-00..NUT-07 plus
 //!   the payment-method routes);
 //! - **payment rails** that sell `THH`: Lightning over phoenixd (mainnet
-//!   sats, receive-only) and/or Tether (USDT on Sepolia by default);
+//!   sats, receive-only) and/or stablecoins (USDT on Ethereum mainnet and
+//!   USDC on Base by default, each chain configurable);
 //! - the **`hashrate` melt method**, which opens redemptions in a
 //!   [`RedemptionLedger`] journaled to `<data-dir>/redemptions.jsonl`, so
 //!   open redemptions (and their share trees, `share-audit.jsonl`) resume
@@ -42,8 +43,8 @@ use hashu_mint::payment::{thh_unit, ThhIssuer};
 use hashu_mint::phoenixd::{Phoenixd, PhoenixdConfig};
 use hashu_mint::pricing::{SatsPerThhFromHashprice, ThhPricer, SECS_PER_THH};
 use hashu_mint::tether::{
-    EvmRpcSource, FixedUsdtPrice, SatsToUsdt, TetherPayments, UsdtRail, METHOD as USDT,
-    MICRO_PER_USDT,
+    EvmRpcSource, FixedUsdtPrice, SatsToUsdt, Stablecoin, TetherPayments, UsdtRail, BASE_CHAIN_ID,
+    BASE_USDC, MAINNET_CHAIN_ID, MAINNET_USDT, MICRO_PER_USDT,
 };
 use hashu_proxy::audit::ShareAudit;
 use hashu_proxy::control::ControlState;
@@ -62,8 +63,14 @@ use crate::operator::{self, ControlledPricer, DaemonInfo, MintControls, Operator
 /// Asher's Testnet4 pool at the hackathon. Default upstream for the proxy.
 pub const DEMO_POOL: &str = "stratum+tcp://216.230.225.61:3333";
 
-/// Test USDT (6 decimals) on Sepolia, the token the Tether rail watches by
-/// default.
+/// Public JSON-RPC endpoints the stablecoin rails watch by default: USDT
+/// on Ethereum mainnet, USDC on Base. Fine to start; a mint taking real
+/// money should use its own node or a paid provider (`--usdt-rpc`,
+/// `--usdc-rpc`).
+pub const MAINNET_PUBLIC_RPC: &str = "https://ethereum-rpc.publicnode.com";
+pub const BASE_PUBLIC_RPC: &str = "https://base-rpc.publicnode.com";
+
+/// For rehearsals on Sepolia: test USDT, chain id and public RPC.
 pub const SEPOLIA_TEST_USDT: &str = "0x7169D38820dfd117C3FA1f22a697dBA58d90BA06";
 pub const SEPOLIA_CHAIN_ID: u64 = 11_155_111;
 pub const SEPOLIA_PUBLIC_RPC: &str = "https://ethereum-sepolia-rpc.publicnode.com";
@@ -171,24 +178,42 @@ pub struct RunArgs {
     #[arg(long, value_enum)]
     pub lightning: Option<LightningBackend>,
 
-    // ---- Tether -----------------------------------------------------
-    /// EVM address that receives USDT. Turns the Tether rail on.
+    // ---- Stablecoins (USDT, USDC) -------------------------------------
+    /// EVM address that receives USDT. Turns the USDT rail on.
     #[arg(long, env = "HASHU_USDT_DEPOSIT")]
     pub usdt_deposit: Option<String>,
-    /// EVM JSON-RPC endpoint the Tether rail watches.
-    #[arg(long, env = "HASHU_USDT_RPC", default_value = SEPOLIA_PUBLIC_RPC)]
-    pub usdt_rpc: String,
-    /// USDT token contract.
-    #[arg(long, env = "HASHU_USDT_TOKEN", default_value = SEPOLIA_TEST_USDT)]
+    /// USDT token contract (Ethereum mainnet USDT by default).
+    #[arg(long, env = "HASHU_USDT_TOKEN", default_value = MAINNET_USDT)]
     pub usdt_token: String,
-    /// Chain id of `--usdt-rpc`.
-    #[arg(long, env = "HASHU_USDT_CHAIN_ID", default_value_t = SEPOLIA_CHAIN_ID)]
+    /// EVM JSON-RPC endpoint the USDT rail watches.
+    #[arg(long, env = "HASHU_USDT_RPC", default_value = MAINNET_PUBLIC_RPC)]
+    pub usdt_rpc: String,
+    /// Chain id of `--usdt-rpc` (1 = Ethereum mainnet).
+    #[arg(long, env = "HASHU_USDT_CHAIN_ID", default_value_t = MAINNET_CHAIN_ID)]
     pub usdt_chain_id: u64,
-    /// Confirmations before a USDT transfer pays a quote.
-    #[arg(long, default_value_t = 1)]
+    /// Blocks a USDT transfer must be buried under before it pays a quote.
+    /// 12 is about 2.5 minutes on Ethereum (finality is ~64).
+    #[arg(long, env = "HASHU_USDT_CONFIRMATIONS", default_value_t = 12)]
     pub usdt_confirmations: u64,
-    /// Fixed USDT price per THH (e.g. 0.05). Takes precedence over
-    /// `--usd-per-btc`.
+    /// EVM address that receives USDC. Turns the USDC rail on. May be the
+    /// same address as `--usdt-deposit`.
+    #[arg(long, env = "HASHU_USDC_DEPOSIT")]
+    pub usdc_deposit: Option<String>,
+    /// USDC token contract (Circle's native USDC on Base by default).
+    #[arg(long, env = "HASHU_USDC_TOKEN", default_value = BASE_USDC)]
+    pub usdc_token: String,
+    /// EVM JSON-RPC endpoint the USDC rail watches.
+    #[arg(long, env = "HASHU_USDC_RPC", default_value = BASE_PUBLIC_RPC)]
+    pub usdc_rpc: String,
+    /// Chain id of `--usdc-rpc` (8453 = Base mainnet).
+    #[arg(long, env = "HASHU_USDC_CHAIN_ID", default_value_t = BASE_CHAIN_ID)]
+    pub usdc_chain_id: u64,
+    /// Blocks a USDC transfer must be buried under before it pays a quote.
+    /// 30 is about a minute on Base (2 s blocks).
+    #[arg(long, env = "HASHU_USDC_CONFIRMATIONS", default_value_t = 30)]
+    pub usdc_confirmations: u64,
+    /// Fixed dollar price per THH (e.g. 0.05), used for both USDT and
+    /// USDC. Takes precedence over `--usd-per-btc`.
     #[arg(long, env = "HASHU_USDT_PER_THH")]
     pub usdt_per_thh: Option<f64>,
     /// BTC/USD rate, to price USDT quotes from the sats price so both rails
@@ -464,7 +489,7 @@ fn usdt_pricer(
             usd_per_btc,
         }));
     }
-    bail!("the Tether rail needs a price: pass --usdt-per-thh or --usd-per-btc")
+    bail!("the stablecoin rails need a price: pass --usdt-per-thh or --usd-per-btc")
 }
 
 /// Poll MRR for the account's active rentals, if a key is configured.
@@ -565,7 +590,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         Arc::new(sats_pricer(&oracle, None)),
         controls.clone(),
     ));
-    let mut usdt_controlled = None;
+    let mut usdt_controlled: Option<Arc<ControlledPricer>> = None;
 
     // ---- mint ---------------------------------------------------------
     let seed = load_or_create_seed(&args.data_dir)?;
@@ -630,29 +655,63 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         rails.push(format!("bolt11 ({kind})"));
     }
 
-    // Tether: mint-only.
-    if let Some(deposit) = &args.usdt_deposit {
-        let rail = UsdtRail::new(args.usdt_chain_id, &args.usdt_token, deposit)
-            .map_err(|e| anyhow::anyhow!("Tether rail: {e}"))?;
-        let source =
-            EvmRpcSource::new(args.usdt_rpc.clone(), rail.clone(), args.usdt_confirmations);
-        let pricer = Arc::new(ControlledPricer::new(
-            usdt_pricer(&args, &oracle)?,
-            controls.clone(),
-        ));
-        usdt_controlled = Some(pricer.clone());
-        let payments = TetherPayments::new(rail, pricer, Arc::new(source));
+    // Stablecoins: mint-only. One dollar price serves both coins.
+    let coins = [
+        (
+            Stablecoin::Usdt,
+            &args.usdt_deposit,
+            &args.usdt_token,
+            &args.usdt_rpc,
+            args.usdt_chain_id,
+            args.usdt_confirmations,
+        ),
+        (
+            Stablecoin::Usdc,
+            &args.usdc_deposit,
+            &args.usdc_token,
+            &args.usdc_rpc,
+            args.usdc_chain_id,
+            args.usdc_confirmations,
+        ),
+    ];
+    for (coin, deposit, token, rpc, chain_id, confirmations) in coins {
+        let Some(deposit) = deposit.as_deref().filter(|d| !d.trim().is_empty()) else {
+            continue;
+        };
+        let symbol = coin.symbol();
+        let rail = UsdtRail::new(coin, chain_id, token, deposit)
+            .map_err(|e| anyhow::anyhow!("{symbol} rail: {e}"))?;
+        let source = EvmRpcSource::new(rpc.clone(), rail.clone(), confirmations);
+        let pricer = match &usdt_controlled {
+            Some(p) => p.clone(),
+            None => {
+                let p = Arc::new(ControlledPricer::new(
+                    usdt_pricer(&args, &oracle)?,
+                    controls.clone(),
+                ));
+                usdt_controlled = Some(p.clone());
+                p
+            }
+        };
+        let quotes = args.data_dir.join(format!("{}-quotes.json", coin.method()));
+        let payments = TetherPayments::new(rail, pricer, Arc::new(source))
+            .with_persistence(&quotes)
+            .map_err(|e| anyhow::anyhow!("{symbol} rail: {e}"))?;
         builder
             .add_payment_processor(
                 thh_unit(),
-                PaymentMethod::Custom(USDT.into()),
+                PaymentMethod::Custom(coin.method().into()),
                 limits,
                 Arc::new(payments),
             )
             .await
-            .context("register Tether rail")?;
-        methods.push(USDT.into());
-        rails.push(format!("usdt (chain {}, to {deposit})", args.usdt_chain_id));
+            .with_context(|| format!("register {symbol} rail"))?;
+        methods.push(coin.method().into());
+        rails.push(format!(
+            "{} (chain {}, to {deposit})",
+            coin.method(),
+            chain_id
+        ));
     }
     // cdk advertises every processor for both minting and melting. A Hashu
     // mint sells THH over its payment rails and redeems it only as
@@ -666,7 +725,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
 
     if rails.is_empty() {
         tracing::warn!(
-            "no payment rail enabled: set PHOENIXD_URL/PHOENIXD_PASSWORD, --lightning fake, or --usdt-deposit"
+            "no payment rail enabled: set PHOENIXD_URL/PHOENIXD_PASSWORD, --lightning fake, --usdt-deposit or --usdc-deposit"
         );
     }
 

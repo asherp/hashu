@@ -199,12 +199,15 @@ redeems it as hashrate pointed at their own pool, which pays them in
 bitcoin. The mint only receives USDT and never pays anything out, so
 a Hashu operator is selling computation, not moving money.
 
-- **Rail: USDT as an ERC-20 on an EVM chain**, watched over plain
+- **Rail: USDT or USDC as an ERC-20 on an EVM chain**, watched over plain
   JSON-RPC (`eth_blockNumber` + `eth_getLogs` for `Transfer` logs into
   the operator's deposit address). One code path covers Ethereum,
-  Arbitrum, Plasma and the USDT0 chains. The Testnet4 demo uses
-  **Sepolia** with a 6-decimal test USDT token, since no chain has an
-  official test USDT and Sepolia is the testnet every wallet supports.
+  Arbitrum, Plasma and the USDT0 chains. Each coin is its own backend and
+  NUT-04 method (`usdt`, `usdc`) with its own chain, so an operator can
+  take the coin and chain their buyers prefer. Defaults: USDT on
+  **Ethereum mainnet**, USDC on **Base**; Sepolia (test USDT, Circle test
+  USDC) is for rehearsals. Open quotes, settlements and the scan
+  position persist to `<data-dir>/<method>-quotes.json`.
 - **cdk wiring:** `hashu_mint::tether::TetherPayments` is a
   `MintPayment` backend for `(THH, Custom("usdt"))`. A mint quote is
   requested in `THH`; a `ThhPricer` (shared with the Lightning rail,

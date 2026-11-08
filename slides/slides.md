@@ -271,7 +271,7 @@ thermostat with hysteresis plus a ceiling; manual override per heater.
 
 **Built, not yet proven live**
 
-- 🧪 USDT rail (Sepolia test USDT)
+- 💵 USDT (Ethereum) and USDC (Base) rails
 - 🧪 A physical heater run (Bitaxe / Heatbit)
 
 **Roadmap**

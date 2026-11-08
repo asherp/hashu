@@ -2,7 +2,7 @@
 //! HTTP port at `/checkout/` (issue #3).
 //!
 //! A buyer picks an amount of THH and a rail, pays the Lightning invoice
-//! (or the USDT deposit) shown as a QR code, and gets a Cashu token for the
+//! (or the USDT/USDC deposit) shown as a QR code, and gets a Cashu token for the
 //! THH. They can then paste the token back with their pool and worker to
 //! redeem it as hashrate, and watch the hashrate land on their pool.
 //!
@@ -42,7 +42,7 @@ use cdk::wallet::{KeysetFilter, MeltOutcome, ReceiveOptions, Wallet};
 use cdk::Amount;
 use hashu_core::redemption::{RedemptionId, RedemptionLedger, HASHES_PER_THH};
 use hashu_mint::melt::{redemption_id_for, METHOD as HASHRATE};
-use hashu_mint::tether::METHOD as USDT;
+use hashu_mint::tether::{METHOD as USDT, USDC_METHOD as USDC};
 use hashu_proxy::meter::HashrateMeter;
 use hashu_proxy::router::upstream_for_pool_url;
 use serde_json::{json, Value};
@@ -458,7 +458,7 @@ async fn buy(State(s): State<Arc<CheckoutState>>, body: Bytes) -> Response {
     };
     let price = match method.as_str() {
         "bolt11" => s.sats.as_ref().and_then(|p| p.quote(amount).ok()),
-        USDT => s.usdt.as_ref().and_then(|p| p.quote(amount).ok()),
+        USDT | USDC => s.usdt.as_ref().and_then(|p| p.quote(amount).ok()),
         _ => None,
     };
     let id = quote.0.clone();
@@ -496,7 +496,7 @@ fn checkout_json(id: &str, c: &Checkout, state: &str) -> Value {
         "id": id,
         "method": c.method,
         "amount_thh": c.amount_thh,
-        // sats for bolt11, micro-USDT for usdt
+        // sats for bolt11, micro-USDT/USDC for usdt/usdc
         "price": c.price,
         "request": c.request,
         "qr_svg": qr_svg(&qr_data),
@@ -835,7 +835,10 @@ pub(crate) struct TokenProblem {
 
 impl TokenProblem {
     fn new(issue: TokenIssue) -> Self {
-        Self { issue, detail: None }
+        Self {
+            issue,
+            detail: None,
+        }
     }
 }
 
@@ -906,7 +909,11 @@ pub(crate) async fn inspect_token(wallet: &Wallet, raw: &str) -> Result<CheckedT
         .collect();
     let unspent_thh = unspent.iter().map(|p| u64::from(p.amount)).sum();
     if unspent_thh == 0 {
-        return problem(if pending { TokenIssue::Pending } else { TokenIssue::Spent });
+        return problem(if pending {
+            TokenIssue::Pending
+        } else {
+            TokenIssue::Spent
+        });
     }
     Ok(CheckedToken {
         total_thh,

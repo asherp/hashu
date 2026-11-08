@@ -190,7 +190,10 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const fmtThh = (x, d) => Number.isFinite(x) ? x.toLocaleString(undefined, { minimumFractionDigits: d ?? (x < 10 ? 3 : 2), maximumFractionDigits: d ?? (x < 10 ? 3 : 2) }) : '—'
 const fmtRate = (hs) => { if (!(hs > 0)) return '0 H/s'; const u = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s']; let i = 0; while (hs >= 1000 && i < u.length - 1) { hs /= 1000; i++ } return `${hs.toFixed(hs >= 100 ? 0 : 1)} ${u[i]}` }
 const fmtDur = (s) => { if (!Number.isFinite(s) || s < 0) return '—'; s = Math.round(s); if (s < 60) return `${s}s`; if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`; return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m` }
-const methodName = (m) => m === 'bolt11' ? 'Lightning' : m === 'usdt' ? 'USDT' : m
+const STABLES = { usdt: 'USDT', usdc: 'USDC' }
+const CHAINS = { 1: 'Ethereum', 8453: 'Base', 42161: 'Arbitrum', 10: 'Optimism', 137: 'Polygon', 11155111: 'Sepolia testnet', 84532: 'Base Sepolia testnet' }
+const chainName = (req) => { const m = /@(\d+)\//.exec(req || ''); return m ? ` on ${CHAINS[m[1]] || `chain ${m[1]}`}` : '' }
+const methodName = (m) => m === 'bolt11' ? 'Lightning' : STABLES[m] || m
 
 async function api (path, opts) {
   const r = await fetch(path, opts)
@@ -219,9 +222,10 @@ function renderPrice () {
   const hours = n
   $('equiv').textContent = `${n.toLocaleString()} THH = ${hours < 48 ? `1 TH/s for ${hours} h` : `${(n / 24).toFixed(1)} TH/s for a day`}, or ${(n * HASHES_PER_THH).toExponential(2)} hashes.`
   $('eta').textContent = etaText(n)
-  if (st.method === 'usdt' && i.usdt_per_thh != null) {
-    $('price-label').textContent = `${(i.usdt_per_thh).toFixed(4)} USDT per THH`
-    $('price').textContent = `${(n * i.usdt_per_thh).toFixed(2)} USDT`
+  const coin = STABLES[st.method]
+  if (coin && i.usdt_per_thh != null) {
+    $('price-label').textContent = `${(i.usdt_per_thh).toFixed(4)} ${coin} per THH`
+    $('price').textContent = `${(n * i.usdt_per_thh).toFixed(2)} ${coin}`
   } else if (i.sats_per_thh != null) {
     $('price-label').textContent = `${i.sats_per_thh.toLocaleString()} sats per THH`
     $('price').textContent = `${(n * i.sats_per_thh).toLocaleString()} sats`
@@ -313,12 +317,12 @@ function showPay () {
   $('qr').innerHTML = c.qr_svg || ''
   $('request').textContent = c.request
   const ln = c.method === 'bolt11'
-  $('pay-title').textContent = ln ? `Pay ${c.price != null ? c.price.toLocaleString() + ' sats' : 'the invoice'} over Lightning` : 'Send USDT'
+  $('pay-title').textContent = ln ? `Pay ${c.price != null ? c.price.toLocaleString() + ' sats' : 'the invoice'} over Lightning` : `Send ${methodName(c.method)}`
   $('open-wallet').href = ln ? `lightning:${c.request}` : c.request
   const m = !ln && /uint256=(\d+)/.exec(c.request)
   $('pay-note').textContent = ln
     ? `For ${c.amount_thh} THH. Scan with any Lightning wallet. This page updates when the payment arrives.`
-    : `Send exactly ${m ? (Number(m[1]) / 1e6).toFixed(6) : 'the amount in the request'} USDT to the address in the request; the exact amount identifies your order. ${c.amount_thh} THH.`
+    : `Send exactly ${m ? (Number(m[1]) / 1e6).toFixed(6) : 'the amount in the request'} ${methodName(c.method)}${chainName(c.request)} to the address in the request; the exact amount identifies your order. ${c.amount_thh} THH.`
   $('s-pay').scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 async function pollBuy () {
