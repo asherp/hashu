@@ -138,7 +138,7 @@ docker compose exec phoenixd cat /phoenix/.phoenix/seed.dat; echo
 ```
 
 Write them down offline. Also keep the mint's own seed, which signs the
-`THH` ecash (losing it means outstanding tokens cannot be verified):
+issued `THH` vouchers (losing it means outstanding tokens cannot be verified):
 
 ```bash
 docker compose exec hashu cat /data/seed.hex; echo
@@ -395,7 +395,7 @@ On stage:
    `redeem` worker appears with ~100 TH/s for those minutes.
 
 **Tell the mint how much it can sell.** The mint can only sell THH the
-rentals will still deliver: `rented TH/s × hours left − THH owed` (ecash
+rentals will still deliver: `rented TH/s × hours left − THH owed` (vouchers
 held by users, paid-but-unminted quotes and the rest of open
 redemptions). Once a capacity source is set, mint quotes beyond that are
 refused on every rail, the checkout shows "N THH available" and the

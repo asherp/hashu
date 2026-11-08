@@ -107,7 +107,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
   <section class="tiles" aria-label="Summary">
     <div class="tile"><label>Hashrate now</label><b id="t-rate">—</b><small id="t-rate-sub">through the proxy</small></div>
     <div class="tile"><label>THH available</label><b id="t-avail">—</b><small id="t-avail-sub">no rentals: sold out</small></div>
-    <div class="tile"><label>THH owed</label><b id="t-owed">—</b><small>ecash out + open redemptions</small></div>
+    <div class="tile"><label>THH owed</label><b id="t-owed">—</b><small>vouchers out + open redemptions</small></div>
     <div class="tile"><label>Redemption remaining</label><b id="t-open">—</b><small id="t-open-sub">no open redemption</small></div>
     <div class="tile"><label>THH sold</label><b id="t-sold">—</b><small id="t-sold-sub">—</small></div>
     <div class="tile"><label>Heat produced</label><b id="t-heat">—</b><small id="t-heat-sub">estimate</small></div>
@@ -205,7 +205,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 
     <section class="card" aria-labelledby="h-test">
       <h2 id="h-test">Test redemption</h2>
-      <p class="note">Mint THH without a payment to rehearse a redemption. It is real ecash: it counts as owed until redeemed.</p>
+      <p class="note">Mint THH without a payment to rehearse a redemption. They are real vouchers: they count as owed until redeemed.</p>
       <div class="row">
         <input type="number" id="test-amt" min="1" max="1000" step="1" value="1"> <span>THH</span>
         <button class="act" id="btn-test-mint">Mint test THH</button>
@@ -472,7 +472,7 @@ function render () {
   }
   const kv = (rows) => rows.map(([k, v, cls]) => `<dt class="${cls || ''}">${k}</dt><dd class="${cls || ''}">${v}</dd>`).join('')
   $('obl').innerHTML = kv([
-    ['THH ecash held by users', fmtThh(o.thh_in_circulation, 0)],
+    ['THH vouchers held by users', fmtThh(o.thh_in_circulation, 0)],
     ['Paid, not yet minted', fmtThh(o.paid_not_minted_thh, 0)],
     ['Open redemptions, still to deliver', fmtThh(o.open_redemption_remaining_thh)],
     ['Total THH owed', fmtThh(o.total_thh_owed), 'total'],

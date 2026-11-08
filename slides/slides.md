@@ -5,7 +5,7 @@ fonts:
   sans: 'system-ui, -apple-system, "Segoe UI"'
   mono: 'ui-monospace, SFMono-Regular, Menlo'
   provider: none
-title: Hashu — Layer-0 privacy through hashrate ecash
+title: Hashu — Layer-0 privacy through Chaumian hashrate vouchers
 info: |
   Hashu: a hashrate proxy fused with a Cashu (CDK) mint.
   Seven-slide overview of the live mainnet demo at mint.hashu.io.
@@ -19,7 +19,7 @@ mdc: true
 
 <div class="flex items-center gap-3 text-2xl font-bold"><svg viewBox="0 0 32 32" style="width:44px;height:44px" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#f7931a"/><path d="M10 7v18M22 7v18M10 16h12" stroke="#111" stroke-width="3.4" stroke-linecap="round"/></svg> Hashu</div>
 
-<h1 class="hashu-h1">Ehash for <span>hashrate</span>.</h1>
+<h1 class="hashu-h1">Chaumian vouchers for <span>hashrate</span>.</h1>
 
 <p class="hashu-sub">Layer-0 privacy: swap any payment for freshly mined coins</p>
 
@@ -34,7 +34,8 @@ mdc: true
 </style>
 
 <!--
-Ehash: ecash whose backing is hashrate, not bitcoin. Open with the privacy hook,
+Chaumian hashrate vouchers: blind-signed tokens for hashing time, not money and
+not backed by bitcoin. Open with the privacy hook,
 then the next slide explains why fresh coins matter.
 -->
 
@@ -76,7 +77,7 @@ Privacy first: coins bought on an exchange carry a KYC trail, and exchange data
 leaks have turned that trail into a physical-security problem for holders.
 Mining is the one way to get bitcoin with no prior history ("Layer 0").
 Hashu lets anyone get there: pay any way you like (USDT, Lightning, even KYC'd
-sats), receive THH ecash (blind-signed, so the mint cannot link buyer to redeemer),
+sats), receive THH vouchers (blind-signed, so the mint cannot link buyer to redeemer),
 and redeem it as hashrate pointed at your own pool. The pool pays you new coins.
 The mint only ever sells hashing time, so it is not custodying or transmitting
 bitcoin. (Our positioning, not a legal opinion. Your pool account is still your
@@ -95,7 +96,7 @@ sequenceDiagram
   participant P as Stratum proxy
   participant L as Buyer's pool
   B->>M: pay with Lightning (or USDT)
-  M-->>B: blinded THH ecash, priced at the MiningRigRentals market
+  M-->>B: blind-signed THH vouchers, priced at the MiningRigRentals market
   Note over B: hold in Cashu.me, pass on as a QR code
   B->>M: redeem THH {pool, worker, password}
   M->>P: queue redemption (first come, first served)

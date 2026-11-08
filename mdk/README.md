@@ -1,8 +1,8 @@
 # Hashu on MDK: a heater that sells its hashrate
 
 A home miner is a heater that earns bitcoin. With Hashu it can also **sell**
-its hashrate: buyers pay Lightning or Tether for `THH` (terahash-hours, Cashu
-ecash, blind-signed so the mint can't link a purchase to a redemption), and
+its hashrate: buyers pay Lightning or Tether for `THH` (terahash-hours, Chaumian
+hashrate vouchers on Cashu, blind-signed so the mint can't link a purchase to a redemption), and
 redeem it by pointing hashrate at their own pool.
 
 This directory is a [Tether MDK](https://github.com/tetherto/mdk) (0.13.1)

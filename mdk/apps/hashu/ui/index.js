@@ -184,7 +184,7 @@ const g = (e) => ["hashu", "state", e], D = (e) => C(e), w = (e, h) => C(e, { me
   const e = T();
   return /* @__PURE__ */ s("section", { className: "hashu-page", children: [
     /* @__PURE__ */ a(N, { variant: "heading1", children: "Hashu Heater" }),
-    /* @__PURE__ */ a(N, { variant: "secondary", children: "Your miner heats the room and sells its hashrate as THH ecash. When someone redeems THH, the heater switches to the Hashu proxy until the order is filled, then comes back to your pool." }),
+    /* @__PURE__ */ a(N, { variant: "secondary", children: "Your miner heats the room and sells its hashrate as THH vouchers. When someone redeems THH, the heater switches to the Hashu proxy until the order is filled, then comes back to your pool." }),
     /* @__PURE__ */ a(k, { ...e })
   ] });
 }, j = () => {

@@ -1,7 +1,7 @@
 # Hashu — Architecture (Draft v0.1)
 
 A hashrate proxy fused with a Cashu mint. Buyers pay Lightning, receive
-blinded ecash vouchers denominated in hashrate-time, and redeem them to
+Chaumian hashrate vouchers (blind-signed, denominated in hashrate-time), and redeem them to
 direct real hashrate at a pool of their choice.
 
 Domain: **hashu.io**

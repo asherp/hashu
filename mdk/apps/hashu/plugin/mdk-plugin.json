@@ -1,7 +1,7 @@
 {
   "name": "hashu",
   "version": "0.1.0",
-  "description": "Hashu heater: sells a home miner's hashrate as THH ecash, switching its pool through MDK while a redemption is filled.",
+  "description": "Hashu heater: sells a home miner's hashrate as THH vouchers, switching its pool through MDK while a redemption is filled.",
   "routes": [
     {
       "id": "hashu.state",

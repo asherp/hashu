@@ -1,7 +1,8 @@
 # Hashu
 
 A hashrate proxy fused with a Cashu mint. Buyers pay Lightning, receive
-blinded ecash vouchers denominated in hashrate-time (`THH` —
+Chaumian hashrate vouchers: blind-signed tokens denominated in
+hashrate-time (`THH` —
 terahash-hours), and redeem them to direct real hashrate at a pool of
 their choice.
 
@@ -222,7 +223,7 @@ hashu mint run \
 - **Operator GUI** (`http://127.0.0.1:3334/`): real-time hashrate through
   the proxy (from accepted shares, difficulty × 2^32 hashes each, averaged
   over `--hashrate-window` seconds), the current redemption's delivered
-  THH against its target, outstanding obligations (ecash held by users,
+  THH against its target, outstanding obligations (vouchers held by users,
   paid-but-unminted quotes, open redemptions), and controls to pause
   issuance or change the markup live. It trusts whoever can reach the
   port, like `POST /redemptions`: keep it on loopback or behind auth. It
@@ -231,7 +232,7 @@ hashu mint run \
   invoice QR (or the USDT request), and gets a `cashuB` token; pasting it
   back with a pool and worker redeems it and shows the hashrate arriving.
   The daemon runs a throwaway wallet per checkout, so it briefly holds the
-  buyer's ecash; any Cashu wallet with the `thh` unit can skip the page.
+  buyer's vouchers; any Cashu wallet with the `thh` unit can skip the page.
   Per-pool redemption guides (OCEAN, Braiins, ViaBTC, F2Pool, solo pools,
   Testnet4) are in [docs/redeem/](docs/redeem/README.md).
 
