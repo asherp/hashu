@@ -5,24 +5,24 @@
 //! cover words that are never BIP39 words, and its canonical form adds a
 //! checksum and Reed–Solomon parity, so a few mistyped words are repaired.
 //! The paragraph can be read aloud, written down or pasted into a chat, and
-//! it names no mint and does not look like a token to a scanner. It is still
+//! the mint is not readable in it and it does not look like a token to a scanner. It is still
 //! a bearer voucher: whoever can read it can redeem it.
 //!
 //! Before Glossia sees it, the token is packed into a compact envelope,
 //! which roughly halves the words. A V4 token stores each 32-byte secret
-//! as 64 hex characters and spells out its mint and unit; the envelope
-//! stores the raw secret and leaves out the mint and unit when they are
-//! Hashu's. Envelope (all lengths one byte):
+//! as 64 hex characters; the envelope stores the raw 32 bytes. It is the
+//! same envelope Glossia uses for any Cashu token (`glossia::cashu`).
+//! Envelope (all lengths one byte):
 //!
 //! ```text
 //! 0x00 cbor..                       a V4 token's CBOR, unchanged (fallback)
-//! 0x01 flags [len url] [len unit] [len memo]
+//! 0x01 flags len url len unit [len memo]
 //!      nkeysets { len id  nproofs { exp secret[32] C[33] } }
 //! ```
 //!
-//! `flags` bit 0: a mint URL follows (else `https://mint.hashu.io`); bit 1:
-//! a unit follows (else `thh`); bit 2: a memo follows; bit 3: the URL
-//! follows without its `https://`. A proof's amount is `2^exp`. DLEQ
+//! `flags` bit 0: the URL is written without its `https://`; bit 1: a
+//! memo follows. The mint URL and unit are always written: the format
+//! assumes no mint and no unit. A proof's amount is `2^exp`. DLEQ
 //! proofs are left out: the receiver checks the voucher with the mint
 //! instead. A token the envelope can't hold exactly (a locked secret, a
 //! witness, an amount that isn't a power of two) is packed as `0x00` so
@@ -33,16 +33,10 @@ use std::str::FromStr;
 use base64::Engine as _;
 use ciborium::value::Value;
 
-/// The mint and unit the compact envelope assumes when its flags say so.
-pub const DEFAULT_MINT: &str = "https://mint.hashu.io";
-pub const DEFAULT_UNIT: &str = "thh";
-
 const RAW: u8 = 0x00;
 const COMPACT: u8 = 0x01;
-const HAS_MINT: u8 = 1;
-const HAS_UNIT: u8 = 2;
-const HAS_MEMO: u8 = 4;
-const HTTPS_IMPLIED: u8 = 8;
+const HTTPS_IMPLIED: u8 = 1;
+const HAS_MEMO: u8 = 2;
 
 const LANGUAGE: &str = "english";
 const WORDLIST: &str = "bip39";
@@ -185,20 +179,16 @@ fn compact(cbor: &[u8]) -> Option<Vec<u8>> {
     };
     let mut flags = 0u8;
     let mut head = Vec::new();
-    if mint != DEFAULT_MINT {
-        flags |= HAS_MINT;
-        match mint.strip_prefix("https://") {
-            Some(rest) => {
-                flags |= HTTPS_IMPLIED;
-                push_short(&mut head, rest.as_bytes())?;
-            }
-            None => push_short(&mut head, mint.as_bytes())?,
+    // The mint and unit are always written: the format favours no mint
+    // and no unit.
+    match mint.strip_prefix("https://") {
+        Some(rest) => {
+            flags |= HTTPS_IMPLIED;
+            push_short(&mut head, rest.as_bytes())?;
         }
+        None => push_short(&mut head, mint.as_bytes())?,
     }
-    if unit != DEFAULT_UNIT {
-        flags |= HAS_UNIT;
-        push_short(&mut head, unit.as_bytes())?;
-    }
+    push_short(&mut head, unit.as_bytes())?;
     if let Some(memo) = memo {
         flags |= HAS_MEMO;
         push_short(&mut head, memo.as_bytes())?;
@@ -273,21 +263,16 @@ impl<'a> Reader<'a> {
 fn expand(body: &[u8]) -> Option<Vec<u8>> {
     let mut r = Reader(body);
     let flags = r.byte()?;
-    let mint = if flags & HAS_MINT != 0 {
-        let m = r.text()?;
-        if flags & HTTPS_IMPLIED != 0 {
-            format!("https://{m}")
-        } else {
-            m
-        }
+    if flags & !(HTTPS_IMPLIED | HAS_MEMO) != 0 {
+        return None;
+    }
+    let m = r.text()?;
+    let mint = if flags & HTTPS_IMPLIED != 0 {
+        format!("https://{m}")
     } else {
-        DEFAULT_MINT.to_string()
+        m
     };
-    let unit = if flags & HAS_UNIT != 0 {
-        r.text()?
-    } else {
-        DEFAULT_UNIT.to_string()
-    };
+    let unit = r.text()?;
     let memo = if flags & HAS_MEMO != 0 {
         Some(r.text()?)
     } else {
@@ -393,7 +378,13 @@ mod tests {
 
     #[test]
     fn hashu_voucher_round_trips_through_words() {
-        let tok = token(DEFAULT_MINT, "thh", Some("Hashu THH"), &[2, 8], false);
+        let tok = token(
+            "https://mint.hashu.io",
+            "thh",
+            Some("Hashu THH"),
+            &[2, 8],
+            false,
+        );
         let words = to_words(&tok).unwrap();
         assert!(!words.contains("cashu"));
         let back = from_words(&words).unwrap();
@@ -407,12 +398,12 @@ mod tests {
     }
 
     #[test]
-    fn compact_halves_the_payload() {
-        let tok = token(DEFAULT_MINT, "thh", None, &[2, 8], false);
+    fn compact_shrinks_the_payload() {
+        let tok = token("https://mint.hashu.io", "thh", None, &[2, 8], false);
         let cbor = token_cbor(&tok).unwrap();
-        // Two proofs: 267 bytes of CBOR pack into 145.
+        // Two proofs: 267 bytes of CBOR pack into 163.
         assert!(
-            pack(&cbor).len() * 100 < cbor.len() * 55,
+            pack(&cbor).len() * 100 < cbor.len() * 65,
             "{} vs {}",
             pack(&cbor).len(),
             cbor.len()
@@ -432,7 +423,7 @@ mod tests {
 
     #[test]
     fn dleq_is_dropped_but_the_proofs_survive() {
-        let tok = token(DEFAULT_MINT, "thh", None, &[16], true);
+        let tok = token("https://mint.hashu.io", "thh", None, &[16], true);
         let back = from_words(&to_words(&tok).unwrap()).unwrap().token;
         assert_eq!(back, without_dleq(&tok));
         assert!(back.len() < tok.len());
@@ -440,7 +431,7 @@ mod tests {
 
     #[test]
     fn locked_or_odd_tokens_fall_back_to_raw() {
-        let tok = token(DEFAULT_MINT, "thh", None, &[3], false);
+        let tok = token("https://mint.hashu.io", "thh", None, &[3], false);
         let cbor = token_cbor(&tok).unwrap();
         assert_eq!(pack(&cbor)[0], RAW);
         assert_eq!(from_words(&to_words(&tok).unwrap()).unwrap().token, tok);
@@ -448,7 +439,7 @@ mod tests {
 
     #[test]
     fn mistyped_words_are_repaired() {
-        let tok = token(DEFAULT_MINT, "thh", None, &[2, 8], false);
+        let tok = token("https://mint.hashu.io", "thh", None, &[2, 8], false);
         let words = to_words(&tok).unwrap();
         let bip39: std::collections::HashSet<String> =
             glossia::load_payload_words_for_wordlist(LANGUAGE, WORDLIST)
@@ -477,7 +468,7 @@ mod tests {
 
     #[test]
     fn surrounding_chat_is_ignored() {
-        let tok = token(DEFAULT_MINT, "thh", None, &[2, 8], false);
+        let tok = token("https://mint.hashu.io", "thh", None, &[2, 8], false);
         let words = to_words(&tok).unwrap();
         let msg = format!("Hey, this is about the hashrate I promised you:\n\n{words}\n\nThanks again, see you soon!");
         assert_eq!(from_words(&msg).unwrap().token, tok);
