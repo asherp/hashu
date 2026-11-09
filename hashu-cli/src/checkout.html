@@ -176,6 +176,7 @@ button.act:disabled { opacity: 0.45; cursor: not-allowed; }
     <div class="bar"><div id="p-bar" style="width:0%"></div></div>
     <div class="chart" id="c-red"></div>
     <p class="note" id="p-meta"></p>
+    <div class="row" id="p-stop-row" hidden><button class="act" id="btn-stop">Stop and get change back</button><span class="note" id="p-stop-note"></span></div>
     <p class="note" id="p-order" hidden></p>
   </section>
 
@@ -486,7 +487,7 @@ $('btn-redeem').addEventListener('click', async () => {
     if (!ks) throw new Error('The mint has no active THH keyset.')
     const key = C.newKey(), n = C.blankCount(st.tokenAmount || 2 ** 20)
     const outputs = C.blanks(key, n, ks.id)
-    const r = await post('api/redeem', { token: $('r-token').value, pool_url: $('r-pool').value, worker_name: $('r-worker').value, worker_password: $('r-password').value, outputs })
+    const r = await post('api/redeem', { token: $('r-token').value, pool_url: $('r-pool').value, worker_name: $('r-worker').value, worker_password: $('r-password').value, outputs, stop_hash: C.stopHash(key) })
     if (r.order_id) { location.href = `order/${r.order_id}#k=${key}&n=${n}&i=${ks.id}`; return }
     alertMsg('')
     st.tokenOk = false
@@ -581,10 +582,36 @@ async function pollRedemption () {
       }
       drawChart($('c-red'), pts, t.opened_ms, Math.max(end, t.opened_ms + 60000), r.amount_thh, pj)
     }
+    if (ORDER) showStop(r)
     if (ORDER) { if (showChange(r)) return } else if (r.state === 'completed' || r.state === 'settled') return
   } catch (e) { alertMsg(e.message) }
   st.pollT = setTimeout(pollRedemption, 2000)
 }
+
+// The redeemer may stop a running redemption: the stop secret comes from
+// the key in the #fragment, so only this link can do it.
+const orderKey = () => { const k = new URLSearchParams(location.hash.slice(1)).get('k'); return /^[0-9a-f]{64}$/.test(k || '') ? k : null }
+function showStop (r) {
+  const running = r.state === 'pending' || r.state === 'active' || r.state === 'opening'
+  $('p-stop-row').hidden = !(running && r.can_stop && orderKey())
+  if (!$('p-stop-row').hidden && !st.stopping) {
+    const floor = r.floor_thh ? `, at least ${r.floor_thh} THH` : ''
+    $('p-stop-note').textContent = `You pay for what was delivered so far, rounded up to whole THH${floor}. The rest comes back here as change.`
+  }
+}
+$('btn-stop').addEventListener('click', async () => {
+  const key = orderKey()
+  if (!key || !confirm('Stop this redemption now? Hashrate stops going to your pool, and the undelivered THH come back as change.')) return
+  $('btn-stop').disabled = true; st.stopping = true
+  $('p-stop-note').textContent = 'Stopping…'
+  try {
+    const C = await loadChange()
+    await post(`api/order/${ORDER}/stop`, { stop_secret: C.stopSecret(key) })
+    alertMsg('')
+  } catch (e) { alertMsg(e.message) }
+  $('btn-stop').disabled = false; st.stopping = false
+  pollRedemption()
+})
 
 // ---- 6. change ----------------------------------------------------------
 // Returns true once there is nothing more to wait for.

@@ -16,7 +16,8 @@
 //! - `GET  /checkout/api/info`: price, rails, limits, whether issuance is on.
 //! - `POST /checkout/api/buy` `{ amount_thh, method }`: a quote to pay.
 //! - `GET  /checkout/api/buy/{id}`: quote state; once paid, the token.
-//! - `POST /checkout/api/redeem` `{ token, pool_url, worker_name }`.
+//! - `POST /checkout/api/redeem` `{ token, pool_url, worker_name, outputs?,
+//!   stop_hash? }`.
 //! - `GET  /checkout/api/redemption/{id}`: progress and delivered work.
 //! - `POST /api/redeem` `{ pool_url, worker_name, amount_thh? }`: the same
 //!   redemption paid over HTTP 402 (Cashu NUT-24): no `X-Cashu` header
@@ -25,7 +26,11 @@
 //! - `GET  /checkout/order/{order_id}`: the page for one redemption order,
 //!   a private link: delivery graph, then the change once it settles.
 //! - `GET  /checkout/api/order/{order_id}`: that order's progress and, once
-//!   the redemption has ended, its change token (see [`crate::orders`]).
+//!   the redemption has ended, where its change stands (see [`crate::orders`]).
+//! - `POST /checkout/api/order/{order_id}/stop` `{ stop_secret }`: the
+//!   redeemer stops the redemption early and gets the rest back as change.
+//!   Redeem requests carry `stop_hash` (SHA-256 of the secret) for this;
+//!   the page derives the secret from the key in the order link's `#`.
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -50,6 +55,7 @@ use hashu_mint::tether::{METHOD as USDT, USDC_METHOD as USDC};
 use hashu_proxy::meter::HashrateMeter;
 use hashu_proxy::router::upstream_for_pool_url;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::operator::{ControlledPricer, MintControls};
@@ -301,6 +307,7 @@ pub fn router(state: Arc<CheckoutState>) -> axum::Router {
         .route("/api/redeem", post(paid_redeem))
         .route("/checkout/order/{id}", get(page))
         .route("/checkout/api/order/{id}", get(order))
+        .route("/checkout/api/order/{id}/stop", post(stop_order))
         .with_state(state)
 }
 
@@ -605,6 +612,10 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
         Ok(b) => b,
         Err(r) => return r,
     };
+    let stop_hash = match stop_hash(&v) {
+        Ok(h) => h,
+        Err(r) => return r,
+    };
     let raw_token = v["token"].as_str().unwrap_or_default();
     let wallet = match fresh_wallet(&s.internal_url).await {
         Ok(w) => w,
@@ -625,7 +636,7 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
             format!("redeem at least {} THH", s.min_redeem_thh),
         );
     }
-    spend_for_hashrate(&s, &wallet, checked, &target, blanks).await
+    spend_for_hashrate(&s, &wallet, checked, &target, blanks, stop_hash).await
 }
 
 /// Most blank outputs a redemption may send: enough for change up to 2^64.
@@ -652,10 +663,31 @@ fn blank_outputs(v: &Value) -> Result<Option<Vec<cdk::nuts::BlindedMessage>>, Re
     }
 }
 
+/// The optional `stop_hash` field: hex SHA-256 of a 32-byte stop secret
+/// only the redeemer knows (the checkout page derives it from the key in
+/// the order link's `#fragment`). Showing the secret to
+/// `POST /checkout/api/order/{id}/stop` stops the redemption early.
+fn stop_hash(v: &Value) -> Result<Option<String>, Response> {
+    match &v["stop_hash"] {
+        Value::Null => Ok(None),
+        Value::String(h)
+            if h.len() == 64 && h.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) =>
+        {
+            Ok(Some(h.clone()))
+        }
+        _ => Err(err(
+            StatusCode::BAD_REQUEST,
+            "stop_hash must be 64 lowercase hex characters",
+        )),
+    }
+}
+
 /// `POST /api/redeem`, paid per NUT-24: redeem a THH voucher sent in the
 /// `X-Cashu` header, as hashrate to the pool in the JSON body
-/// `{ pool_url, worker_name, worker_password?, amount_thh?, outputs? }`,
-/// where `outputs` are blank outputs for change (see [`blank_outputs`]).
+/// `{ pool_url, worker_name, worker_password?, amount_thh?, outputs?,
+/// stop_hash? }`, where `outputs` are blank outputs for change (see
+/// [`blank_outputs`]) and `stop_hash` lets the caller stop it early (see
+/// [`stop_hash`]).
 ///
 /// Without `X-Cashu` it answers `402` with a NUT-18 request for
 /// `amount_thh` (default: the smallest redemption) in unit `thh` from this
@@ -682,6 +714,10 @@ pub(crate) async fn paid_redeem(
     };
     let blanks = match blank_outputs(&v) {
         Ok(b) => b,
+        Err(r) => return r,
+    };
+    let stop_hash = match stop_hash(&v) {
+        Ok(h) => h,
         Err(r) => return r,
     };
     let amount_thh = match &v["amount_thh"] {
@@ -738,7 +774,7 @@ pub(crate) async fn paid_redeem(
         }
         .into_response();
     }
-    spend_for_hashrate(&s, &wallet, checked, &target, blanks).await
+    spend_for_hashrate(&s, &wallet, checked, &target, blanks, stop_hash).await
 }
 
 /// Where a redemption sends its hashrate.
@@ -783,6 +819,7 @@ async fn spend_for_hashrate(
     checked: CheckedToken,
     target: &RedeemTarget,
     blanks: Option<Vec<cdk::nuts::BlindedMessage>>,
+    stop_hash: Option<String>,
 ) -> Response {
     let amount = checked.unspent_thh;
     let pool_url = &target.pool_url;
@@ -832,6 +869,7 @@ async fn spend_for_hashrate(
         created_ms: now_ms(),
         with_change,
         finalized: false,
+        stop_hash,
     });
     tracing::info!(redemption = %rid, amount_thh = amount, %pool_url, with_change, "checkout redemption opened");
     Json(json!({
@@ -1140,6 +1178,7 @@ async fn order(State(s): State<Arc<CheckoutState>>, Path(order_id): Path<String>
                 "id": o.redemption_id.to_string(),
                 "order_id": order_id,
                 "state": "opening",
+                "can_stop": o.stop_hash.is_some(),
                 "change": { "state": "open" },
             })),
         )
@@ -1165,8 +1204,66 @@ async fn order(State(s): State<Arc<CheckoutState>>, Path(order_id): Path<String>
         }),
     };
     redemption["order_id"] = json!(order_id);
+    redemption["can_stop"] = json!(o.stop_hash.is_some());
     redemption["change"] = change;
     ([(header::CACHE_CONTROL, "no-store")], Json(redemption)).into_response()
+}
+
+/// `POST /checkout/api/order/{order_id}/stop` with `{ "stop_secret": hex }`:
+/// the redeemer stops the redemption now. It settles like the operator's
+/// settle: charged for the work delivered (rounded up to whole THH, never
+/// below the floor), and the rest comes back as change on the redeemer's
+/// blanks. Only the holder of the secret behind the order's `stop_hash`
+/// can stop it; then this answers like `GET` on the order.
+async fn stop_order(
+    State(s): State<Arc<CheckoutState>>,
+    Path(order_id): Path<String>,
+    body: Bytes,
+) -> Response {
+    let Some(o) = is_order_id(&order_id)
+        .then(|| s.orders.get(&order_id))
+        .flatten()
+    else {
+        return err(StatusCode::NOT_FOUND, "unknown order");
+    };
+    let Some(want) = &o.stop_hash else {
+        return err(
+            StatusCode::FORBIDDEN,
+            "this redemption was opened without a stop key, so only the operator can stop it",
+        );
+    };
+    let secret = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|v| v["stop_secret"].as_str().and_then(|h| hex::decode(h).ok()));
+    let Some(secret) = secret else {
+        return err(StatusCode::BAD_REQUEST, "stop_secret (hex) is required");
+    };
+    let got = hex::encode(Sha256::digest(&secret));
+    // Compare digests, so timing says nothing about the secret.
+    if got.len() != want.len()
+        || got
+            .bytes()
+            .zip(want.bytes())
+            .fold(0, |a, (x, y)| a | (x ^ y))
+            != 0
+    {
+        return err(StatusCode::FORBIDDEN, "wrong stop key for this order");
+    }
+    match s.ledger.settle(&o.redemption_id) {
+        Ok(out) => {
+            if out.newly_settled {
+                tracing::info!(order = %order_id, redemption = %o.redemption_id, change_thh = out.change_thh, "redeemer stopped the redemption");
+            }
+        }
+        // The async melt hasn't opened it yet.
+        Err(_) => {
+            return err(
+                StatusCode::CONFLICT,
+                "the redemption is still opening; try again in a moment",
+            )
+        }
+    }
+    order(State(s), Path(order_id)).await
 }
 
 /// Where an order's change stands. The server only reports it: the change
@@ -1229,6 +1326,7 @@ fn redemption_json(s: &CheckoutState, rid: &RedemptionId) -> Option<Value> {
             "pool_url": r.pool_url,
             "worker_name": r.worker_name,
             "amount_thh": r.amount_thh,
+            "floor_thh": r.floor_thh,
             "filled_thh": filled,
             "progress": if r.target_hashes == 0 { 1.0 } else { (r.accumulated_hashes as f64 / r.target_hashes as f64).min(1.0) },
             "state": r.state.as_str(),

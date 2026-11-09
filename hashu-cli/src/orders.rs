@@ -10,6 +10,10 @@
 //! (NUT-09) and unblinds it in the browser. The server keeps no seed or
 //! token: all it does for the change is make the mint finalize the melt.
 //!
+//! The redeemer can also stop the redemption early. The browser derives a
+//! stop secret from the same key and sends only its SHA-256 (`stop_hash`)
+//! when redeeming; showing the secret later settles the redemption.
+//!
 //! The order id is never derived from the redemption id, which the public
 //! status API lists. Orders live in one JSON file, rewritten atomically on
 //! each change.
@@ -37,6 +41,10 @@ pub struct Order {
     /// The mint has finalized the melt (signed any change).
     #[serde(default)]
     pub finalized: bool,
+    /// Hex SHA-256 of the redeemer's stop secret, if they gave one: whoever
+    /// shows the secret may stop the redemption early.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_hash: Option<String>,
 }
 
 /// A random order id in UUID v4 form.
@@ -158,6 +166,7 @@ mod tests {
             created_ms: 5,
             with_change: true,
             finalized: false,
+            stop_hash: Some("ab".repeat(32)),
         }
     }
 
@@ -186,6 +195,7 @@ mod tests {
         let o = book.get(&id).unwrap();
         assert!(o.with_change && o.finalized);
         assert_eq!(o.quote_id, "q");
+        assert_eq!(o.stop_hash, Some("ab".repeat(32)));
         // The file holds no secrets.
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("seed"), "{text}");
