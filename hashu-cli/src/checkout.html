@@ -176,13 +176,52 @@ button.act:disabled { opacity: 0.45; cursor: not-allowed; }
     <div class="bar"><div id="p-bar" style="width:0%"></div></div>
     <div class="chart" id="c-red"></div>
     <p class="note" id="p-meta"></p>
+    <p class="note" id="p-order" hidden></p>
+  </section>
+
+  <!-- 6. change (order page) -->
+  <section class="card" id="s-change" hidden>
+    <div class="row" style="justify-content:space-between"><h2>Your change</h2><span class="pill wait" id="ch-state"></span></div>
+    <p class="note" id="ch-note"></p>
+    <div id="ch-token-box" hidden style="display:flex;flex-direction:column;gap:8px">
+      <div class="qr" id="ch-qr"></div>
+      <p class="note" id="ch-qr-note" style="text-align:center"></p>
+      <textarea id="ch-token" readonly></textarea>
+      <div class="row"><button class="act primary" id="btn-copy-change">Copy token</button><button class="act" id="btn-dl-change">Download</button><a class="act" id="ch-redeem" href="../" style="text-decoration:none;color:inherit">Redeem it again</a></div>
+    </div>
   </section>
 </main>
 
 <script>
 'use strict'
-// Relative URLs: the page lives at …/checkout/.
+// Relative URLs: the page lives at …/checkout/, or at
+// …/checkout/order/{order id} for one redemption order.
 const $ = (id) => document.getElementById(id)
+const ORDER = (location.pathname.match(/\/order\/([0-9a-f-]{36})\/?$/) || [])[1]
+const BASE = ORDER ? '../' : ''
+// The mint's own API (NUT-01/09/07), served at the site root.
+const MINT = BASE + '../'
+// The change wallet (change.js): makes blank outputs and unblinds change in
+// the browser, so the keys to the change never reach the server.
+let changeLib
+function loadChange () {
+  if (!changeLib) {
+    changeLib = new Promise((resolve, reject) => {
+      const s = document.createElement('script')
+      s.src = BASE + 'change.js'
+      s.onload = () => resolve(window.HashuChange)
+      s.onerror = () => { changeLib = null; reject(new Error('Could not load the change wallet. Reload and try again.')) }
+      document.head.appendChild(s)
+    })
+  }
+  return changeLib
+}
+async function mintApi (path, body) {
+  const r = await fetch(MINT + path, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : undefined)
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(j.detail || j.error || `${r.status} ${r.statusText}`)
+  return j
+}
 const HASHES_PER_THH = 3.6e15
 const st = { info: null, method: null, checkout: null, redemption: null, pollT: null }
 
@@ -196,7 +235,7 @@ const chainName = (req) => { const m = /@(\d+)\//.exec(req || ''); return m ? ` 
 const methodName = (m) => m === 'bolt11' ? 'Lightning' : STABLES[m] || m
 
 async function api (path, opts) {
-  const r = await fetch(path, opts)
+  const r = await fetch(BASE + path, opts)
   const body = await r.json().catch(() => ({}))
   if (!r.ok) throw Object.assign(new Error(body.error || `${r.status} ${r.statusText}`), { body })
   return body
@@ -373,7 +412,7 @@ function scanToken (into) {
   const go = () => window.HashuScan.openScanner({ onToken: (t) => { into.value = t; alertMsg(''); into.dispatchEvent(new Event('input')) } })
   if (window.HashuScan) return go()
   const s = document.createElement('script')
-  s.src = 'scan.js'
+  s.src = BASE + 'scan.js'
   s.onload = go
   s.onerror = () => alertMsg('Could not load the QR scanner.')
   document.head.appendChild(s)
@@ -418,6 +457,7 @@ async function checkToken () {
       : (etaText(r.amount_thh) || 'Checked with the mint.')
     tokMsg('')
     showTokenCard(true)
+    st.tokenAmount = r.amount_thh
     st.tokenOk = true
     $('btn-redeem').disabled = false
   } catch (e) {
@@ -439,13 +479,21 @@ $('btn-redeem').disabled = true
 $('btn-redeem').addEventListener('click', async () => {
   $('btn-redeem').disabled = true
   try {
-    const r = await post('api/redeem', { token: $('r-token').value, pool_url: $('r-pool').value, worker_name: $('r-worker').value, worker_password: $('r-password').value })
+    // Blank outputs for change, made here from a fresh key. The key goes
+    // only into the order link's #fragment, which the server never sees.
+    const C = await loadChange()
+    const ks = ((await mintApi('v1/keysets')).keysets || []).find((k) => k.active && String(k.unit).toLowerCase() === 'thh')
+    if (!ks) throw new Error('The mint has no active THH keyset.')
+    const key = C.newKey(), n = C.blankCount(st.tokenAmount || 2 ** 20)
+    const outputs = C.blanks(key, n, ks.id)
+    const r = await post('api/redeem', { token: $('r-token').value, pool_url: $('r-pool').value, worker_name: $('r-worker').value, worker_password: $('r-password').value, outputs })
+    if (r.order_id) { location.href = `order/${r.order_id}#k=${key}&n=${n}&i=${ks.id}`; return }
     alertMsg('')
+    st.tokenOk = false
     st.redemption = r.redemption_id
     history.replaceState(null, '', `#redemption=${r.redemption_id}`)
     step('redeem')
     pollRedemption()
-    st.tokenOk = false
     $('r-token-sub').textContent = 'Redemption opened: progress below.'
   } catch (e) {
     if (e.body && e.body.refund_token) $('r-token').value = e.body.refund_token
@@ -508,10 +556,11 @@ function drawChart (el, pts, x0, x1, target, pj) {
 async function pollRedemption () {
   clearTimeout(st.pollT)
   try {
-    const r = await api(`api/redemption/${st.redemption}`)
+    const r = await api(ORDER ? `api/order/${ORDER}` : `api/redemption/${st.redemption}`)
     $('s-progress').hidden = false
+    if (r.state === 'opening') { $('p-state').textContent = 'opening'; $('p-filled').textContent = 'Opening your redemption…'; st.pollT = setTimeout(pollRedemption, 1000); return }
     $('p-state').textContent = r.state === 'completed' ? 'delivered' : r.state
-    $('p-state').className = `pill ${r.state === 'completed' ? 'ok' : 'wait'}`
+    $('p-state').className = `pill ${r.state === 'completed' || r.state === 'settled' ? 'ok' : 'wait'}`
     $('p-filled').textContent = `${fmtThh(r.filled_thh)} of ${r.amount_thh} THH`
     $('p-bar').style.width = `${(r.progress * 100).toFixed(1)}%`
     $('p-meta').innerHTML = `To <span class="mono">${esc(r.pool_url)}</span> as <b>${esc(r.worker_name)}</b>. Each share your pool accepts from this worker counts its difficulty × 2<sup>32</sup> hashes.`
@@ -523,29 +572,104 @@ async function pollRedemption () {
       const last = t.points[t.points.length - 1]
       const rate = end > base[0] ? (last[1] - base[1]) * 1000 / (end - base[0]) : 0
       const remaining = (r.amount_thh - r.filled_thh) * HASHES_PER_THH
-      $('p-rate').textContent = r.state === 'completed' ? `done in ${fmtDur((t.completed_ms - t.opened_ms) / 1000)}` : `${fmtRate(rate)}${rate > 0 ? ` · about ${fmtDur(remaining / rate)} left` : ''}`
+      $('p-rate').textContent = r.state === 'settled' ? `stopped after ${fmtDur(((t.completed_ms || end) - t.opened_ms) / 1000)}` : r.state === 'completed' ? `done in ${fmtDur((t.completed_ms - t.opened_ms) / 1000)}` : `${fmtRate(rate)}${rate > 0 ? ` · about ${fmtDur(remaining / rate)} left` : ''}`
       let pj = null
-      if (r.state !== 'completed' && rate > 0 && remaining > 0) {
+      if (r.state !== 'completed' && r.state !== 'settled' && rate > 0 && remaining > 0) {
         const secs = remaining / rate, eta = end + secs * 1000
         const clock = new Date(eta).toLocaleTimeString([], secs > 86400 ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' } : { hour: '2-digit', minute: '2-digit' })
         pj = { t: eta, v: r.amount_thh, label: `ETA ${clock} · ~${fmtDur(secs)} left` }
       }
       drawChart($('c-red'), pts, t.opened_ms, Math.max(end, t.opened_ms + 60000), r.amount_thh, pj)
     }
-    if (r.state === 'completed') return
+    if (ORDER) { if (showChange(r)) return } else if (r.state === 'completed' || r.state === 'settled') return
   } catch (e) { alertMsg(e.message) }
   st.pollT = setTimeout(pollRedemption, 2000)
 }
 
+// ---- 6. change ----------------------------------------------------------
+// Returns true once there is nothing more to wait for.
+function showChange (r) {
+  const c = r.change || {}
+  $('p-order').hidden = false
+  $('p-order').innerHTML = 'Bookmark this page. Its link holds the key to your change (after the #, which never reaches the server), so it is the only place the change can be opened.'
+  if (c.state === 'open') { $('s-change').hidden = true; return false }
+  $('s-change').hidden = false
+  const pill = (t, ok) => { $('ch-state').textContent = t; $('ch-state').className = `pill ${ok ? 'ok' : 'wait'}` }
+  if (c.state === 'waiting') {
+    pill('signing')
+    $('ch-note').textContent = `Delivery stopped at ${fmtThh(r.filled_thh)} THH. The mint is signing your change…`
+    return false
+  }
+  if (c.state === 'none') {
+    pill('none', true)
+    $('ch-note').textContent = r.state === 'completed' ? `All ${r.amount_thh} THH were delivered, so there is no change.` : `Charged ${r.spent_thh} of ${r.amount_thh} THH; nothing to return.`
+    return true
+  }
+  if (c.state === 'unclaimable') {
+    pill('none')
+    $('ch-note').textContent = `${c.thh} THH went undelivered, but this redemption was made without blank outputs, so there is no change to open. Redeem from the checkout page or your own wallet to get change back.`
+    return true
+  }
+  pill(`${c.thh} THH`, true)
+  if (!st.changeShown) openChange(r).catch((e) => { st.changeShown = false; $('ch-note').textContent = `Couldn't open your change: ${e.message}. Reload to try again.` })
+  st.changeShown = true
+  return true
+}
+// Restore the signatures on our blanks (NUT-09), unblind them with the key
+// in the #fragment, drop anything already spent, and show a cashuB token.
+async function openChange (r) {
+  const f = new URLSearchParams(location.hash.slice(1))
+  const key = f.get('k'), n = Number(f.get('n')), ksId = f.get('i')
+  const intro = `Delivery stopped after ${fmtThh(r.filled_thh)} THH, so you were charged <b>${r.spent_thh} THH</b> and get <b>${r.change.thh} THH</b> back as fresh Chaumian hashrate vouchers.`
+  if (!/^[0-9a-f]{64}$/.test(key || '') || !(n > 0) || !ksId) {
+    $('ch-note').innerHTML = `${intro} To open them, use the full link you got when you redeemed: the key is in the part after #, and only that link has it.`
+    return
+  }
+  $('ch-note').innerHTML = `${intro} Unblinding them in your browser…`
+  const C = await loadChange()
+  const restored = await mintApi('v1/restore', { outputs: C.blanks(key, n, ksId) })
+  const keys = new Map()
+  const keysFor = async (id) => {
+    if (!keys.has(id)) keys.set(id, ((await mintApi(`v1/keys/${id}`)).keysets || [])[0].keys)
+    return keys.get(id)
+  }
+  const proofs = await C.unblind(key, n, restored, keysFor)
+  if (!proofs.length) throw new Error('the mint returned no change for this link')
+  const states = (await mintApi('v1/checkstate', { Ys: proofs.map((p) => p.Y) })).states || []
+  const unspent = proofs.filter((p) => (states.find((s) => s.Y === p.Y) || {}).state === 'UNSPENT')
+  if (!unspent.length) { $('ch-note').innerHTML = `${intro} They have already been spent: someone, likely you, claimed this change.`; return }
+  const total = unspent.reduce((a, p) => a + p.amount, 0)
+  const token = C.encodeToken(r.change.mint_url, r.change.unit || 'thh', unspent.map(({ amount, id, secret, C: sig }) => ({ amount, id, secret, C: sig })), 'Hashu THH change')
+  $('ch-note').innerHTML = `${intro} ${total < r.change.thh ? `${total} THH of it is still unspent. ` : ''}Save the token now: anyone holding it can spend it. Redeem it later here or in any Cashu wallet.`
+  $('ch-token-box').hidden = false
+  $('ch-token').value = token
+  $('ch-redeem').href = `../#token=${encodeURIComponent(token)}`
+  playQr($('ch-qr'), $('ch-qr-note'), [C.qrSvg(token)])
+}
+$('btn-copy-change').addEventListener('click', (ev) => copy($('ch-token').value, ev.target))
+$('btn-dl-change').addEventListener('click', () => {
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([$('ch-token').value + '\n'], { type: 'text/plain' }))
+  a.download = `hashu-change-${ORDER.slice(0, 8)}.txt`
+  document.body.appendChild(a); a.click(); a.remove()
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+})
+
 // Resume from the URL so a reload keeps the order.
 const h = new URLSearchParams(location.hash.slice(1))
-loadInfo().then(() => {
+if (ORDER) {
+  document.querySelector('h1').innerHTML = '<span>Hashu</span> · your redemption'
+  document.querySelector('.lede').innerHTML = 'Hashrate on its way to your pool. If delivery stops early, the THH not delivered comes back here as change. <a href="../">Buy or redeem more</a>.'
+  for (const id of ['steps', 's-buy', 's-pay', 's-token', 's-redeem']) $(id).hidden = true
+  pollRedemption()
+} else loadInfo().then(() => {
   if (h.get('buy')) { st.checkout = { id: h.get('buy') }; api(`api/buy/${encodeURIComponent(h.get('buy'))}`).then((c) => { st.checkout = c; showPay(); if (c.token) showToken(); else pollBuy() }).catch((e) => alertMsg(e.message)) }
+  else if (h.get('token')) { $('r-token').value = h.get('token'); history.replaceState(null, '', location.pathname); step('redeem'); checkToken(); $('s-redeem').scrollIntoView({ behavior: 'smooth' }) }
   else if (h.get('redemption')) { st.redemption = h.get('redemption'); step('redeem'); pollRedemption() }
   else step('buy')
 })
-setInterval(() => { if (!st.checkout) loadInfo() }, 10000)
-window.addEventListener('resize', () => { if (st.redemption) pollRedemption() })
+if (!ORDER) setInterval(() => { if (!st.checkout) loadInfo() }, 10000)
+window.addEventListener('resize', () => { if (st.redemption || ORDER) pollRedemption() })
 </script>
 </body>
 </html>
