@@ -34,7 +34,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::audit::ShareAudit;
-use crate::router::upstream_for_pool_url;
+use crate::router::{upstream_for_pool_url, Router};
 use crate::ProxyMetrics;
 
 /// Largest request body accepted.
@@ -51,6 +51,8 @@ pub struct ControlState {
     pub audit: Arc<ShareAudit>,
     /// Whether `POST /redemptions` is served.
     pub allow_open: bool,
+    /// The proxy's router, for the per-supplier view in `GET /status`.
+    pub router: Option<Arc<Router>>,
 }
 
 /// Serve the control API on `bind` until the task is dropped.
@@ -245,6 +247,7 @@ fn status(state: &ControlState) -> Value {
         "default_upstream": state.default_upstream,
         "active_redemptions": active,
         "redemptions": redemptions,
+        "suppliers": suppliers(state),
         "metrics": {
             "connections_accepted": m.connections_accepted,
             "shares_submitted": m.shares_submitted,
@@ -254,6 +257,28 @@ fn status(state: &ControlState) -> Value {
             "shares_credited": m.shares_credited,
         },
     })
+}
+
+/// Miners by supplier key (Bitcoin address or account name, from the
+/// authorize user): live connections, hashrate, home pool, and THH
+/// delivered to redemptions since the proxy started.
+fn suppliers(state: &ControlState) -> Vec<Value> {
+    let Some(router) = &state.router else {
+        return Vec::new();
+    };
+    router
+        .suppliers()
+        .into_iter()
+        .map(|s| {
+            json!({
+                "supplier": s.supplier,
+                "connections": s.connections,
+                "hashrate_ths": s.hashrate / 1e12,
+                "home_upstream": s.home_upstream,
+                "delivered_thh": s.delivered_hashes / HASHES_PER_THH as f64,
+            })
+        })
+        .collect()
 }
 
 fn redemption_json(r: &Redemption) -> Value {
@@ -347,6 +372,7 @@ mod tests {
             default_upstream: "home:3333".into(),
             audit: Arc::new(ShareAudit::new()),
             allow_open,
+            router: None,
         }
     }
 

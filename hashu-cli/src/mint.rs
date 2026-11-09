@@ -235,6 +235,8 @@ pub struct RunArgs {
     /// Default pool: where miners point when no redemption is open.
     #[arg(long, env = "HASHU_UPSTREAM", default_value = DEMO_POOL)]
     pub upstream: String,
+    #[command(flatten)]
+    pub home: crate::proxy::HomePoolArgs,
     /// Control API (`GET /status`) the MDK app polls, and the operator GUI
     /// at `/`. Pass an empty value to turn it off.
     #[arg(long, default_value = "127.0.0.1:3334")]
@@ -810,8 +812,11 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let http_task = tokio::spawn(async move { axum::serve(http, app).await });
 
     // ---- proxy --------------------------------------------------------
-    let router =
-        Arc::new(Router::new(upstream.clone(), ledger.clone()).with_switch_mode(args.switch_mode));
+    let router = Arc::new(
+        Router::new(upstream.clone(), ledger.clone())
+            .with_switch_mode(args.switch_mode)
+            .with_home_pools(args.home.config()?),
+    );
     let crediter = Arc::new(ShareCrediter::with_audit(ledger.clone(), audit.clone()));
     let credit = CreditContext::new(crediter, router.clone());
 
@@ -851,6 +856,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             default_upstream: upstream.clone(),
             audit,
             allow_open: args.control_allow_open,
+            router: Some(router.clone()),
         };
         let state = Arc::new(OperatorState {
             mint: mint.clone(),

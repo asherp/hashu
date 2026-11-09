@@ -149,6 +149,17 @@ impl Miner {
     /// Connect, (configure,) subscribe, (extranonce.subscribe,) authorize
     /// as `miner.1`, and read until the first job.
     async fn connect(proxy: &str, mask: Option<&str>, extranonce_subscribe: bool) -> Self {
+        Self::connect_as(proxy, mask, extranonce_subscribe, "miner.1", "pw").await
+    }
+
+    /// Like [`Miner::connect`], authorizing as `user` / `password`.
+    async fn connect_as(
+        proxy: &str,
+        mask: Option<&str>,
+        extranonce_subscribe: bool,
+        user: &str,
+        password: &str,
+    ) -> Self {
         let sock = TcpStream::connect(proxy).await.unwrap();
         let (r, w) = sock.into_split();
         let mut m = Miner {
@@ -172,7 +183,7 @@ impl Miner {
             m.send(json!({"id": 3, "method": "mining.extranonce.subscribe", "params": []}))
                 .await;
         }
-        m.send(json!({"id": 4, "method": "mining.authorize", "params": ["miner.1", "pw"]}))
+        m.send(json!({"id": 4, "method": "mining.authorize", "params": [user, password]}))
             .await;
         while m.job.is_empty() {
             m.next().await.expect("pool reply");
@@ -528,4 +539,102 @@ async fn unreachable_redeemer_pool_keeps_miner_on_default() {
     expect_submit(&mut s.seen, "default", "miner.1", &cb).await;
     assert_eq!(m.submit_result().await, true);
     assert_eq!(s.ledger.get(&id).unwrap().accumulated_hashes, 0);
+}
+
+/// A Bitaxe-style miner on the one public endpoint: its user is a Bitcoin
+/// address and its password names its home pool. It idles there (never
+/// on the operator's default pool), is borrowed for a redemption, goes
+/// back home when the redemption fills, and its supplier is credited.
+#[tokio::test]
+async fn home_pool_miner_idles_at_home_and_is_borrowed_for_redemptions() {
+    use hashu_proxy::home::HomeConfig;
+
+    const ADDR: &str = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+    let user = format!("{ADDR}.bitaxe");
+
+    let (tx, mut seen) = mpsc::unbounded_channel();
+    let default_pool = fake_pool(default_cfg(), tx.clone()).await;
+    let home_pool = fake_pool(
+        PoolCfg {
+            name: "home",
+            en1: "a0a1a2a3",
+            job: "hj1",
+            ..default_cfg()
+        },
+        tx.clone(),
+    )
+    .await;
+    let redeemer = fake_pool(redeemer_cfg(), tx).await;
+    let ledger = Arc::new(RedemptionLedger::new());
+    let router = Arc::new(
+        Router::new(default_pool, ledger.clone()).with_home_pools(HomeConfig {
+            solo_upstream: None,
+            allowed_hosts: vec!["127.0.0.1".into()],
+        }),
+    );
+    let credit = CreditContext::new(Arc::new(ShareCrediter::new(ledger.clone())), router.clone());
+    let (proxy, _metrics) = spawn_proxy(router.clone(), Some(credit)).await;
+
+    let mut m = Miner::connect_as(
+        &proxy,
+        Some("1fffe000"),
+        false,
+        &user,
+        &format!("d=4,pool=stratum+tcp://{home_pool}"),
+    )
+    .await;
+    assert_eq!(recv(&mut seen).await, auth("home", &user));
+    let cb = m.submit_on(None).await;
+    expect_submit(&mut seen, "home", &user, &cb).await;
+    assert_eq!(m.submit_result().await, true);
+
+    let s = Setup {
+        proxy,
+        metrics: Arc::new(ProxyMetrics::default()),
+        ledger: ledger.clone(),
+        redeemer: redeemer.clone(),
+        seen,
+    };
+    let id = open_redemption(&s, &redeemer);
+    let mut seen = s.seen;
+    m.until_job("rj1").await;
+    assert_eq!(recv(&mut seen).await, auth("redeemer", "alice.rig"));
+    for _ in 0..2 {
+        let cb = m.submit_on(None).await;
+        expect_submit(&mut seen, "redeemer", "alice.rig", &cb).await;
+        assert_eq!(m.submit_result().await, true);
+    }
+    assert_eq!(ledger.get(&id).unwrap().state, RedemptionState::Completed);
+
+    // Filled: back to the home pool, not the operator's default pool.
+    m.until_job("hj1").await;
+    assert_eq!(recv(&mut seen).await, auth("home", &user));
+    let cb = m.submit_on(None).await;
+    expect_submit(&mut seen, "home", &user, &cb).await;
+    assert_eq!(m.submit_result().await, true);
+
+    let sup = router.suppliers();
+    assert_eq!(sup.len(), 1);
+    assert_eq!(sup[0].supplier, ADDR);
+    assert_eq!(sup[0].connections, 1);
+    assert_eq!(sup[0].home_upstream.as_deref(), Some(home_pool.as_str()));
+    // Two redeemer shares at 2^19 difficulty; home shares don't count.
+    assert_eq!(sup[0].delivered_hashes, 2.0 * (1u64 << 51) as f64);
+}
+
+/// A miner that isn't a home miner (an account name, no `pool=`) still
+/// goes to the operator's default pool when home pools are on.
+#[tokio::test]
+async fn account_miner_still_uses_the_default_pool_with_home_pools_on() {
+    use hashu_proxy::home::HomeConfig;
+    let (tx, mut seen) = mpsc::unbounded_channel();
+    let default_pool = fake_pool(default_cfg(), tx).await;
+    let ledger = Arc::new(RedemptionLedger::new());
+    let router =
+        Arc::new(Router::new(default_pool, ledger.clone()).with_home_pools(HomeConfig::default()));
+    let (proxy, _metrics) = spawn_proxy(router, None).await;
+    let mut m = Miner::connect(&proxy, None, false).await;
+    assert_eq!(recv(&mut seen).await, auth("default", "miner.1"));
+    let cb = m.submit_on(None).await;
+    expect_submit(&mut seen, "default", "miner.1", &cb).await;
 }

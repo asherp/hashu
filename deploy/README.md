@@ -232,7 +232,7 @@ cargo run -p hashu --example buy_and_redeem -- \
 ```
 
 It prints the invoice; pay it from any Lightning wallet, then it redeems
-to that mainnet pool and worker. Point a miner (Bitaxe, or the Heatbit via the MDK app) at
+to that mainnet pool and worker. Point a miner (Bitaxe, see [docs/mine/bitaxe.md](../docs/mine/bitaxe.md), or the Heatbit via the MDK app) at
 `stratum+tcp://mint.hashu.io:3335` and watch the redemption fill in the
 operator GUI at `https://mint.hashu.io/operator/`.
 
