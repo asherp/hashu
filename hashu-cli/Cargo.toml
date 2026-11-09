@@ -49,3 +49,7 @@ ciborium = "0.2"
 # THH vouchers as English words (see src/words.rs). No nlprule or image.
 glossia = { version = "0.6", default-features = false }
 base64 = "0.22"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+reqwest = { workspace = true }
