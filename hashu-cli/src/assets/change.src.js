@@ -59,6 +59,20 @@ export function newKey () {
   return bytesToHex(b)
 }
 
+/**
+ * The stop secret: whoever shows it to the order's stop endpoint may stop
+ * the redemption early. The server only ever learns its hash at redeem
+ * time, and the secret itself only when it is used.
+ */
+export function stopSecret (keyHex) {
+  return bytesToHex(hmac(sha256, hexToBytes(keyHex), utf8ToBytes('hashu-change-stop')))
+}
+
+/** Hex SHA-256 of the stop secret, sent with the redemption. */
+export function stopHash (keyHex) {
+  return bytesToHex(sha256(hexToBytes(stopSecret(keyHex))))
+}
+
 /** How many blanks cover change below `amount`: its bit length, at least 1. */
 export function blankCount (amount) {
   return Math.max(1, Math.ceil(Math.log2(Math.max(1, amount) + 1)))

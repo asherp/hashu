@@ -519,3 +519,145 @@ async fn order_without_change_reports_none() {
     assert_eq!(o["state"], "completed");
     assert_eq!(o["change"]["state"], "none");
 }
+
+async fn post_status(url: &str, body: serde_json::Value) -> (u16, serde_json::Value) {
+    let r = reqwest::Client::new()
+        .post(url)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let code = r.status().as_u16();
+    (code, r.json().await.unwrap_or_default())
+}
+
+/// The redeemer stops a running redemption from the order page: only the
+/// stop secret (derived in the browser from the link's key) works, and the
+/// undelivered THH come back as change on the redeemer's blanks.
+#[tokio::test(flavor = "multi_thread")]
+async fn redeemer_stops_the_redemption_with_the_link_key() {
+    use sha2::{Digest, Sha256};
+    let h = harness(10).await;
+    let checkout = serve_checkout(&h, Arc::new(OrderBook::new())).await;
+    let keyset = h
+        .mint
+        .keysets()
+        .keysets
+        .into_iter()
+        .find(|k| k.unit == thh_unit() && k.active)
+        .unwrap();
+    let blanks = PreMintSecrets::blank(keyset.id, Amount::from(10)).unwrap();
+    let secret = [7u8; 32];
+    let r = post_json(
+        &format!("{checkout}/checkout/api/redeem"),
+        serde_json::json!({
+            "token": token_of(&h).await,
+            "pool_url": "stratum+tcp://pool.example:3333",
+            "worker_name": "bob.rig1",
+            "outputs": blanks.blinded_messages(),
+            "stop_hash": hex::encode(Sha256::digest(secret)),
+        }),
+    )
+    .await;
+    let order_id = r["order_id"].as_str().unwrap().to_string();
+    let rid: hashu_core::redemption::RedemptionId =
+        r["redemption_id"].as_str().unwrap().parse().unwrap();
+    opened(&h.ledger, &rid).await;
+    let order_api = format!("{checkout}/checkout/api/order/{order_id}");
+    let o = get_json(&order_api).await;
+    assert_eq!(o["can_stop"], true, "{o}");
+    assert_eq!(o["floor_thh"], 1);
+
+    // 2.5 THH delivered, then the redeemer stops.
+    let share = (HASHES_PER_THH * 5 / 2) as f64 / (1u64 << 32) as f64;
+    h.ledger.credit_share(&rid, share).unwrap();
+    let stop = format!("{order_api}/stop");
+    let (code, _) = post_status(
+        &stop,
+        serde_json::json!({ "stop_secret": hex::encode([8u8; 32]) }),
+    )
+    .await;
+    assert_eq!(code, 403, "a wrong secret can't stop it");
+    let (code, _) = post_status(&stop, serde_json::json!({})).await;
+    assert_eq!(code, 400);
+    assert!(!h.ledger.get(&rid).unwrap().is_finished());
+
+    let (code, o) = post_status(
+        &stop,
+        serde_json::json!({ "stop_secret": hex::encode(secret) }),
+    )
+    .await;
+    assert_eq!(code, 200, "{o}");
+    assert_eq!(o["state"], "settled");
+    assert_eq!(o["spent_thh"], 3);
+    assert_eq!(o["change"]["state"], "ready", "{o}");
+    assert_eq!(o["change"]["thh"], 7);
+    // Stopping again changes nothing.
+    let (code, again) = post_status(
+        &stop,
+        serde_json::json!({ "stop_secret": hex::encode(secret) }),
+    )
+    .await;
+    assert_eq!(code, 200);
+    assert_eq!(again["change"]["thh"], 7);
+
+    // The change is on the redeemer's blanks: 7 = 1 + 2 + 4.
+    let restored: cdk::nuts::RestoreResponse = serde_json::from_value(
+        post_json(
+            &format!("{}/v1/restore", h.url),
+            serde_json::json!({ "outputs": blanks.blinded_messages() }),
+        )
+        .await,
+    )
+    .unwrap();
+    let mut amounts: Vec<u64> = restored
+        .signatures
+        .iter()
+        .map(|s| u64::from(s.amount))
+        .collect();
+    amounts.sort();
+    assert_eq!(amounts, vec![1, 2, 4]);
+}
+
+/// Without a stop hash, only the operator can stop a redemption.
+#[tokio::test(flavor = "multi_thread")]
+async fn order_without_stop_hash_cannot_be_stopped_by_the_redeemer() {
+    let h = harness(4).await;
+    let checkout = serve_checkout(&h, Arc::new(OrderBook::new())).await;
+    let r = post_json(
+        &format!("{checkout}/checkout/api/redeem"),
+        serde_json::json!({
+            "token": token_of(&h).await,
+            "pool_url": "stratum+tcp://pool.example:3333",
+            "worker_name": "bob.rig1",
+        }),
+    )
+    .await;
+    let rid: hashu_core::redemption::RedemptionId =
+        r["redemption_id"].as_str().unwrap().parse().unwrap();
+    opened(&h.ledger, &rid).await;
+    let order_api = format!(
+        "{checkout}/checkout/api/order/{}",
+        r["order_id"].as_str().unwrap()
+    );
+    assert_eq!(get_json(&order_api).await["can_stop"], false);
+    let (code, _) = post_status(
+        &format!("{order_api}/stop"),
+        serde_json::json!({ "stop_secret": hex::encode([7u8; 32]) }),
+    )
+    .await;
+    assert_eq!(code, 403);
+    assert!(!h.ledger.get(&rid).unwrap().is_finished());
+    // A malformed stop hash is refused before any token is spent.
+    let (code, _) = post_status(
+        &format!("{checkout}/checkout/api/redeem"),
+        serde_json::json!({
+            "token": token_of(&h).await,
+            "pool_url": "stratum+tcp://pool.example:3333",
+            "worker_name": "bob.rig1",
+            "stop_hash": "nope",
+        }),
+    )
+    .await;
+    assert_eq!(code, 400);
+}
