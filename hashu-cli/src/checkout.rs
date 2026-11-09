@@ -870,6 +870,8 @@ pub(crate) struct CheckedToken {
     pub memo: Option<String>,
     /// Set when the token was pasted as words: how many parity repaired.
     pub repaired_words: Option<usize>,
+    /// The mint identity key the words carried (hex), if any.
+    pub mint_key: Option<String>,
 }
 
 /// Parse a pasted token and ask the mint (NUT-07) which of its proofs are
@@ -881,10 +883,10 @@ pub(crate) async fn inspect_token(wallet: &Wallet, raw: &str) -> Result<CheckedT
         return problem(TokenIssue::Empty);
     }
     // A pasted token, or the same token as Glossia words.
-    let (text, repaired_words) = match extract_token(raw) {
-        Some(t) => (t, None),
+    let (text, repaired_words, mint_key) = match extract_token(raw) {
+        Some(t) => (t, None, None),
         None => match crate::words::from_words(raw) {
-            Some(w) => (w.token, Some(w.repaired)),
+            Some(w) => (w.token, Some(w.repaired), w.mint_key.map(hex::encode)),
             None => return problem(TokenIssue::NotToken),
         },
     };
@@ -934,6 +936,7 @@ pub(crate) async fn inspect_token(wallet: &Wallet, raw: &str) -> Result<CheckedT
         unspent,
         memo: token.memo().clone(),
         repaired_words,
+        mint_key,
     })
 }
 
@@ -959,6 +962,7 @@ pub(crate) async fn check_token(State(s): State<Arc<CheckoutState>>, body: Bytes
         "redeemable": !below_min,
         "from_words": c.repaired_words.is_some(),
         "repaired_words": c.repaired_words,
+        "mint_key": c.mint_key,
     }))
     .into_response()
 }

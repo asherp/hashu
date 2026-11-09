@@ -16,12 +16,14 @@
 //!
 //! ```text
 //! 0x00 cbor..                       a V4 token's CBOR, unchanged (fallback)
-//! 0x01 flags len url len unit [len memo]
+//! 0x02 key[32] cbor..               the same, with a mint identity key
+//! 0x01 flags len url [key[32]] len unit [len memo]
 //!      nkeysets { len id  nproofs { exp secret[32] C[33] } }
 //! ```
 //!
 //! `flags` bit 0: the URL is written without its `https://`; bit 1: a
-//! memo follows. The mint URL and unit are always written: the format
+//! memo follows; bit 2: the mint's 32-byte identity key follows the URL
+//! (see [`MintKey`]). The mint URL and unit are always written: the format
 //! assumes no mint and no unit. A proof's amount is `2^exp`. DLEQ
 //! proofs are left out: the receiver checks the voucher with the mint
 //! instead. A token the envelope can't hold exactly (a locked secret, a
@@ -35,8 +37,16 @@ use ciborium::value::Value;
 
 const RAW: u8 = 0x00;
 const COMPACT: u8 = 0x01;
+const RAW_WITH_MINT_KEY: u8 = 0x02;
 const HTTPS_IMPLIED: u8 = 1;
 const HAS_MEMO: u8 = 2;
+const HAS_MINT_KEY: u8 = 4;
+
+/// A mint's identity: the 32-byte x-only (BIP-340) public key of its
+/// offline root key. Carried beside the mint URL so a wallet can tell when
+/// that URL no longer points at the mint that issued the voucher. It is not
+/// part of the Cashu token and is dropped when the words become `cashuB`.
+pub type MintKey = [u8; 32];
 
 const LANGUAGE: &str = "english";
 const WORDLIST: &str = "bip39";
@@ -48,12 +58,20 @@ pub struct FromWords {
     pub token: String,
     /// How many words parity repaired (0 when the text arrived intact).
     pub repaired: usize,
+    /// The mint identity key the words carried, if any.
+    pub mint_key: Option<MintKey>,
 }
 
 /// `cashuB…` → a paragraph of English. `None` if it isn't a V4 token.
 pub fn to_words(token: &str) -> Option<String> {
+    to_words_with_mint_key(token, None)
+}
+
+/// [`to_words`], carrying the mint's identity key beside its URL. It costs
+/// about 27 words.
+pub fn to_words_with_mint_key(token: &str, mint_key: Option<&MintKey>) -> Option<String> {
     let cbor = token_cbor(token.trim())?;
-    let packed = pack(&cbor);
+    let packed = pack(&cbor, mint_key);
     glossia::canonical_encode(&packed, LANGUAGE, WORDLIST).ok()
 }
 
@@ -75,11 +93,14 @@ pub fn from_words(text: &str) -> Option<FromWords> {
                 continue;
             }
             if let Ok(d) = glossia::canonical_decode(&text[a..b], LANGUAGE, WORDLIST) {
-                if let Some(token) = unpack(&d.payload).and_then(|c| cbor_token(&c)) {
-                    return Some(FromWords {
-                        token,
-                        repaired: d.repaired.len(),
-                    });
+                if let Some((cbor, mint_key)) = unpack(&d.payload) {
+                    if let Some(token) = cbor_token(&cbor) {
+                        return Some(FromWords {
+                            token,
+                            repaired: d.repaired.len(),
+                            mint_key,
+                        });
+                    }
                 }
             }
         }
@@ -132,18 +153,31 @@ fn cbor_token(cbor: &[u8]) -> Option<String> {
     Some(s)
 }
 
-fn pack(cbor: &[u8]) -> Vec<u8> {
-    compact(cbor).unwrap_or_else(|| {
-        let mut out = vec![RAW];
+fn pack(cbor: &[u8], mint_key: Option<&MintKey>) -> Vec<u8> {
+    compact(cbor, mint_key).unwrap_or_else(|| {
+        let mut out = match mint_key {
+            Some(k) => {
+                let mut v = vec![RAW_WITH_MINT_KEY];
+                v.extend_from_slice(k);
+                v
+            }
+            None => vec![RAW],
+        };
         out.extend_from_slice(cbor);
         out
     })
 }
 
-fn unpack(packed: &[u8]) -> Option<Vec<u8>> {
-    match *packed.first()? {
-        RAW => Some(packed[1..].to_vec()),
-        COMPACT => expand(&packed[1..]),
+/// The envelope → a V4 token's CBOR and the mint identity key, if any.
+fn unpack(packed: &[u8]) -> Option<(Vec<u8>, Option<MintKey>)> {
+    let (&tag, rest) = packed.split_first()?;
+    match tag {
+        RAW => Some((rest.to_vec(), None)),
+        RAW_WITH_MINT_KEY => {
+            let key: MintKey = rest.get(..32)?.try_into().ok()?;
+            Some((rest[32..].to_vec(), Some(key)))
+        }
+        COMPACT => expand(rest),
         _ => None,
     }
 }
@@ -162,7 +196,7 @@ fn push_short(out: &mut Vec<u8>, bytes: &[u8]) -> Option<()> {
 
 /// A V4 token's CBOR → the compact envelope, or `None` if it would lose
 /// anything other than DLEQ proofs.
-fn compact(cbor: &[u8]) -> Option<Vec<u8>> {
+fn compact(cbor: &[u8], mint_key: Option<&MintKey>) -> Option<Vec<u8>> {
     let v: Value = ciborium::de::from_reader(cbor).ok()?;
     let top = v.as_map()?;
     if top
@@ -187,6 +221,10 @@ fn compact(cbor: &[u8]) -> Option<Vec<u8>> {
             push_short(&mut head, rest.as_bytes())?;
         }
         None => push_short(&mut head, mint.as_bytes())?,
+    }
+    if let Some(k) = mint_key {
+        flags |= HAS_MINT_KEY;
+        head.extend_from_slice(k);
     }
     push_short(&mut head, unit.as_bytes())?;
     if let Some(memo) = memo {
@@ -259,11 +297,12 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// The compact envelope (after its tag byte) → a V4 token's CBOR.
-fn expand(body: &[u8]) -> Option<Vec<u8>> {
+/// The compact envelope (after its tag byte) → a V4 token's CBOR and the
+/// mint identity key, if any.
+fn expand(body: &[u8]) -> Option<(Vec<u8>, Option<MintKey>)> {
     let mut r = Reader(body);
     let flags = r.byte()?;
-    if flags & !(HTTPS_IMPLIED | HAS_MEMO) != 0 {
+    if flags & !(HTTPS_IMPLIED | HAS_MEMO | HAS_MINT_KEY) != 0 {
         return None;
     }
     let m = r.text()?;
@@ -271,6 +310,11 @@ fn expand(body: &[u8]) -> Option<Vec<u8>> {
         format!("https://{m}")
     } else {
         m
+    };
+    let mint_key = if flags & HAS_MINT_KEY != 0 {
+        Some(MintKey::try_from(r.take(32)?).ok()?)
+    } else {
+        None
     };
     let unit = r.text()?;
     let memo = if flags & HAS_MEMO != 0 {
@@ -311,7 +355,7 @@ fn expand(body: &[u8]) -> Option<Vec<u8>> {
     top.push((t("t"), Value::Array(keysets)));
     let mut out = Vec::new();
     ciborium::ser::into_writer(&Value::Map(top), &mut out).ok()?;
-    Some(out)
+    Some((out, mint_key))
 }
 
 #[cfg(test)]
@@ -373,7 +417,12 @@ mod tests {
     }
 
     fn without_dleq(tok: &str) -> String {
-        cbor_token(&expand(&compact(&token_cbor(tok).unwrap()).unwrap()[1..]).unwrap()).unwrap()
+        cbor_token(
+            &expand(&compact(&token_cbor(tok).unwrap(), None).unwrap()[1..])
+                .unwrap()
+                .0,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -392,7 +441,8 @@ mod tests {
             back,
             FromWords {
                 token: tok,
-                repaired: 0
+                repaired: 0,
+                mint_key: None,
             }
         );
     }
@@ -403,9 +453,9 @@ mod tests {
         let cbor = token_cbor(&tok).unwrap();
         // Two proofs: 267 bytes of CBOR pack into 163.
         assert!(
-            pack(&cbor).len() * 100 < cbor.len() * 65,
+            pack(&cbor, None).len() * 100 < cbor.len() * 65,
             "{} vs {}",
-            pack(&cbor).len(),
+            pack(&cbor, None).len(),
             cbor.len()
         );
     }
@@ -433,7 +483,7 @@ mod tests {
     fn locked_or_odd_tokens_fall_back_to_raw() {
         let tok = token("https://mint.hashu.io", "thh", None, &[3], false);
         let cbor = token_cbor(&tok).unwrap();
-        assert_eq!(pack(&cbor)[0], RAW);
+        assert_eq!(pack(&cbor, None)[0], RAW);
         assert_eq!(from_words(&to_words(&tok).unwrap()).unwrap().token, tok);
     }
 
@@ -464,6 +514,29 @@ mod tests {
         let back = from_words(&damaged.join(" ")).unwrap();
         assert_eq!(back.token, tok);
         assert_eq!(back.repaired, 2);
+    }
+
+    #[test]
+    fn mint_key_rides_beside_the_token() {
+        let key: MintKey = std::array::from_fn(|i| i as u8 + 1);
+        for (tok, tag) in [
+            (
+                token("https://mint.hashu.io", "thh", None, &[2, 8], false),
+                COMPACT,
+            ),
+            (
+                token("https://mint.hashu.io", "thh", None, &[3], false),
+                RAW_WITH_MINT_KEY,
+            ),
+        ] {
+            let cbor = token_cbor(&tok).unwrap();
+            assert_eq!(pack(&cbor, Some(&key))[0], tag);
+            let words = to_words_with_mint_key(&tok, Some(&key)).unwrap();
+            let back = from_words(&words).unwrap();
+            // The token is a standard Cashu token; the key comes back beside it.
+            assert_eq!(back.token, tok);
+            assert_eq!(back.mint_key, Some(key));
+        }
     }
 
     #[test]
