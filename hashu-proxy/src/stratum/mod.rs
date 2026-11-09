@@ -12,6 +12,7 @@ pub mod listener;
 pub mod observe;
 pub mod replay;
 pub mod session;
+pub mod startdiff;
 
 pub use connection::{proxy_connection, proxy_connection_with, proxy_routed_connection};
 pub use listener::{
