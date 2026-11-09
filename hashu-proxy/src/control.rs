@@ -132,6 +132,10 @@ pub fn route(method: &str, path: &str, body: &[u8], state: &ControlState) -> (u1
     let path = path.split('?').next().unwrap_or(path);
     match (method, path) {
         ("GET", "/status") => (200, status(state)),
+        // Not in /status: Caddy serves GET /control/status publicly (for the
+        // MDK app), and supplier addresses belong to the operator only. This
+        // path is reachable through the password-protected /operator/.
+        ("GET", "/suppliers") => (200, json!({ "suppliers": suppliers(state) })),
         ("POST", "/redemptions") if state.allow_open => open(body, state),
         ("POST", "/redemptions") => (
             404,
@@ -247,7 +251,6 @@ fn status(state: &ControlState) -> Value {
         "default_upstream": state.default_upstream,
         "active_redemptions": active,
         "redemptions": redemptions,
-        "suppliers": suppliers(state),
         "metrics": {
             "connections_accepted": m.connections_accepted,
             "shares_submitted": m.shares_submitted,
@@ -374,6 +377,16 @@ mod tests {
             allow_open,
             router: None,
         }
+    }
+
+    #[test]
+    fn suppliers_are_not_on_public_status() {
+        let s = state(false);
+        let (_, v) = route("GET", "/status", b"", &s);
+        assert!(v.get("suppliers").is_none());
+        let (code, v) = route("GET", "/suppliers", b"", &s);
+        assert_eq!(code, 200);
+        assert_eq!(v["suppliers"], json!([]));
     }
 
     #[test]

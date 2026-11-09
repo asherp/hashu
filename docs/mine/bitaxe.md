@@ -52,8 +52,10 @@ Bitaxe is not parked on a 1,000 THH order.
 
 ## Checking your contribution
 
-`GET https://mint.hashu.io/control/status` lists `suppliers`: per address, the live connections, hashrate, home pool and
-`delivered_thh` (work delivered to redemptions since the proxy started).
+The operator sees `GET https://mint.hashu.io/operator/suppliers` (behind
+the operator password; not on the public `/control/status`): per address,
+the live connections, hashrate, home pool and `delivered_thh` (work
+delivered to redemptions since the proxy started).
 
 ## For operators
 
