@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! cargo run -p hashu --example buy_and_redeem -- \
-//!     http://127.0.0.1:8085 bolt11 2 stratum+tcp://216.230.225.61:3333 asher.bitaxe1
+//!     http://127.0.0.1:8085 bolt11 2 stratum+tcp://your-pool.example.com:3333 you.worker1
 //! ```
 //!
 //! Arguments: mint URL, payment method (`bolt11` or `usdt`), THH to buy and

@@ -192,8 +192,10 @@ the Stratum proxy that fills redemptions, and the control API the
 ```bash
 # Mainnet Lightning via phoenixd (same variables as overpay), USDT on
 # Ethereum mainnet and USDC on Base,
-# priced from the MiningRigRentals floor, default pool = the Testnet4 demo pool.
+# priced from the MiningRigRentals floor. HASHU_UPSTREAM (or --upstream) is
+# required: the pool miners mine to when no redemption is open.
 export PHOENIXD_URL=http://127.0.0.1:9740 PHOENIXD_PASSWORD=...
+export HASHU_UPSTREAM=stratum+tcp://your-pool.example.com:3333
 hashu mint run \
   --usdt-deposit 0xYourAddress --usdc-deposit 0xYourAddress --usd-per-btc 100000 \
   --mint-url https://mint.example.com
@@ -221,7 +223,7 @@ hashu mint run \
 - **Redemption**: a wallet melts `THH` with method `hashrate` and request
   `{"pool_url", "worker_name", "amount_thh", "nonce"?}`. The proxy routes
   miners to that pool under that worker until the amount is filled, then
-  the melt turns `PAID`. `--upstream` is where miners go otherwise.
+  the melt turns `PAID`. `--upstream` (`HASHU_UPSTREAM`, required) is where miners go otherwise.
 - **Redeem over HTTP 402** ([NUT-24](https://github.com/cashubtc/nuts/blob/main/24.md)):
   `POST /api/redeem` with `{"pool_url", "worker_name", "worker_password"?, "amount_thh"?}`.
   Without payment it answers `402 Payment Required` and an `X-Cashu`
@@ -266,9 +268,10 @@ phoenixd and Caddy for TLS), see [deploy/README.md](deploy/README.md).
 Rehearse the whole loop without money or hardware:
 
 ```bash
-hashu mint run --lightning fake --price fixed --sats-per-thh 40
+hashu mint run --lightning fake --price fixed --sats-per-thh 40 \
+  --upstream stratum+tcp://your-pool.example.com:3333
 cargo run -p hashu --example buy_and_redeem -- \
-  http://127.0.0.1:8085 bolt11 2 stratum+tcp://216.230.225.61:3333 yourname.worker1
+  http://127.0.0.1:8085 bolt11 2 stratum+tcp://your-pool.example.com:3333 yourname.worker1
 ```
 
 Or do the same from a browser: open `http://127.0.0.1:8085/checkout/` to buy

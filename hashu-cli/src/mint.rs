@@ -61,9 +61,6 @@ use crate::network::{default_esplora_url, parse_network};
 use crate::operator::{self, ControlledPricer, DaemonInfo, MintControls, OperatorState};
 use crate::orders::OrderBook;
 
-/// Asher's Testnet4 pool at the hackathon. Default upstream for the proxy.
-pub const DEMO_POOL: &str = "stratum+tcp://216.230.225.61:3333";
-
 /// Public JSON-RPC endpoints the stablecoin rails watch by default: USDT
 /// on Ethereum mainnet, USDC on Base. Fine to start; a mint taking real
 /// money should use its own node or a paid provider (`--usdt-rpc`,
@@ -127,21 +124,29 @@ pub struct RunArgs {
     /// Address the mint's HTTP API binds to.
     #[arg(long, env = "HASHU_MINT_LISTEN", default_value = "0.0.0.0:8085")]
     pub listen: SocketAddr,
-    /// Public URL of the mint, advertised in its info (NUT-06).
+    /// Public URL of the mint, advertised in its info (NUT-06) and written
+    /// into every token it sells. Unset: the local `--listen` address,
+    /// which only works for a rehearsal on this machine.
     #[arg(long, env = "HASHU_MINT_URL")]
     pub mint_url: Option<String>,
     /// Directory for the mint database and seed (created if missing).
     #[arg(long, env = "HASHU_DATA_DIR", default_value = "hashu-data")]
     pub data_dir: PathBuf,
     /// Mint name (NUT-06).
-    #[arg(long, default_value = "Hashu")]
+    #[arg(long, env = "HASHU_MINT_NAME", default_value = "Hashu")]
     pub name: String,
     /// Mint description (NUT-06).
     #[arg(
         long,
+        env = "HASHU_MINT_DESCRIPTION",
         default_value = "Hashrate vouchers in terahash-hours (THH). Pay with Lightning or USDT; redeem by pointing hashrate at your pool."
     )]
     pub description: String,
+    /// How to reach the operator (NUT-06 `contact`), comma separated
+    /// `method:info` pairs, e.g. `email:ops@example.com,nostr:npub1...`.
+    /// Shown on the landing page. Empty: no contact.
+    #[arg(long, env = "HASHU_MINT_CONTACT", value_delimiter = ',')]
+    pub contact: Vec<String>,
     /// Largest mint quote or redemption, in THH.
     #[arg(long, default_value_t = 1_000_000)]
     pub max_thh: u64,
@@ -233,8 +238,9 @@ pub struct RunArgs {
     #[arg(long, env = "HASHU_SWITCH_MODE", default_value = "seamless")]
     pub switch_mode: SwitchMode,
     /// Default pool: where miners point when no redemption is open.
-    #[arg(long, env = "HASHU_UPSTREAM", default_value = DEMO_POOL)]
-    pub upstream: String,
+    /// Required: there is no built-in pool.
+    #[arg(long, env = "HASHU_UPSTREAM")]
+    pub upstream: Option<String>,
     #[command(flatten)]
     pub home: crate::proxy::HomePoolArgs,
     /// Control API (`GET /status`) the MDK app polls, and the operator GUI
@@ -547,14 +553,43 @@ fn spawn_mrr_sync(args: &RunArgs, capacity: &Arc<CapacityBook>) {
     });
 }
 
+/// Parse `--contact` entries (`method:info`) into NUT-06 contact info.
+fn parse_contacts(raw: &[String]) -> Result<Vec<cdk::nuts::ContactInfo>> {
+    raw.iter()
+        .map(|c| c.trim())
+        .filter(|c| !c.is_empty())
+        .map(|c| match c.split_once(':') {
+            Some((m, i)) if !m.trim().is_empty() && !i.trim().is_empty() => Ok(
+                cdk::nuts::ContactInfo::new(m.trim().to_string(), i.trim().to_string()),
+            ),
+            _ => bail!("HASHU_MINT_CONTACT entries must be method:info, e.g. email:ops@example.com (got {c})"),
+        })
+        .collect()
+}
+
 async fn run_daemon(args: RunArgs) -> Result<()> {
     // ---- shared state -------------------------------------------------
-    let Some(upstream) = normalize_upstream(&args.upstream) else {
+    let raw_upstream = args.upstream.as_deref().map(str::trim).unwrap_or("");
+    if raw_upstream.is_empty() {
         bail!(
-            "--upstream must be stratum+tcp://host:port or stratum+ssl://host:port (got {})",
-            args.upstream
+            "HASHU_UPSTREAM is not set: set it (or pass --upstream) to the pool your miners \
+             mine to when no redemption is open, e.g. stratum+tcp://solo.ckpool.org:3333"
+        );
+    }
+    let Some(upstream) = normalize_upstream(raw_upstream) else {
+        bail!(
+            "HASHU_UPSTREAM must be stratum+tcp://host:port or stratum+ssl://host:port (got {raw_upstream})"
         );
     };
+    let contacts = parse_contacts(&args.contact)?;
+    if args.mint_url.as_deref().is_none_or(|u| u.trim().is_empty())
+        && !args.listen.ip().is_loopback()
+    {
+        tracing::warn!(
+            "HASHU_MINT_URL is not set: tokens will name this mint by its local address; \
+             set HASHU_MINT_URL to the public https URL before selling"
+        );
+    }
     std::fs::create_dir_all(&args.data_dir)
         .with_context(|| format!("create {:?}", args.data_dir))?;
     let ledger_path = args.data_dir.join("redemptions.jsonl");
@@ -618,6 +653,9 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let mut builder = MintBuilder::new(db.clone())
         .with_name(args.name.clone())
         .with_description(args.description.clone());
+    for c in contacts {
+        builder = builder.with_contact_info(c);
+    }
     if let Some(url) = &args.mint_url {
         builder = builder.with_urls(vec![url.clone()]);
     }
@@ -952,5 +990,31 @@ mod tests {
     fn rejects_non_positive_fixed_price() {
         assert!(fixed_from_sats_per_thh(0.0).is_err());
         assert!(fixed_from_sats_per_thh(-1.0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod contact_tests {
+    use super::parse_contacts;
+
+    #[test]
+    fn parses_method_info_pairs() {
+        let c = parse_contacts(&[
+            "email:ops@example.com".into(),
+            " nostr : npub1abc ".into(),
+            "".into(),
+        ])
+        .unwrap();
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].method, "email");
+        assert_eq!(c[0].info, "ops@example.com");
+        assert_eq!(c[1].method, "nostr");
+        assert_eq!(c[1].info, "npub1abc");
+    }
+
+    #[test]
+    fn rejects_entries_without_a_method() {
+        assert!(parse_contacts(&["ops@example.com".into()]).is_err());
+        assert!(parse_contacts(&["email:".into()]).is_err());
     }
 }
