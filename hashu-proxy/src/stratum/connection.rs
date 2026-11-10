@@ -220,6 +220,18 @@ pub async fn proxy_routed_connection(
         tracing::debug!(%conn, reason = %why, "miner left before it was placed");
         return Ok(());
     }
+    if let Some(why) = authorize.as_ref().and_then(|p| router.refusal(p)) {
+        let id = miner
+            .prelude
+            .last()
+            .and_then(|l| parse(l))
+            .and_then(|v| v.get("id").cloned())
+            .unwrap_or(Value::Null);
+        tracing::info!(%conn, user = ?authorize.as_ref().and_then(|p| p.get(0)), reason = why, "refusing miner");
+        let _ = miner.w.write_all(refusal_line(id, why).as_bytes()).await;
+        let _ = miner.w.flush().await;
+        return Ok(());
+    }
     let assignment = router.assign_with(conn, authorize.as_ref());
     let result = async {
         let mut route = assignment.route;
@@ -729,6 +741,17 @@ impl Conn {
                 // Placed before its authorize arrived: let the router
                 // learn who it is now.
                 if let (Some(router), Some(p)) = (&self.ctx.router, &params) {
+                    if let Some(why) = router.refusal(p) {
+                        let id = v
+                            .as_ref()
+                            .and_then(|v| v.get("id"))
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        let line = refusal_line(id, why);
+                        self.mw.write_all(line.as_bytes()).await?;
+                        self.mw.flush().await?;
+                        return Err(io::Error::other(format!("refused miner: {why}")));
+                    }
                     router.identify(self.ctx.conn, p);
                 }
                 m.authorize_params = params;
@@ -1167,6 +1190,15 @@ fn granted_version_mask(v: &Value) -> Option<u32> {
         return None;
     }
     u32::from_str_radix(r.get("version-rolling.mask")?.as_str()?, 16).ok()
+}
+
+/// The authorize answer for a refused miner (Stratum error 24,
+/// unauthorized worker).
+fn refusal_line(id: Value, why: &str) -> String {
+    format!(
+        "{}\n",
+        json!({"id": id, "result": false, "error": [24, why, null]})
+    )
 }
 
 fn parse(line: &str) -> Option<Value> {

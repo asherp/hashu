@@ -293,6 +293,9 @@ struct Binding {
     idle: Route,
     /// Supplier key from the miner's authorize, once seen.
     supplier: Option<String>,
+    /// May be borrowed for redemptions (see
+    /// [`crate::home::HomeConfig::operator_worker`]).
+    borrowable: bool,
 }
 
 impl Binding {
@@ -399,10 +402,15 @@ impl Router {
             tracing::warn!(%conn, reason = %why, "ignoring the miner's pool= option");
         }
         let idle = self.idle_route(identity.as_ref());
-        let active = self.routable_active();
+        let borrowable = self.borrowable(identity.as_ref());
+        let active = if borrowable {
+            self.routable_active()
+        } else {
+            Vec::new()
+        };
         let now = Instant::now();
         let mut inner = self.lock();
-        inner.track_unserved(&active, now);
+        inner.track_unserved(&self.routable_active(), now);
         let route = pick_route(&active, &inner, None, now, &idle);
         let (tx, rx) = watch::channel(Signal::Stay);
         inner.conns.insert(
@@ -415,6 +423,7 @@ impl Router {
                 rate: RigRate::new(now),
                 idle,
                 supplier: identity.map(|i| i.supplier),
+                borrowable,
             },
         );
         match &route {
@@ -462,7 +471,9 @@ impl Router {
             return;
         };
         let idle = self.idle_route(Some(&id));
+        let borrowable = self.borrowable(Some(&id));
         if let Some(b) = self.lock().conns.get_mut(&conn) {
+            b.borrowable = borrowable;
             if b.supplier.is_none() {
                 b.supplier = Some(id.supplier);
             }
@@ -470,6 +481,21 @@ impl Router {
                 tracing::info!(%conn, upstream = idle.upstream(), "miner has a home pool; it goes there after its next redemption or reconnect");
                 b.idle = idle;
             }
+        }
+    }
+
+    /// `Some(reason)` if a miner with this authorize must be refused (see
+    /// [`MinerIdentity::refusal`]).
+    pub fn refusal(&self, authorize: &Value) -> Option<&'static str> {
+        MinerIdentity::from_params(authorize, &self.home)?.refusal(&self.home)
+    }
+
+    /// Whether a miner may be borrowed for redemptions. With Hashu's own
+    /// rigs set, a miner not yet identified is not.
+    fn borrowable(&self, identity: Option<&MinerIdentity>) -> bool {
+        match identity {
+            Some(i) => i.borrowable(&self.home),
+            None => self.home.operator_worker.is_none(),
         }
     }
 
@@ -644,17 +670,17 @@ impl Router {
                 }
                 match &b.route {
                     Route::Redemption { id, .. } => {
-                        if active.iter().any(|r| r.id == *id) {
+                        if b.borrowable && active.iter().any(|r| r.id == *id) {
                             continue;
                         }
-                        if b.holding() {
+                        if b.holding() || !b.borrowable {
                             b.idle.clone()
                         } else {
                             pick_route(&active, &inner, Some(conn), now, &b.idle)
                         }
                     }
                     Route::Default { .. } | Route::Home { .. } => {
-                        if active.is_empty() || b.holding() {
+                        if active.is_empty() || b.holding() || !b.borrowable {
                             continue;
                         }
                         let t = pick_route(&active, &inner, Some(conn), now, &b.idle);
@@ -1453,6 +1479,83 @@ mod tests {
         assert_eq!(router.reconcile(), 1);
         assert!(matches!(switch_target(&a), Route::Home { .. }));
         assert_eq!(router.suppliers()[0].supplier, ADDR);
+    }
+
+    fn operator_router(ledger: Arc<RedemptionLedger>) -> Router {
+        Router::new("default:3333", ledger).with_home_pools(HomeConfig {
+            operator_worker: Some("hashu".into()),
+            ..HomeConfig::default()
+        })
+    }
+
+    #[test]
+    fn only_hashus_rigs_are_borrowed_with_an_operator_worker() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = operator_router(ledger.clone());
+        open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
+
+        let op = router.assign_with(
+            ConnectionId::next(),
+            Some(&serde_json::json!(["hashu.mrr1", "x"])),
+        );
+        assert_eq!(op.route.redemption_id(), Some(rid(1)));
+
+        let home = router.assign_with(ConnectionId::next(), Some(&serde_json::json!([ADDR, "x"])));
+        assert!(matches!(home.route, Route::Home { .. }), "{:?}", home.route);
+        // Not yet identified: not borrowed either.
+        let unknown = router.assign_with(ConnectionId::next(), None);
+        assert_eq!(unknown.route.upstream(), "default:3333");
+        assert_eq!(unknown.route.redemption_id(), None);
+
+        open(&ledger, 2, "stratum+tcp://bob:3333", "bob.w");
+        // The new order goes to nobody else: home and unknown stay put.
+        router.reconcile();
+        assert_eq!(*home.signal.borrow(), Signal::Stay);
+        assert_eq!(*unknown.signal.borrow(), Signal::Stay);
+    }
+
+    #[test]
+    fn late_identified_home_miner_is_not_kept_on_an_order() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router =
+            Router::new("default:3333", ledger.clone()).with_home_pools(HomeConfig::default());
+        open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
+        let a = router.assign_with(ConnectionId::next(), None);
+        assert_eq!(a.route.redemption_id(), Some(rid(1)));
+        // Turning the operator rule on is a restart, so model it on a
+        // fresh router: an unidentified rig there isn't borrowed.
+        let r2 = operator_router(ledger.clone());
+        let b = r2.assign_with(ConnectionId::next(), None);
+        assert_eq!(b.route.redemption_id(), None);
+        r2.identify(b.conn, &serde_json::json!(["hashu.mrr2", "x"]));
+        assert_eq!(r2.reconcile(), 1);
+        assert_eq!(switch_target(&b).redemption_id(), Some(rid(1)));
+    }
+
+    #[test]
+    fn refuses_account_users_without_a_home() {
+        let router = operator_router(Arc::new(RedemptionLedger::new()));
+        assert_eq!(
+            router.refusal(&serde_json::json!(["bob.rig1", "x"])),
+            Some(crate::home::REFUSE_NO_HOME)
+        );
+        assert_eq!(
+            router.refusal(&serde_json::json!(["hashu.mrr1", "x"])),
+            None
+        );
+        assert_eq!(router.refusal(&serde_json::json!([ADDR, "x"])), None);
+        assert_eq!(
+            router.refusal(&serde_json::json!([
+                "bob.rig1",
+                "pool=public-pool.io:21496"
+            ])),
+            None
+        );
+        let open_router = home_router(Arc::new(RedemptionLedger::new()));
+        assert_eq!(
+            open_router.refusal(&serde_json::json!(["bob.rig1", "x"])),
+            None
+        );
     }
 
     #[test]

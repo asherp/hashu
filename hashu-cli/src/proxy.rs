@@ -79,13 +79,29 @@ pub struct HomePoolArgs {
     /// authorize.
     #[arg(long, env = "HASHU_HOME_POOLS_OFF")]
     pub home_pools_off: bool,
+    /// Hashu's own worker account (e.g. the operator's Braiins user). When
+    /// set, only users equal to it or starting with `<it>.` (the MRR
+    /// rentals) are borrowed for redemptions; other miners idle on their
+    /// home pool and are never borrowed, and a miner with no home pool is
+    /// refused. Unset: every rig may be borrowed, as before.
+    #[arg(long, env = "HASHU_OPERATOR_WORKER")]
+    pub operator_worker: Option<String>,
 }
 
 impl HomePoolArgs {
     pub fn config(&self) -> Result<hashu_proxy::home::HomeConfig> {
         use hashu_proxy::home::HomeConfig;
+        let operator_worker = self
+            .operator_worker
+            .as_deref()
+            .map(str::trim)
+            .filter(|w| !w.is_empty())
+            .map(str::to_string);
         if self.home_pools_off {
-            return Ok(HomeConfig::off());
+            return Ok(HomeConfig {
+                operator_worker,
+                ..HomeConfig::off()
+            });
         }
         let solo = self.home_solo_upstream.trim();
         let solo_upstream = if solo.is_empty() || solo.eq_ignore_ascii_case("off") {
@@ -104,6 +120,7 @@ impl HomePoolArgs {
         Ok(HomeConfig {
             solo_upstream,
             allowed_hosts,
+            operator_worker,
         })
     }
 }

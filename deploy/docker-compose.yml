@@ -62,6 +62,11 @@ services:
       HASHU_HOME_SOLO_UPSTREAM: ${HASHU_HOME_SOLO_UPSTREAM:-solo.ckpool.org:3333}
       HASHU_HOME_POOLS: ${HASHU_HOME_POOLS:-solo.ckpool.org,eusolo.ckpool.org,ausolo.ckpool.org,public-pool.io,stratum.braiins.com,mine.ocean.xyz}
       HASHU_HOME_POOLS_OFF: ${HASHU_HOME_POOLS_OFF:-false}
+      # Hashu's own rigs: your Braiins user (the MRR rentals mine as
+      # <user>.<rig>). Set it and only those rigs fill mint.hashu.io orders;
+      # other miners stay on their home pool, and account-name users with no
+      # home pool are refused. Unset: any rig may be borrowed.
+      HASHU_OPERATOR_WORKER: ${HASHU_OPERATOR_WORKER:-}
       # Fallback price while the live (MRR) source has no fresh sample.
       HASHU_SATS_PER_THH: ${HASHU_SATS_PER_THH:-40}
       # Lightning: mainnet phoenixd, limited-access password (can create

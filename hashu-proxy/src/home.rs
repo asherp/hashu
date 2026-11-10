@@ -50,6 +50,15 @@ pub struct HomeConfig {
     /// Hosts a miner may name with `pool=` (lowercase, no port). Empty
     /// turns `pool=` off.
     pub allowed_hosts: Vec<String>,
+    /// Hashu's own worker account (`HASHU_OPERATOR_WORKER`, e.g. the
+    /// operator's Braiins user). When set, only users equal to it or
+    /// starting with `<it>.` are Hashu's rigs: they idle on the default
+    /// pool and are the only rigs borrowed for redemptions. Every other
+    /// miner idles on its home pool and is never borrowed, and a miner
+    /// with no home pool is refused. `None` keeps the old behaviour:
+    /// every rig may be borrowed and a miner with no home pool idles on
+    /// the default pool.
+    pub operator_worker: Option<String>,
 }
 
 impl Default for HomeConfig {
@@ -60,6 +69,7 @@ impl Default for HomeConfig {
                 .iter()
                 .map(|h| h.to_string())
                 .collect(),
+            operator_worker: None,
         }
     }
 }
@@ -70,7 +80,21 @@ impl HomeConfig {
         Self {
             solo_upstream: None,
             allowed_hosts: Vec::new(),
+            operator_worker: None,
         }
+    }
+
+    /// Whether `user` is one of Hashu's own rigs (see
+    /// [`HomeConfig::operator_worker`]).
+    pub fn is_operator(&self, user: &str) -> bool {
+        let Some(op) = self.operator_worker.as_deref().filter(|o| !o.is_empty()) else {
+            return false;
+        };
+        let user = user.trim();
+        user == op
+            || user
+                .strip_prefix(op)
+                .is_some_and(|rest| rest.starts_with('.'))
     }
 }
 
@@ -97,6 +121,26 @@ pub struct MinerIdentity {
     pub home: Option<HomePool>,
     /// Why a `pool=` option was ignored, for the log.
     pub refused_pool: Option<String>,
+    /// One of Hashu's own rigs ([`HomeConfig::operator_worker`]).
+    pub operator: bool,
+}
+
+/// Why the proxy refuses a miner, sent back as its authorize error.
+pub const REFUSE_NO_HOME: &str =
+    "no home pool: use a Bitcoin address as the user, or add pool=host:port to the password";
+
+impl MinerIdentity {
+    /// Whether this miner may be borrowed to fill redemptions.
+    pub fn borrowable(&self, cfg: &HomeConfig) -> bool {
+        cfg.operator_worker.is_none() || self.operator
+    }
+
+    /// `Some(reason)` if the proxy should refuse this miner: Hashu's own
+    /// rigs are set, this isn't one, and it has no home pool to go to.
+    pub fn refusal(&self, cfg: &HomeConfig) -> Option<&'static str> {
+        (cfg.operator_worker.is_some() && !self.operator && self.home.is_none())
+            .then_some(REFUSE_NO_HOME)
+    }
 }
 
 impl MinerIdentity {
@@ -137,9 +181,11 @@ impl MinerIdentity {
                 .filter(|_| is_mainnet_address(&supplier))
         });
 
+        let operator = cfg.is_operator(user);
         Self {
             supplier,
-            home: upstream.map(|upstream| HomePool {
+            operator,
+            home: upstream.filter(|_| !operator).map(|upstream| HomePool {
                 upstream,
                 worker_name: user.to_string(),
                 worker_password,
@@ -285,6 +331,33 @@ mod tests {
         let id =
             MinerIdentity::from_authorize(ADDR, "pool=solo.ckpool.org:3333", &HomeConfig::off());
         assert_eq!(id.home, None);
+    }
+
+    #[test]
+    fn operator_worker_marks_hashus_rigs() {
+        let cfg = HomeConfig {
+            operator_worker: Some("hashu".into()),
+            ..HomeConfig::default()
+        };
+        for u in ["hashu", "hashu.mrr1"] {
+            let id = MinerIdentity::from_authorize(u, "pool=public-pool.io:21496", &cfg);
+            assert!(id.operator, "{u}");
+            assert_eq!(id.home, None, "operator rigs idle on the default pool");
+            assert!(id.borrowable(&cfg));
+            assert_eq!(id.refusal(&cfg), None);
+        }
+        // Prefix must end at a dot.
+        let id = MinerIdentity::from_authorize("hashuevil.1", "x", &cfg);
+        assert!(!id.operator);
+        assert_eq!(id.refusal(&cfg), Some(REFUSE_NO_HOME));
+        // Home miners: kept at home, never borrowed, not refused.
+        let id = MinerIdentity::from_authorize(ADDR, "x", &cfg);
+        assert!(!id.borrowable(&cfg));
+        assert_eq!(id.refusal(&cfg), None);
+        // Without the setting nothing changes.
+        let id = MinerIdentity::from_authorize("bob.rig1", "x", &HomeConfig::default());
+        assert!(id.borrowable(&HomeConfig::default()));
+        assert_eq!(id.refusal(&HomeConfig::default()), None);
     }
 
     #[test]

@@ -588,6 +588,7 @@ async fn home_pool_miner_idles_at_home_and_is_borrowed_for_redemptions() {
         Router::new(default_pool, ledger.clone()).with_home_pools(HomeConfig {
             solo_upstream: None,
             allowed_hosts: vec!["127.0.0.1".into()],
+            operator_worker: None,
         }),
     );
     let credit = CreditContext::new(Arc::new(ShareCrediter::new(ledger.clone())), router.clone());
@@ -710,4 +711,51 @@ async fn miners_own_suggestion_is_replayed_after_authorize() {
     assert_eq!(params, json!([512]));
     assert!(authorized);
     assert_eq!(password, "x");
+}
+
+/// With Hashu's own rigs set, an account-name miner with no home pool
+/// gets a clear authorize error instead of the default pool's refusal,
+/// and the operator's own rigs still connect.
+#[tokio::test]
+async fn account_miner_without_home_is_refused_when_operator_worker_is_set() {
+    use hashu_proxy::home::{HomeConfig, REFUSE_NO_HOME};
+    let (tx, mut seen) = mpsc::unbounded_channel();
+    let default_pool = fake_pool(default_cfg(), tx).await;
+    let ledger = Arc::new(RedemptionLedger::new());
+    let router = Arc::new(
+        Router::new(default_pool, ledger).with_home_pools(HomeConfig {
+            operator_worker: Some("hashu".into()),
+            ..HomeConfig::default()
+        }),
+    );
+    let (proxy, _metrics) = spawn_proxy(router, None).await;
+
+    let sock = TcpStream::connect(&proxy).await.unwrap();
+    let (r, mut w) = sock.into_split();
+    let mut r = BufReader::new(r);
+    for m in [
+        json!({"id": 1, "method": "mining.subscribe", "params": ["bitaxe/2.9"]}),
+        json!({"id": 2, "method": "mining.authorize", "params": ["bob.rig1", "x"]}),
+    ] {
+        w.write_all(format!("{m}\n").as_bytes()).await.unwrap();
+    }
+    let mut line = String::new();
+    timeout(T, r.read_line(&mut line)).await.unwrap().unwrap();
+    let v: Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(v["id"], 2);
+    assert_eq!(v["result"], false);
+    assert_eq!(v["error"][1], REFUSE_NO_HOME);
+    line.clear();
+    let n = timeout(T, r.read_line(&mut line))
+        .await
+        .unwrap()
+        .unwrap_or(0);
+    assert_eq!(n, 0, "connection closed after the refusal");
+
+    let mut m = Miner::connect_as(&proxy, None, false, "hashu.mrr1", "x").await;
+    assert_eq!(recv(&mut seen).await, auth("default", "hashu.mrr1"));
+    let cb = m.submit_on(None).await;
+    // The default route passes lines through as sent (this fake miner
+    // submits as `miner.1`).
+    expect_submit(&mut seen, "default", "miner.1", &cb).await;
 }
