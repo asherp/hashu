@@ -1,4 +1,7 @@
-# Live Hashu demo on one internet-facing machine.
+# A Hashu mint on one internet-facing machine. Everything deployment
+# specific comes from .env; the required variables have no defaults, and
+# `docker compose up` stops with the name of any that is missing. See
+# deploy/README.md ("Configuration") for the list.
 #
 #   cp .env.example .env && $EDITOR .env
 #   docker compose up -d --build        # build from this checkout, or
@@ -10,11 +13,11 @@
 #                        -> operator GUI (hashu:3334) at /operator/ (basic auth)
 #                        -> GET /control/status (read-only, for the MDK app)
 #                        -> slide deck at /slides/ (built into the caddy image)
-#                        also answers for $HASHU_EXTRA_DOMAINS (hashu.io)
+#                        also answers for $HASHU_EXTRA_DOMAINS (optional)
 #                        -> /mdk redirects to the MDK dashboard demo at
-#                           https://$HASHU_MDK_DOMAIN/ (mdk:3030, mock heater)
-#   3335    Stratum proxy, raw TCP, straight to the hashu container
-#           (3333 on the devbox is already taken by ckpool)
+#                           https://$HASHU_MDK_DOMAIN/ (optional, profile "mdk")
+#   $HASHU_STRATUM_PORT (3335)  Stratum proxy, raw TCP, straight to the
+#                        hashu container
 # Private (compose network only, never published on the host):
 #   hashu:3334  control API + operator GUI (POST api/controls changes pricing)
 #   phoenixd:9740  phoenixd HTTP API (mainnet wallet)
@@ -53,7 +56,11 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
       HASHU_DATA_DIR: /data
       HASHU_MINT_URL: https://${HASHU_DOMAIN:?set HASHU_DOMAIN in .env}
-      HASHU_UPSTREAM: ${HASHU_UPSTREAM:-stratum+tcp://stratum.braiins.com:3333}
+      HASHU_UPSTREAM: ${HASHU_UPSTREAM:?set HASHU_UPSTREAM in .env (the pool miners mine to when no redemption is open)}
+      # NUT-06 identity shown in wallets and on the landing page.
+      HASHU_MINT_NAME: ${HASHU_MINT_NAME:-}
+      HASHU_MINT_DESCRIPTION: ${HASHU_MINT_DESCRIPTION:-}
+      HASHU_MINT_CONTACT: ${HASHU_MINT_CONTACT:-}
       # Fallback price while the live (MRR) source has no fresh sample.
       HASHU_SATS_PER_THH: ${HASHU_SATS_PER_THH:-40}
       # Lightning: mainnet phoenixd, limited-access password (can create
@@ -98,7 +105,7 @@ services:
       - hashu_data:/data
     ports:
       # Miners connect straight to the Stratum proxy (raw TCP, no TLS).
-      # Host port 3335 by default: ckpool owns 3333 on the devbox.
+      # Host port 3335 by default (set HASHU_STRATUM_PORT=3333 if it is free).
       - "${HASHU_STRATUM_PORT:-3335}:3333"
     networks: [backend, edge]
     restart: unless-stopped
@@ -106,14 +113,17 @@ services:
   # MDK demo (Hashrate at Home): the Hashu Heater app and a mock heater in
   # the MDK stack, with the MDK dashboard. All mock: it uses its own demo
   # mint (mdk-hashu) and fake pools, never the live mint or a real pool.
+  # Off unless COMPOSE_PROFILES=mdk; it also needs HASHU_MDK_DOMAIN,
+  # MDK_DEMO_USER and MDK_DEMO_PASSWORD.
   mdk:
+    profiles: [mdk]
     build:
       context: ..
       dockerfile: deploy/mdk/Dockerfile
     image: ${HASHU_REGISTRY:-ghcr.io/asherp}/hashu-mdk:${HASHU_IMAGE_TAG:-latest}
     environment:
-      MDK_DEMO_USER: ${MDK_DEMO_USER:-demo@hashu.io}
-      MDK_DEMO_PASSWORD: ${MDK_DEMO_PASSWORD:-hashu-demo-2026}
+      MDK_DEMO_USER: ${MDK_DEMO_USER:-}
+      MDK_DEMO_PASSWORD: ${MDK_DEMO_PASSWORD:-}
     networks: [mdk, edge]
     restart: unless-stopped
 
@@ -121,6 +131,7 @@ services:
   # is the fake home pool. POST /redemptions is on so the dashboard's Redeem
   # button works; it is reachable only from the mdk network.
   mdk-hashu:
+    profiles: [mdk]
     # Same image as `hashu` (built or pulled by that service).
     image: ${HASHU_REGISTRY:-ghcr.io/asherp}/hashu:${HASHU_IMAGE_TAG:-latest}
     depends_on: [hashu]
@@ -149,13 +160,15 @@ services:
       context: ..
       dockerfile: deploy/caddy/Dockerfile
     image: ${HASHU_REGISTRY:-ghcr.io/asherp}/hashu-caddy:${HASHU_IMAGE_TAG:-latest}
-    depends_on: [hashu, mdk]
+    depends_on: [hashu]
     environment:
-      HASHU_DOMAIN: ${HASHU_DOMAIN}
-      # MDK dashboard demo host (needs to resolve here; sslip.io works as-is).
-      HASHU_MDK_DOMAIN: ${HASHU_MDK_DOMAIN:-mdk.216-230-225-61.sslip.io}
-      # Extra names that serve the same site (needs A records on this machine).
-      HASHU_EXTRA_DOMAINS: ${HASHU_EXTRA_DOMAINS-hashu.io www.hashu.io}
+      HASHU_DOMAIN: ${HASHU_DOMAIN:?set HASHU_DOMAIN in .env}
+      # MDK dashboard demo host (optional; needs to resolve here, an
+      # <ip-with-dashes>.sslip.io name works as-is). Unset: no /mdk.
+      HASHU_MDK_DOMAIN: ${HASHU_MDK_DOMAIN:-}
+      # Extra names that serve the same site with the splash page at /
+      # (optional, space separated; needs A records on this machine).
+      HASHU_EXTRA_DOMAINS: ${HASHU_EXTRA_DOMAINS:-}
       OPERATOR_USER: ${OPERATOR_USER:-operator}
       OPERATOR_PASSWORD_HASH: ${OPERATOR_PASSWORD_HASH:?set OPERATOR_PASSWORD_HASH in .env (caddy hash-password)}
     ports:

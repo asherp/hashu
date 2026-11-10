@@ -2,8 +2,8 @@
 # Start the MDK demo: fake pools, the MDK stack, the demo user, the dashboard.
 set -eu
 cd /app/mdk
-USER_NAME=${MDK_DEMO_USER:-demo@hashu.io}
-PASSWORD=${MDK_DEMO_PASSWORD:-hashu-demo-2026}
+USER_NAME=${MDK_DEMO_USER:?MDK_DEMO_USER is not set: the dashboard sign-in, e.g. demo@example.com}
+PASSWORD=${MDK_DEMO_PASSWORD:?MDK_DEMO_PASSWORD is not set: the dashboard password (12+ characters)}
 
 node scripts/fake-pool.js --host 0.0.0.0 --port 3340 --name home &
 node scripts/fake-pool.js --host 0.0.0.0 --port 3341 --name redeemer &

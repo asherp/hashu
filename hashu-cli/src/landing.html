@@ -84,7 +84,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       <a href="/checkout/" data-buy>Buy hashrate</a>
       <a href="/slides/">Slides</a>
       <a href="https://github.com/asherp/hashu">GitHub</a>
-      <a href="https://x.com/asherp" rel="noopener">Contact</a>
+      <a id="nav-contact" href="#contact" hidden>Contact</a>
     </div>
   </nav>
 
@@ -153,7 +153,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
 
   <footer>
     <span>Hashu · built at bitcoin++ Seoul 2026 on Tether's Mining Development Kit</span>
-    <span>Inquiries: <a href="https://x.com/asherp" rel="noopener">@asherp</a> on X · <a href="mailto:asherp.nostr@gmail.com">asherp.nostr@gmail.com</a></span>
+    <span id="contact" hidden>Operator: <span id="contact-list"></span></span>
     <span>Open source: <a href="https://github.com/asherp/hashu">github.com/asherp/hashu</a> · MIT / Apache-2.0 · <a href="/slides/">Slides</a></span>
   </footer>
 </div>
@@ -214,6 +214,34 @@ async function load() {
 }
 load();
 setInterval(load, 30000);
+
+// Operator contact from the mint's NUT-06 info (HASHU_MINT_CONTACT).
+function contactLink(method, info) {
+  const m = String(method).toLowerCase();
+  const a = document.createElement('a');
+  a.textContent = info;
+  a.rel = 'noopener';
+  if (m === 'email' && /^[^\s@]+@[^\s@]+$/.test(info)) a.href = 'mailto:' + info;
+  else if ((m === 'twitter' || m === 'x') && /^@?\w{1,15}$/.test(info)) a.href = 'https://x.com/' + info.replace(/^@/, '');
+  else if (m === 'nostr' && /^npub1[0-9a-z]+$/.test(info)) a.href = 'https://njump.me/' + info;
+  else if (/^https:\/\//.test(info)) a.href = info;
+  else { const s = document.createElement('span'); s.textContent = method + ': ' + info; return s; }
+  return a;
+}
+fetch('/v1/info', { cache: 'no-store' })
+  .then((r) => (r.ok ? r.json() : null))
+  .then((i) => {
+    const list = (i && Array.isArray(i.contact) ? i.contact : []).filter((c) => c && c.method && c.info);
+    if (!list.length) return;
+    const out = $('contact-list');
+    list.forEach((c, n) => { if (n) out.append(' · '); out.append(contactLink(c.method, c.info)); });
+    $('contact').hidden = false;
+    const nav = $('nav-contact');
+    nav.hidden = false;
+    const first = contactLink(list[0].method, list[0].info);
+    if (first.href) nav.href = first.href;
+  })
+  .catch(() => {});
 </script>
 </body>
 </html>

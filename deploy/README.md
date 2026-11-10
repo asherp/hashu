@@ -1,4 +1,9 @@
-# Live demo deploy
+# Deploy a Hashu mint
+
+Anyone can run their own Hashu mint with this directory and a `.env` file:
+nothing in the code, compose file, Caddyfile or images defaults to a
+particular operator's domain, pool, wallet or account. The examples below
+use `mint.hashu.io`, the project's own deployment; substitute yours.
 
 Runs the whole Hashu node on one internet-facing machine with Docker
 Compose: `hashu mint run` (mint, Lightning + Tether rails, Stratum proxy,
@@ -25,15 +30,48 @@ mint and phoenixd state): see [DIGITALOCEAN.md](DIGITALOCEAN.md).
 | Port | Exposed? | What |
 |---|---|---|
 | 80, 443 (tcp+udp) | public | Caddy: landing page at `/`, mint API at `/v1/`, buyer checkout at `/checkout/`, operator GUI at `/operator/`, `GET /control/status` |
-| 3335 | public | Stratum proxy, raw TCP (host 3335 → container 3333; ckpool keeps 3333) |
+| 3335 (`HASHU_STRATUM_PORT`) | public | Stratum proxy, raw TCP (host 3335 → container 3333) |
 | 8085 | compose network only | Cashu mint API (behind Caddy) |
 | 3334 | compose network only | control API + operator GUI (behind Caddy) |
 | 9740 | compose network only | phoenixd HTTP API |
-| `mdk:3030` | behind Caddy at `https://$HASHU_MDK_DOMAIN/` | MDK dashboard demo (`/mdk` on the mint redirects there) |
+| `mdk:3030` | behind Caddy at `https://$HASHU_MDK_DOMAIN/` | optional MDK dashboard demo (`COMPOSE_PROFILES=mdk`; `/mdk` on the mint redirects there) |
 
 phoenixd never gets a host port. Hashu talks to it with phoenixd's
 **limited-access** password, which can create invoices and read payments
 but cannot send, so even a compromised mint cannot spend the wallet.
+
+## Configuration
+
+Copy [`.env.example`](.env.example) to `.env`. Five variables are
+**required** and have no defaults; `docker compose up` refuses to start
+and names the first one missing (`required variable HASHU_UPSTREAM is
+missing a value: set HASHU_UPSTREAM in .env ...`). The images check them
+again at startup, so running them without compose fails the same way.
+
+| Variable | Required | What |
+|---|---|---|
+| `HASHU_DOMAIN` | **yes** | Public host name of the mint (`mint.example.com`), an A record pointing at this machine. Caddy's certificate, the mint URL in every token (`HASHU_MINT_URL=https://$HASHU_DOMAIN`). |
+| `HASHU_UPSTREAM` | **yes** | Default pool: where miners mine when no redemption is open (`stratum+tcp://host:port`). The miner's username passes through, so it must be valid there. |
+| `PHOENIXD_PASSWORD` | **yes** | phoenixd full-access password (stays inside phoenixd). `openssl rand -hex 32` |
+| `PHOENIXD_LIMITED_PASSWORD` | **yes** | phoenixd limited password given to hashu (invoices only, cannot send). |
+| `OPERATOR_PASSWORD_HASH` | **yes** | bcrypt hash for the operator GUI at `/operator/` (`caddy hash-password`). |
+| `OPERATOR_USER` | no | Operator GUI user, default `operator`. |
+| `HASHU_EXTRA_DOMAINS` | no | More host names for the same site, with the splash page (`site/`) at `/`. Default none. |
+| `HASHU_MINT_NAME`, `HASHU_MINT_DESCRIPTION` | no | NUT-06 name and description (defaults: `Hashu` and a generic description). |
+| `HASHU_MINT_CONTACT` | no | Operator contact, `method:info` pairs, comma separated (`email:ops@example.com,nostr:npub1...`). Shown in wallets and on the landing page; default none. |
+| `HASHU_STRATUM_PORT` | no | Host port for miners, default `3335`. |
+| `HASHU_PRICE`, `HASHU_SATS_PER_THH`, `HASHU_NETWORK` | no | Pricing: `mrr` (default), `esplora` or `fixed`; fallback 40 sats/THH. |
+| `HASHU_LIGHTNING`, `PHOENIXD_CHAIN` | no | `phoenixd` (default), `fake`, `off`; `mainnet`. |
+| `HASHU_USDT_DEPOSIT`, `HASHU_USDC_DEPOSIT` + `HASHU_USDT_PER_THH` or `HASHU_USD_PER_BTC` | no | Stablecoin rails, each on when its deposit address is set. Token, RPC, chain id and confirmations default to the canonical USDT (Ethereum) and USDC (Base) contracts and public RPCs. |
+| `MRR_API_KEY`, `MRR_API_SECRET`, `HASHU_MRR_RENTAL_IDS` | no | Capacity from your MiningRigRentals rentals. |
+| `HASHU_HEAT_J_PER_TH` | no | Heat estimate default, 30 J/TH. |
+| `COMPOSE_PROFILES=mdk` + `HASHU_MDK_DOMAIN`, `MDK_DEMO_USER`, `MDK_DEMO_PASSWORD` | no | The mock MDK dashboard demo. Off by default; when on, all three are required. |
+| `HASHU_REGISTRY`, `HASHU_IMAGE_TAG` | no | Image source for `docker compose pull` (default `ghcr.io/asherp`, `latest`). Point at your fork's registry to deploy your own builds. |
+
+Outside Docker, `hashu mint run` reads the same `HASHU_*` variables (or
+the matching flags, see `hashu mint run --help`). There `HASHU_UPSTREAM`
+is required too; `HASHU_MINT_URL` may be left unset for a rehearsal on
+localhost, and the daemon warns when it is unset on a public bind.
 
 ## 1. Prerequisites
 
@@ -107,7 +145,7 @@ openssl rand -hex 32   # -> PHOENIXD_PASSWORD
 openssl rand -hex 32   # -> PHOENIXD_LIMITED_PASSWORD
 docker run --rm caddy:2 caddy hash-password --plaintext 'pick-a-password'
                        # -> OPERATOR_PASSWORD_HASH (keep the single quotes)
-$EDITOR .env           # HASHU_DOMAIN, the above, optional USDT/USDC deposit
+$EDITOR .env           # HASHU_DOMAIN, HASHU_UPSTREAM, the above, optional rails
 ```
 
 ## 3. Start
@@ -256,8 +294,8 @@ from the Caddyfile and reach 3334 over an SSH tunnel instead.
 
 ### MDK dashboard on the site
 
-`docker compose up -d --build` also starts the MDK demo for judges to click
-through, with no hardware:
+With `COMPOSE_PROFILES=mdk` in `.env`, `docker compose up -d` also starts
+the MDK demo for judges to click through, with no hardware:
 
 - **`mdk`**: the MDK stack (Kernel, heater Worker with its mock heater,
   Hashu Heater app, Gateway), two fake pools that accept every share, and
@@ -265,9 +303,11 @@ through, with no hardware:
 - **`mdk-hashu`**: a separate demo mint + proxy (`--lightning fake`,
   `--price fixed`, `--control-allow-open`, upstream = the fake home pool).
 
-Open **https://mint.hashu.io/mdk** (redirects to `https://$HASHU_MDK_DOMAIN/`,
-default `mdk.216-230-225-61.sslip.io`), sign in with `MDK_DEMO_USER` /
-`MDK_DEMO_PASSWORD` (default `demo@hashu.io` / `hashu-demo-2026`), open
+Set `HASHU_MDK_DOMAIN` (e.g. `mdk.<ip-with-dashes>.sslip.io`, no DNS
+change needed), `MDK_DEMO_USER` and `MDK_DEMO_PASSWORD` (12+ characters);
+the mdk container refuses to start without the last two. Open
+**https://$HASHU_DOMAIN/mdk** (redirects to `https://$HASHU_MDK_DOMAIN/`),
+sign in with `MDK_DEMO_USER` / `MDK_DEMO_PASSWORD`, open
 **Hashu Heater** and press **Redeem**. The heater switches to the demo
 proxy, the 1 THH fills in about 90 s, and it switches back.
 

@@ -25,7 +25,12 @@ FROM caddy:2
 # up a route change. To try a local edit without rebuilding, mount it over
 # this path (see the comment on the caddy service in docker-compose.yml).
 COPY deploy/Caddyfile /etc/caddy/Caddyfile
+# Fails fast on a missing HASHU_DOMAIN / OPERATOR_PASSWORD_HASH and writes
+# the optional MDK routes (HASHU_MDK_DOMAIN) that the Caddyfile imports.
+COPY --chmod=0755 deploy/caddy/entrypoint.sh /usr/local/bin/hashu-caddy-entrypoint
+ENTRYPOINT ["hashu-caddy-entrypoint"]
+CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
 COPY --from=slides /out /srv/slides
-# Hashu project splash page, served at / on hashu.io and www (see Caddyfile).
+# Project splash page (site/), served at / on HASHU_EXTRA_DOMAINS only (see Caddyfile).
 COPY site/ /srv/site/
 COPY --from=redeem /out /srv/site/redeem/

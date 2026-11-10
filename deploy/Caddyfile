@@ -1,14 +1,16 @@
-# TLS front for the live Hashu demo. Certificates come from Let's Encrypt
+# TLS front for a Hashu mint. Certificates come from Let's Encrypt
 # automatically once $HASHU_DOMAIN resolves to this machine (sslip.io works) and
-# ports 80/443 are open.
-# HASHU_EXTRA_DOMAINS (default "hashu.io www.hashu.io") serve the same site;
-# Caddy only gets their certificates once their A records point here, and
-# mint.hashu.io keeps working either way.
+# ports 80/443 are open. HASHU_DOMAIN is required (the image's entrypoint
+# refuses to start without it).
+# HASHU_EXTRA_DOMAINS (optional, space separated, default none) serve the
+# same site, with the project splash page at /; Caddy only gets their
+# certificates once their A records point here, and $HASHU_DOMAIN keeps
+# working either way.
 {$HASHU_DOMAIN} {$HASHU_EXTRA_DOMAINS} {
 	encode gzip
 
 	# Hashu project splash page (site/, built into the caddy image) at / on
-	# the extra domains (hashu.io, www). The mint's own host keeps the mint
+	# the extra domains. The mint's own host keeps the mint
 	# landing page at /; every other path behaves the same on all hosts.
 	@splash {
 		path /
@@ -35,10 +37,10 @@
 		file_server
 	}
 
-	# MDK demo: the dashboard runs on its own host because the MDK shell
-	# serves from / (its /auth, /apps and /app-ui paths are absolute).
-	redir /mdk https://{$HASHU_MDK_DOMAIN}/ 302
-	redir /mdk/ https://{$HASHU_MDK_DOMAIN}/ 302
+	# MDK demo (optional, HASHU_MDK_DOMAIN): the dashboard runs on its own
+	# host because the MDK shell serves from / (its /auth, /apps and /app-ui
+	# paths are absolute). The entrypoint writes these redirects, or nothing.
+	import /etc/caddy/generated/mdk-routes.caddy
 
 	# Operator GUI (served by the control API). Password protected: its
 	# POST api/controls pauses issuance and changes the markup.
@@ -72,10 +74,7 @@
 	}
 }
 
-# MDK dashboard demo (Hashu Heater app on a mock heater). serve.js in the mdk
-# container serves the built dashboard and forwards /auth, /apps, ... to the
-# MDK Gateway.
-{$HASHU_MDK_DOMAIN} {
-	encode gzip
-	reverse_proxy mdk:3030
-}
+# MDK dashboard demo (Hashu Heater app on a mock heater), only when
+# HASHU_MDK_DOMAIN is set. serve.js in the mdk container serves the built
+# dashboard and forwards /auth, /apps, ... to the MDK Gateway.
+import /etc/caddy/generated/mdk-site.caddy

@@ -16,8 +16,8 @@ const { choosePool, chooseHeat, economics, samePool } = require('./policy')
 const DEFAULTS = {
   hashuControlUrl: 'http://127.0.0.1:3334',
   proxyPool: { url: 'stratum+tcp://127.0.0.1:3333', user: 'hashu.heater', pass: 'x' },
-  homePool: { url: 'stratum+tcp://216.230.225.61:3333', user: 'home.heater', pass: 'x' },
-  redeemPool: { url: 'stratum+tcp://216.230.225.61:3333', user: 'buyer.heater' },
+  homePool: { url: 'stratum+tcp://127.0.0.1:3340', user: 'home.heater', pass: 'x' },
+  redeemPool: { url: 'stratum+tcp://127.0.0.1:3341', user: 'buyer.heater' },
   thermostat: { enabled: true, setpointC: 21, hysteresisC: 0.5, maxRoomC: 26 },
   satsPerThh: 2,
   electricitySatsPerKwh: 150,

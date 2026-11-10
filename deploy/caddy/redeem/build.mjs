@@ -98,10 +98,10 @@ function page({ md, title, body }) {
 <body>
 <div class="wrap">
   <nav>
-    <a class="logo" href="https://hashu.io/">${LOGO} Hashu</a>
+    <a class="logo" href="/">${LOGO} Hashu</a>
     <div class="links">
       <a href="./">Pool guides</a>
-      <a class="mint-link" data-path="checkout/" href="https://mint.hashu.io/checkout/">Buy &amp; redeem</a>
+      <a class="mint-link" data-path="checkout/" href="/checkout/">Buy &amp; redeem</a>
       <a href="https://github.com/asherp/hashu/tree/main/docs/redeem">Edit on GitHub</a>
     </div>
   </nav>
