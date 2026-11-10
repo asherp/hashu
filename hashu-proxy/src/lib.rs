@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub mod audit;
 pub mod control;
 pub mod credit;
+pub mod home;
 pub mod meter;
 pub mod router;
 pub mod stratum;

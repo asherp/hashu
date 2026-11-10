@@ -56,8 +56,15 @@ pub trait RedemptionBinding: Send + Sync {
 
     /// An accepted share of bdiff `difficulty` from `conn`, on any route
     /// (the default pool included). The router uses it for each rig's
-    /// hashrate estimate; the default does nothing.
-    fn observe_share(&self, _conn: ConnectionId, _difficulty: f64) {}
+    /// hashrate estimate and, for a share sent for a redemption
+    /// (`bound_to`), its supplier tally; the default does nothing.
+    fn observe_share(
+        &self,
+        _conn: ConnectionId,
+        _difficulty: f64,
+        _bound_to: Option<RedemptionId>,
+    ) {
+    }
 }
 
 /// The simplest binding: every connection serves the same redemption (or
@@ -191,7 +198,7 @@ impl CreditContext {
         metrics: &ProxyMetrics,
     ) {
         let difficulty = difficulty.unwrap_or(DEFAULT_SHARE_DIFFICULTY);
-        self.binding.observe_share(conn, difficulty);
+        self.binding.observe_share(conn, difficulty, bound_to);
         let Some(id) = bound_to else {
             return;
         };

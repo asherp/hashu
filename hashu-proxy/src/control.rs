@@ -34,7 +34,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::audit::ShareAudit;
-use crate::router::upstream_for_pool_url;
+use crate::router::{upstream_for_pool_url, Router};
 use crate::ProxyMetrics;
 
 /// Largest request body accepted.
@@ -51,6 +51,8 @@ pub struct ControlState {
     pub audit: Arc<ShareAudit>,
     /// Whether `POST /redemptions` is served.
     pub allow_open: bool,
+    /// The proxy's router, for the per-supplier view in `GET /status`.
+    pub router: Option<Arc<Router>>,
 }
 
 /// Serve the control API on `bind` until the task is dropped.
@@ -130,6 +132,10 @@ pub fn route(method: &str, path: &str, body: &[u8], state: &ControlState) -> (u1
     let path = path.split('?').next().unwrap_or(path);
     match (method, path) {
         ("GET", "/status") => (200, status(state)),
+        // Not in /status: Caddy serves GET /control/status publicly (for the
+        // MDK app), and supplier addresses belong to the operator only. This
+        // path is reachable through the password-protected /operator/.
+        ("GET", "/suppliers") => (200, json!({ "suppliers": suppliers(state) })),
         ("POST", "/redemptions") if state.allow_open => open(body, state),
         ("POST", "/redemptions") => (
             404,
@@ -256,6 +262,28 @@ fn status(state: &ControlState) -> Value {
     })
 }
 
+/// Miners by supplier key (Bitcoin address or account name, from the
+/// authorize user): live connections, hashrate, home pool, and THH
+/// delivered to redemptions since the proxy started.
+fn suppliers(state: &ControlState) -> Vec<Value> {
+    let Some(router) = &state.router else {
+        return Vec::new();
+    };
+    router
+        .suppliers()
+        .into_iter()
+        .map(|s| {
+            json!({
+                "supplier": s.supplier,
+                "connections": s.connections,
+                "hashrate_ths": s.hashrate / 1e12,
+                "home_upstream": s.home_upstream,
+                "delivered_thh": s.delivered_hashes / HASHES_PER_THH as f64,
+            })
+        })
+        .collect()
+}
+
 fn redemption_json(r: &Redemption) -> Value {
     let state = r.state.as_str();
     let progress = if r.target_hashes == 0 {
@@ -347,7 +375,18 @@ mod tests {
             default_upstream: "home:3333".into(),
             audit: Arc::new(ShareAudit::new()),
             allow_open,
+            router: None,
         }
+    }
+
+    #[test]
+    fn suppliers_are_not_on_public_status() {
+        let s = state(false);
+        let (_, v) = route("GET", "/status", b"", &s);
+        assert!(v.get("suppliers").is_none());
+        let (code, v) = route("GET", "/suppliers", b"", &s);
+        assert_eq!(code, 200);
+        assert_eq!(v["suppliers"], json!([]));
     }
 
     #[test]

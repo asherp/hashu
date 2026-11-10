@@ -129,7 +129,72 @@ pub async fn proxy_connection_with(
         seamless: false,
         metrics,
     };
-    relay(miner_socket, Leg::new(route, pool_socket), signal, ctx).await
+    let miner = MinerSide::new(miner_socket);
+    relay(miner, Leg::new(route, pool_socket), signal, ctx).await
+}
+
+/// How long a new connection waits for the miner's `mining.authorize`
+/// before the router places it. Bitaxe / ESP-Miner (and cgminer's
+/// `--pool` defaults) send configure, subscribe and authorize back to
+/// back, so the authorize is usually in within one round trip; firmware
+/// that waits for the subscribe answer first is placed without it after
+/// this long.
+pub const AUTHORIZE_WAIT: Duration = Duration::from_secs(2);
+
+/// The miner's half of a connection: its socket, plus any lines read
+/// before the pool was dialed.
+struct MinerSide {
+    rx: mpsc::Receiver<Ev>,
+    _reader: AbortOnDrop<()>,
+    w: tokio::net::tcp::OwnedWriteHalf,
+    /// Lines read before the pool was dialed, replayed first.
+    prelude: Vec<String>,
+    /// The miner closed while we were waiting.
+    closed: Option<String>,
+}
+
+impl MinerSide {
+    fn new(socket: TcpStream) -> Self {
+        // `dial` already set TCP_NODELAY on the pool side.
+        socket.set_nodelay(true).ok();
+        let (r, w) = socket.into_split();
+        let (rx, reader) = spawn_reader(r);
+        Self {
+            rx,
+            _reader: reader,
+            w,
+            prelude: Vec::new(),
+            closed: None,
+        }
+    }
+
+    /// Read lines until the miner's `mining.authorize` arrives or `wait`
+    /// passes; returns its params.
+    async fn wait_for_authorize(&mut self, wait: Duration) -> Option<Value> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            match tokio::time::timeout_at(deadline, self.rx.recv()).await {
+                Ok(Some(Ev::Line(l))) => {
+                    let v = parse(&l);
+                    self.prelude.push(l);
+                    if let Some(v) = v {
+                        if v.get("method").and_then(Value::as_str) == Some("mining.authorize") {
+                            return v.get("params").cloned();
+                        }
+                    }
+                }
+                Ok(Some(Ev::Closed(r))) => {
+                    self.closed = Some(format!("miner {r}"));
+                    return None;
+                }
+                Ok(None) => {
+                    self.closed = Some("miner closed".into());
+                    return None;
+                }
+                Err(_) => return None,
+            }
+        }
+    }
 }
 
 /// Like [`proxy_connection_with`], but the [`Router`] picks the upstream:
@@ -145,7 +210,29 @@ pub async fn proxy_routed_connection(
     conn: ConnectionId,
     credit: Option<CreditContext>,
 ) -> Result<()> {
-    let assignment = router.assign(conn);
+    let mut miner = MinerSide::new(miner_socket);
+    let authorize = if router.home_config() == &crate::home::HomeConfig::off() {
+        None
+    } else {
+        miner.wait_for_authorize(AUTHORIZE_WAIT).await
+    };
+    if let Some(why) = miner.closed.take() {
+        tracing::debug!(%conn, reason = %why, "miner left before it was placed");
+        return Ok(());
+    }
+    if let Some(why) = authorize.as_ref().and_then(|p| router.refusal(p)) {
+        let id = miner
+            .prelude
+            .last()
+            .and_then(|l| parse(l))
+            .and_then(|v| v.get("id").cloned())
+            .unwrap_or(Value::Null);
+        tracing::info!(%conn, user = ?authorize.as_ref().and_then(|p| p.get(0)), reason = why, "refusing miner");
+        let _ = miner.w.write_all(refusal_line(id, why).as_bytes()).await;
+        let _ = miner.w.flush().await;
+        return Ok(());
+    }
+    let assignment = router.assign_with(conn, authorize.as_ref());
     let result = async {
         let mut route = assignment.route;
         let pool_socket = match dial(route.upstream()).await {
@@ -173,13 +260,7 @@ pub async fn proxy_routed_connection(
             router: Some(router.clone()),
             metrics,
         };
-        relay(
-            miner_socket,
-            Leg::new(route, pool_socket),
-            assignment.signal,
-            ctx,
-        )
-        .await
+        relay(miner, Leg::new(route, pool_socket), assignment.signal, ctx).await
     }
     .await;
     router.release(conn);
@@ -507,15 +588,18 @@ struct Conn {
 /// side closes or the router kicks the connection, switching pools in
 /// place when told to.
 async fn relay(
-    miner_socket: TcpStream,
+    miner: MinerSide,
     first: Leg,
     mut signal: watch::Receiver<Signal>,
     ctx: Ctx,
 ) -> Result<()> {
-    // `dial` already set TCP_NODELAY on the pool side.
-    miner_socket.set_nodelay(true).ok();
-    let (mr, mw) = miner_socket.into_split();
-    let (mut miner_rx, _miner_reader) = spawn_reader(mr);
+    let MinerSide {
+        rx: mut miner_rx,
+        _reader: _miner_reader,
+        w: mw,
+        prelude,
+        ..
+    } = miner;
     let mut c = Conn {
         ctx,
         cur: first,
@@ -531,7 +615,17 @@ async fn relay(
     let mut signal_live = true;
 
     let started = Instant::now();
+    let mut early_close = None;
+    for l in &prelude {
+        if let Err(e) = c.on_miner_line(l).await {
+            early_close = Some(format!("pool side error: {e}"));
+            break;
+        }
+    }
     let closed_by: String = loop {
+        if let Some(why) = early_close.take() {
+            break why;
+        }
         tokio::select! {
             ev = miner_rx.recv() => match ev {
                 Some(Ev::Line(l)) => {
@@ -644,6 +738,22 @@ impl Conn {
                 m.configure_params = params;
             }
             Some("mining.authorize") if m.authorize_params.is_none() => {
+                // Placed before its authorize arrived: let the router
+                // learn who it is now.
+                if let (Some(router), Some(p)) = (&self.ctx.router, &params) {
+                    if let Some(why) = router.refusal(p) {
+                        let id = v
+                            .as_ref()
+                            .and_then(|v| v.get("id"))
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        let line = refusal_line(id, why);
+                        self.mw.write_all(line.as_bytes()).await?;
+                        self.mw.flush().await?;
+                        return Err(io::Error::other(format!("refused miner: {why}")));
+                    }
+                    router.identify(self.ctx.conn, p);
+                }
                 m.authorize_params = params;
             }
             Some("mining.extranonce.subscribe") => m.extranonce_subscribed = true,
@@ -902,16 +1012,12 @@ impl Conn {
         let suggest = start
             .map(|d| json!([d]))
             .or_else(|| m.suggest_difficulty.clone());
-        let auth = match &sw.target {
-            Route::Redemption {
-                worker_name,
-                worker_password,
-                ..
-            } => match start {
+        let auth = match sw.target.credentials() {
+            Some((worker_name, worker_password)) => match start {
                 Some(d) => json!([worker_name, password_with_difficulty(worker_password, d)]),
                 None => json!([worker_name, worker_password]),
             },
-            Route::Default { .. } => m.authorize_params.clone().unwrap_or_else(|| json!([])),
+            None => m.authorize_params.clone().unwrap_or_else(|| json!([])),
         };
         lines.push(json!({"id": ID_AUTHORIZE, "method": "mining.authorize", "params": auth}));
         for l in lines {
@@ -1084,6 +1190,15 @@ fn granted_version_mask(v: &Value) -> Option<u32> {
         return None;
     }
     u32::from_str_radix(r.get("version-rolling.mask")?.as_str()?, 16).ok()
+}
+
+/// The authorize answer for a refused miner (Stratum error 24,
+/// unauthorized worker).
+fn refusal_line(id: Value, why: &str) -> String {
+    format!(
+        "{}\n",
+        json!({"id": id, "result": false, "error": [24, why, null]})
+    )
 }
 
 fn parse(line: &str) -> Option<Value> {

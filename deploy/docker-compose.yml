@@ -54,6 +54,19 @@ services:
       HASHU_DATA_DIR: /data
       HASHU_MINT_URL: https://${HASHU_DOMAIN:?set HASHU_DOMAIN in .env}
       HASHU_UPSTREAM: ${HASHU_UPSTREAM:-stratum+tcp://stratum.braiins.com:3333}
+      # Home pools for Bitaxes and other small miners on port 3335: a miner
+      # whose user is a bc1/1/3 address idles on this solo pool (its own
+      # address), or on `pool=host:port` from its password if that host is
+      # in HASHU_HOME_POOLS. See docs/mine/bitaxe.md. HASHU_HOME_POOLS_OFF=true
+      # sends every miner to HASHU_UPSTREAM as before.
+      HASHU_HOME_SOLO_UPSTREAM: ${HASHU_HOME_SOLO_UPSTREAM:-solo.ckpool.org:3333}
+      HASHU_HOME_POOLS: ${HASHU_HOME_POOLS:-solo.ckpool.org,eusolo.ckpool.org,ausolo.ckpool.org,public-pool.io,stratum.braiins.com,mine.ocean.xyz}
+      HASHU_HOME_POOLS_OFF: ${HASHU_HOME_POOLS_OFF:-false}
+      # Hashu's own rigs: your Braiins user (the MRR rentals mine as
+      # <user>.<rig>). Set it and only those rigs fill mint.hashu.io orders;
+      # other miners stay on their home pool, and account-name users with no
+      # home pool are refused. Unset: any rig may be borrowed.
+      HASHU_OPERATOR_WORKER: ${HASHU_OPERATOR_WORKER:-}
       # Fallback price while the live (MRR) source has no fresh sample.
       HASHU_SATS_PER_THH: ${HASHU_SATS_PER_THH:-40}
       # Lightning: mainnet phoenixd, limited-access password (can create
