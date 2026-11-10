@@ -23,7 +23,9 @@
 //! 1. The proxy dials the new pool and replays the miner's handshake on
 //!    it (`mining.configure`, `mining.subscribe`, `mining.authorize` with
 //!    the route's worker), with proxy-owned request ids. The current leg
-//!    keeps mining meanwhile.
+//!    keeps mining meanwhile. Once authorized, it asks the new pool for a
+//!    starting difficulty sized from the miner's measured hashrate (see
+//!    [`super::startdiff`]).
 //! 2. Once the new pool has answered and sent a job, the proxy cuts over:
 //!    it writes the new pool's difficulty and latest job (forced
 //!    `clean_jobs = true`) to the miner. Extranonces are translated (see
@@ -63,6 +65,7 @@ use super::header::{build_block_header, SubmitFields};
 use super::observe::{observe_line, Direction, PendingSubmits};
 use super::replay::{force_clean, JobGate, PoolLine};
 use super::session::{SessionEvent, SessionState};
+use super::startdiff::{password_with_difficulty, WorkRate};
 use crate::credit::{ConnectionId, CreditContext, ShareEvidence};
 use crate::router::{Route, Router, Signal, SwitchMode};
 use crate::upstream::{dial, PoolStream};
@@ -327,12 +330,18 @@ impl Leg {
 
     /// Feed a line from this leg's pool to its session; on an accepted
     /// share, build the leaf, commit it, and credit the redemption the
-    /// share was sent for.
-    fn ingest_pool(&mut self, line: &str, ctx: &Ctx, committer: &mut ShareCommitter) {
+    /// share was sent for. Returns an accepted share's difficulty.
+    fn ingest_pool(
+        &mut self,
+        line: &str,
+        ctx: &Ctx,
+        committer: &mut ShareCommitter,
+    ) -> Option<f64> {
         self.session.try_absorb_subscribe_response(line);
         match self.session.ingest(line, Direction::P2M) {
             SessionEvent::SubmitRejected { id } => {
                 self.submits.remove(&id);
+                None
             }
             SessionEvent::SubmitAccepted {
                 id,
@@ -358,11 +367,10 @@ impl Leg {
                     ntime: submit.ntime,
                 };
                 ctx.metrics.shares_committed.fetch_add(1, Ordering::Relaxed);
-                ctx.metrics.add_accepted_work(
-                    submit
-                        .difficulty_at_submit
-                        .unwrap_or(crate::credit::DEFAULT_SHARE_DIFFICULTY),
-                );
+                let difficulty = submit
+                    .difficulty_at_submit
+                    .unwrap_or(crate::credit::DEFAULT_SHARE_DIFFICULTY);
+                ctx.metrics.add_accepted_work(difficulty);
                 // Credit only shares that made it into the commitment
                 // tree, so every credited hash has a leaf behind it
                 // (§4.7.2).
@@ -376,6 +384,7 @@ impl Leg {
                         &ctx.metrics,
                     );
                 }
+                Some(difficulty)
             }
             _ => {
                 // A response the session could not turn into a leaf (e.g.
@@ -386,6 +395,7 @@ impl Leg {
                         self.submits.remove(&id);
                     }
                 }
+                None
             }
         }
     }
@@ -407,6 +417,8 @@ struct Handshake {
     authorized: bool,
     difficulty: Option<String>,
     notify: Option<String>,
+    /// `mining.suggest_difficulty` params to send once authorized.
+    suggest: Option<Value>,
 }
 
 enum Stage {
@@ -486,6 +498,9 @@ struct Conn {
     committer: ShareCommitter,
     pending: PendingSubmits,
     mw: tokio::net::tcp::OwnedWriteHalf,
+    /// The miner's hashrate, from accepted shares on any leg: sizes the
+    /// starting difficulty asked of the next pool.
+    work: WorkRate,
 }
 
 /// Forward lines between the miner and its current pool until either
@@ -511,6 +526,7 @@ async fn relay(
         committer: ShareCommitter::default(),
         pending: PendingSubmits::default(),
         mw,
+        work: WorkRate::new(Instant::now()),
     };
     let mut signal_live = true;
 
@@ -668,7 +684,9 @@ impl Conn {
 
     async fn on_pool_line(&mut self, line: &str) -> io::Result<()> {
         observe_line(line, Direction::P2M, &self.pending, &self.ctx.metrics);
-        self.cur.ingest_pool(line, &self.ctx, &mut self.committer);
+        if let Some(d) = self.cur.ingest_pool(line, &self.ctx, &mut self.committer) {
+            self.work.accepted(Instant::now(), d);
+        }
         let v = parse(line);
         let method = v
             .as_ref()
@@ -776,7 +794,9 @@ impl Conn {
         let Some(d) = self.old.as_mut() else {
             return Ok(());
         };
-        d.leg.ingest_pool(line, &self.ctx, &mut self.committer);
+        if let Some(diff) = d.leg.ingest_pool(line, &self.ctx, &mut self.committer) {
+            self.work.accepted(Instant::now(), diff);
+        }
         // Only answers to submits get through; its work is stale.
         let is_response = parse(line).is_some_and(|v| v.get("method").is_none_or(Value::is_null));
         let ours = response_id(line).is_some_and(|i| PROXY_IDS.contains(&i));
@@ -819,7 +839,7 @@ impl Conn {
             SwitchEv::Dialed(Err(e)) => Progress::Failed(format!("dial: {e}")),
             SwitchEv::Dialed(Ok(stream)) => self.start_handshake(stream).await,
             SwitchEv::Line(Ev::Closed(r)) => Progress::Failed(format!("pool {r}")),
-            SwitchEv::Line(Ev::Line(l)) => self.on_handshake_line(&l),
+            SwitchEv::Line(Ev::Line(l)) => self.on_handshake_line(&l).await,
         };
         let fail = match progress {
             Progress::Pending => return None,
@@ -875,17 +895,22 @@ impl Conn {
             .into_iter()
             .collect();
         lines.push(json!({"id": ID_SUBSCRIBE, "method": "mining.subscribe", "params": ua}));
-        if let Some(p) = &m.suggest_difficulty {
-            lines.push(
-                json!({"id": ID_SUGGEST, "method": "mining.suggest_difficulty", "params": p}),
-            );
-        }
+        // Start the new pool near the miner's measured difficulty (see
+        // [`super::startdiff`]); without an estimate yet, pass on the
+        // miner's own suggestion.
+        let start = self.work.start_difficulty(Instant::now());
+        let suggest = start
+            .map(|d| json!([d]))
+            .or_else(|| m.suggest_difficulty.clone());
         let auth = match &sw.target {
             Route::Redemption {
                 worker_name,
                 worker_password,
                 ..
-            } => json!([worker_name, worker_password]),
+            } => match start {
+                Some(d) => json!([worker_name, password_with_difficulty(worker_password, d)]),
+                None => json!([worker_name, worker_password]),
+            },
             Route::Default { .. } => m.authorize_params.clone().unwrap_or_else(|| json!([])),
         };
         lines.push(json!({"id": ID_AUTHORIZE, "method": "mining.authorize", "params": auth}));
@@ -902,11 +927,12 @@ impl Conn {
             authorized: false,
             difficulty: None,
             notify: None,
+            suggest,
         }));
         Progress::Pending
     }
 
-    fn on_handshake_line(&mut self, line: &str) -> Progress {
+    async fn on_handshake_line(&mut self, line: &str) -> Progress {
         let Some(Switch {
             stage: Stage::Handshake(hs),
             ..
@@ -914,7 +940,9 @@ impl Conn {
         else {
             return Progress::Pending;
         };
-        hs.leg.ingest_pool(line, &self.ctx, &mut self.committer);
+        if let Some(d) = hs.leg.ingest_pool(line, &self.ctx, &mut self.committer) {
+            self.work.accepted(Instant::now(), d);
+        }
         let Some(v) = parse(line) else {
             return Progress::Pending;
         };
@@ -936,6 +964,14 @@ impl Conn {
                         return Progress::Failed(format!("authorize refused: {err}"));
                     }
                     hs.authorized = true;
+                    // After authorize: ckpool ignores a suggestion from a
+                    // client that isn't authorized yet.
+                    if let Some(p) = hs.suggest.take() {
+                        let l = json!({"id": ID_SUGGEST, "method": "mining.suggest_difficulty", "params": p});
+                        if let Err(e) = hs.leg.send(&format!("{l}\n")).await {
+                            return Progress::Failed(format!("write: {e}"));
+                        }
+                    }
                 }
                 _ => {}
             },
