@@ -279,6 +279,7 @@ fn suppliers(state: &ControlState) -> Vec<Value> {
                 "hashrate_ths": s.hashrate / 1e12,
                 "home_upstream": s.home_upstream,
                 "delivered_thh": s.delivered_hashes / HASHES_PER_THH as f64,
+                "verified": s.verified,
             })
         })
         .collect()
@@ -302,6 +303,7 @@ fn redemption_json(r: &Redemption) -> Value {
         "target_hashes": r.target_hashes.to_string(),
         "progress": progress,
         "state": state,
+        "supplier": r.supplier,
     })
 }
 
@@ -334,7 +336,10 @@ fn open(body: &[u8], state: &ControlState) -> (u16, Value) {
         pool_url.to_string(),
         worker_name.to_string(),
     )
-    .with_password(v["worker_password"].as_str().map(str::to_string));
+    .with_password(v["worker_password"].as_str().map(str::to_string))
+    // Filled only by this registered supplier's rigs; absent = the
+    // operator's own rigs.
+    .with_supplier(v["supplier"].as_str().map(str::to_string));
     let out = redemption_json(&r);
     match state.ledger.open(r) {
         Ok(()) => {

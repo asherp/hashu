@@ -84,3 +84,31 @@ its home pool is used from its next redemption on.
 
 Not done yet: paying suppliers for borrowed work. `delivered_thh` is the
 number a payout would be based on.
+
+## Registered suppliers (your own mint)
+
+A miner with their own mint (`<name>.mint.<domain>`, sign-up coming in a
+later release) proves each rig belongs to them with a secret:
+
+| AxeOS field | Value |
+|---|---|
+| User | `<name>.<rig>`, e.g. `alice.rig1` |
+| Password | `pw=<your secret>,pool=public-pool.io:21496` |
+
+Orders bought from Alice's mint are filled only by rigs that log in as
+`alice.*` with the right `pw=`. Each rig serves one order at a time, and
+spare rigs join an order already being filled, so a large order on one
+invoice spreads over all of Alice's free rigs. `pw=` is never sent to any
+pool. A registered name with a wrong or missing secret is refused, and so
+is a supplier rig with no home pool.
+
+Operators list suppliers in a JSON file (`HASHU_SUPPLIERS_FILE`), re-read
+when it changes; only the SHA-256 of each secret is stored:
+
+```json
+{ "suppliers": { "alice": { "secret_sha256": "<sha256 hex of the secret>" } } }
+```
+
+`printf %s "$SECRET" | sha256sum` gives the hash. Names are 3 to 32
+lowercase letters, digits and hyphens. For testing, `POST /redemptions` on
+the control API (with `--control-allow-open`) takes `"supplier": "alice"`.

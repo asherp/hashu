@@ -129,6 +129,10 @@ pub struct Redemption {
     /// Hashes credited so far from accepted shares.
     pub accumulated_hashes: u128,
     pub state: RedemptionState,
+    /// Supplier whose rigs fill this order (the mint it was bought from,
+    /// e.g. `alice` for `alice.mint.<domain>`). `None` = the operator's
+    /// own mint: filled by the operator's rigs.
+    pub supplier: Option<String>,
 }
 
 impl Redemption {
@@ -138,6 +142,7 @@ impl Redemption {
             pool_url,
             worker_name,
             worker_password: None,
+            supplier: None,
             amount_thh,
             floor_thh: amount_thh,
             target_hashes: u128::from(amount_thh) * HASHES_PER_THH,
@@ -149,6 +154,12 @@ impl Redemption {
     /// Set the worker password (`None` or empty: the default `x`).
     pub fn with_password(mut self, password: Option<String>) -> Self {
         self.worker_password = password.filter(|p| !p.is_empty());
+        self
+    }
+
+    /// Set the supplier whose rigs fill it (see [`Redemption::supplier`]).
+    pub fn with_supplier(mut self, supplier: Option<String>) -> Self {
+        self.supplier = supplier.filter(|s| !s.is_empty());
         self
     }
 
@@ -282,6 +293,9 @@ enum LedgerRecord {
         /// Absent in journals from before settling existed: no reserve.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         floor_thh: Option<u64>,
+        /// Absent in journals from before supplier mints: the operator's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        supplier: Option<String>,
     },
     Credit {
         id: RedemptionId,
@@ -328,12 +342,14 @@ impl RedemptionLedger {
                     worker_name,
                     worker_password,
                     floor_thh,
+                    supplier,
                 } => {
                     // A duplicate open can only come from a hand-edited
                     // file; keep the first.
                     let _ = ledger.open(
                         Redemption::new(id, amount_thh, pool_url, worker_name)
                             .with_password(worker_password)
+                            .with_supplier(supplier)
                             .with_floor(floor_thh.unwrap_or(amount_thh)),
                     );
                 }
@@ -363,6 +379,7 @@ impl RedemptionLedger {
                     worker_name: r.worker_name.clone(),
                     worker_password: r.worker_password.clone(),
                     floor_thh: Some(r.floor_thh),
+                    supplier: r.supplier.clone(),
                 };
                 let credit = (r.accumulated_hashes > 0).then(|| LedgerRecord::Credit {
                     id: r.id,
@@ -406,6 +423,7 @@ impl RedemptionLedger {
             worker_name: redemption.worker_name.clone(),
             worker_password: redemption.worker_password.clone(),
             floor_thh: Some(redemption.floor_thh),
+            supplier: redemption.supplier.clone(),
         });
         map.insert(id, redemption);
         // Take `order` while still holding `inner` so the two never
@@ -632,6 +650,35 @@ mod tests {
         ledger.credit_share(&id(2), 1e9).unwrap();
         let ids: Vec<_> = ledger.active().iter().map(|r| r.id).collect();
         assert_eq!(ids, vec![id(5), id(9)]);
+    }
+
+    #[test]
+    fn supplier_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("redemptions.jsonl");
+        {
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            ledger
+                .open(
+                    Redemption::new(id(1), 1, "stratum+tcp://p:1".into(), "w".into())
+                        .with_supplier(Some("alice".into())),
+                )
+                .unwrap();
+            ledger
+                .open(Redemption::new(
+                    id(2),
+                    1,
+                    "stratum+tcp://p:1".into(),
+                    "w".into(),
+                ))
+                .unwrap();
+        }
+        let ledger = RedemptionLedger::persistent(&path).unwrap();
+        assert_eq!(
+            ledger.get(&id(1)).unwrap().supplier.as_deref(),
+            Some("alice")
+        );
+        assert_eq!(ledger.get(&id(2)).unwrap().supplier, None);
     }
 
     #[test]

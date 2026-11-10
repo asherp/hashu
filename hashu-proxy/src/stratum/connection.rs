@@ -211,7 +211,7 @@ pub async fn proxy_routed_connection(
     credit: Option<CreditContext>,
 ) -> Result<()> {
     let mut miner = MinerSide::new(miner_socket);
-    let authorize = if router.home_config() == &crate::home::HomeConfig::off() {
+    let authorize = if !router.wants_authorize() {
         None
     } else {
         miner.wait_for_authorize(AUTHORIZE_WAIT).await
@@ -227,8 +227,8 @@ pub async fn proxy_routed_connection(
             .and_then(|l| parse(l))
             .and_then(|v| v.get("id").cloned())
             .unwrap_or(Value::Null);
-        tracing::info!(%conn, user = ?authorize.as_ref().and_then(|p| p.get(0)), reason = why, "refusing miner");
-        let _ = miner.w.write_all(refusal_line(id, why).as_bytes()).await;
+        tracing::info!(%conn, user = ?authorize.as_ref().and_then(|p| p.get(0)), reason = %why, "refusing miner");
+        let _ = miner.w.write_all(refusal_line(id, &why).as_bytes()).await;
         let _ = miner.w.flush().await;
         return Ok(());
     }
@@ -747,7 +747,7 @@ impl Conn {
                             .and_then(|v| v.get("id"))
                             .cloned()
                             .unwrap_or(Value::Null);
-                        let line = refusal_line(id, why);
+                        let line = refusal_line(id, &why);
                         self.mw.write_all(line.as_bytes()).await?;
                         self.mw.flush().await?;
                         return Err(io::Error::other(format!("refused miner: {why}")));
