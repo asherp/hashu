@@ -55,6 +55,74 @@ pub struct RunArgs {
     /// loopback.
     #[arg(long, requires = "control_bind")]
     pub control_allow_open: bool,
+    #[command(flatten)]
+    pub home: HomePoolArgs,
+}
+
+/// Home pools for small miners on the one public endpoint (see
+/// `hashu_proxy::home`): a miner whose user is a Bitcoin address idles
+/// on the solo pool with its own address; `pool=host:port` in the
+/// password picks another allowed pool.
+#[derive(Debug, Clone, Args)]
+pub struct HomePoolArgs {
+    /// Solo pool for miners whose user is a mainnet Bitcoin address
+    /// (`host:port` or a `stratum+tcp://` / `stratum+ssl://` URL).
+    /// `off` turns address detection off.
+    #[arg(long, env = "HASHU_HOME_SOLO_UPSTREAM", default_value = hashu_proxy::home::DEFAULT_SOLO_UPSTREAM)]
+    pub home_solo_upstream: String,
+    /// Pool hosts a miner may name with `pool=` in its password,
+    /// comma-separated. Empty turns `pool=` off.
+    #[arg(long, env = "HASHU_HOME_POOLS", default_value_t = hashu_proxy::home::DEFAULT_ALLOWED_HOSTS.join(","))]
+    pub home_pools: String,
+    /// Turn home pools off: every miner idles on the default pool, as
+    /// before, and new connections are placed without waiting for their
+    /// authorize.
+    #[arg(long, env = "HASHU_HOME_POOLS_OFF")]
+    pub home_pools_off: bool,
+    /// Hashu's own worker account (e.g. the operator's Braiins user). When
+    /// set, only users equal to it or starting with `<it>.` (the MRR
+    /// rentals) are borrowed for redemptions; other miners idle on their
+    /// home pool and are never borrowed, and a miner with no home pool is
+    /// refused. Unset: every rig may be borrowed, as before.
+    #[arg(long, env = "HASHU_OPERATOR_WORKER")]
+    pub operator_worker: Option<String>,
+}
+
+impl HomePoolArgs {
+    pub fn config(&self) -> Result<hashu_proxy::home::HomeConfig> {
+        use hashu_proxy::home::HomeConfig;
+        let operator_worker = self
+            .operator_worker
+            .as_deref()
+            .map(str::trim)
+            .filter(|w| !w.is_empty())
+            .map(str::to_string);
+        if self.home_pools_off {
+            return Ok(HomeConfig {
+                operator_worker,
+                ..HomeConfig::off()
+            });
+        }
+        let solo = self.home_solo_upstream.trim();
+        let solo_upstream = if solo.is_empty() || solo.eq_ignore_ascii_case("off") {
+            None
+        } else {
+            Some(normalize_upstream(solo).with_context(|| {
+                format!("--home-solo-upstream must be host:port or a stratum URL (got {solo})")
+            })?)
+        };
+        let allowed_hosts = self
+            .home_pools
+            .split(',')
+            .map(|h| h.trim().to_ascii_lowercase())
+            .filter(|h| !h.is_empty())
+            .collect();
+        Ok(HomeConfig {
+            solo_upstream,
+            allowed_hosts,
+            operator_worker,
+        })
+    }
 }
 
 pub async fn run(cmd: ProxyCmd) -> Result<()> {
@@ -73,7 +141,11 @@ async fn run_listener_cmd(args: RunArgs) -> Result<()> {
     // The ledger is empty until a mint in this process opens redemptions
     // in it; until then every miner goes to the default upstream.
     let ledger = Arc::new(RedemptionLedger::new());
-    let router = Arc::new(Router::new(upstream, ledger.clone()).with_switch_mode(args.switch_mode));
+    let router = Arc::new(
+        Router::new(upstream, ledger.clone())
+            .with_switch_mode(args.switch_mode)
+            .with_home_pools(args.home.config()?),
+    );
     // The router is also the binding: shares credit the redemption the
     // connection was routed to.
     let crediter = Arc::new(ShareCrediter::new(ledger));
@@ -88,6 +160,7 @@ async fn run_listener_cmd(args: RunArgs) -> Result<()> {
             default_upstream: router.default_upstream().to_string(),
             audit,
             allow_open: args.control_allow_open,
+            router: Some(router.clone()),
         };
         let listener = tokio::net::TcpListener::bind(bind)
             .await

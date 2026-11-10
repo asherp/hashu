@@ -57,6 +57,7 @@ use serde_json::Value;
 use tokio::sync::{broadcast, watch};
 
 use crate::credit::{ConnectionId, RedemptionBinding};
+use crate::home::{HomeConfig, MinerIdentity};
 use crate::upstream::normalize_upstream;
 
 /// How long a connection that fell back to the default pool (redeemer's
@@ -138,6 +139,13 @@ impl RigRate {
 pub enum Route {
     /// Operator's default pool; lines pass through unmodified.
     Default { upstream: String },
+    /// The miner's own home pool (see [`crate::home`]): its own user,
+    /// its password without the `pool=` option. Credits nothing.
+    Home {
+        upstream: String,
+        worker_name: String,
+        worker_password: String,
+    },
     /// A redeemer's pool; worker name is rewritten to `worker_name` and
     /// the authorize password to `worker_password`.
     Redemption {
@@ -153,7 +161,9 @@ impl Route {
     /// [`crate::upstream::dial`]).
     pub fn upstream(&self) -> &str {
         match self {
-            Route::Default { upstream } | Route::Redemption { upstream, .. } => upstream,
+            Route::Default { upstream }
+            | Route::Home { upstream, .. }
+            | Route::Redemption { upstream, .. } => upstream,
         }
     }
 
@@ -161,7 +171,7 @@ impl Route {
     /// route are the operator's and credit nothing.
     pub fn redemption_id(&self) -> Option<RedemptionId> {
         match self {
-            Route::Default { .. } => None,
+            Route::Default { .. } | Route::Home { .. } => None,
             Route::Redemption { id, .. } => Some(*id),
         }
     }
@@ -171,15 +181,26 @@ impl Route {
     /// name instead of the miner's. Anything else (and every line on the
     /// default route) is returned as-is.
     pub fn rewrite_miner_line(&self, line: &str) -> Option<String> {
-        let Route::Redemption {
-            worker_name,
-            worker_password,
-            ..
-        } = self
-        else {
-            return None;
-        };
+        let (worker_name, worker_password) = self.credentials()?;
         rewrite_worker(line, worker_name, worker_password)
+    }
+
+    /// Worker name and password this route authorizes with, or `None`
+    /// on the default route (the miner's own are passed through).
+    pub fn credentials(&self) -> Option<(&str, &str)> {
+        match self {
+            Route::Default { .. } => None,
+            Route::Home {
+                worker_name,
+                worker_password,
+                ..
+            }
+            | Route::Redemption {
+                worker_name,
+                worker_password,
+                ..
+            } => Some((worker_name, worker_password)),
+        }
     }
 }
 
@@ -267,6 +288,14 @@ struct Binding {
     pending: Option<Route>,
     /// Hashrate estimate from this connection's accepted shares.
     rate: RigRate,
+    /// Where this connection goes while no order needs it: its home pool
+    /// (see [`crate::home`]) or the operator's default pool.
+    idle: Route,
+    /// Supplier key from the miner's authorize, once seen.
+    supplier: Option<String>,
+    /// May be borrowed for redemptions (see
+    /// [`crate::home::HomeConfig::operator_worker`]).
+    borrowable: bool,
 }
 
 impl Binding {
@@ -296,6 +325,8 @@ struct Inner {
     /// When each active redemption last had no rig heading to it, or was
     /// first seen. Drives [`STARVE_AFTER`].
     unserved_since: HashMap<RedemptionId, Instant>,
+    /// Work each supplier delivered to redemptions, in hashes.
+    delivered: HashMap<String, f64>,
 }
 
 /// Shared routing state. One per proxy process.
@@ -303,6 +334,7 @@ pub struct Router {
     default_upstream: String,
     ledger: Arc<RedemptionLedger>,
     mode: SwitchMode,
+    home: HomeConfig,
     inner: Mutex<Inner>,
 }
 
@@ -322,8 +354,19 @@ impl Router {
             default_upstream: default_upstream.into(),
             ledger,
             mode: SwitchMode::default(),
+            home: HomeConfig::off(),
             inner: Mutex::new(Inner::default()),
         }
+    }
+
+    /// Give miners home pools (see [`crate::home`]). Off by default.
+    pub fn with_home_pools(mut self, cfg: HomeConfig) -> Self {
+        self.home = cfg;
+        self
+    }
+
+    pub fn home_config(&self) -> &HomeConfig {
+        &self.home
     }
 
     /// Use `mode` to move live connections (default
@@ -347,11 +390,28 @@ impl Router {
 
     /// Pick a route for a newly accepted miner connection.
     pub fn assign(&self, conn: ConnectionId) -> Assignment {
-        let active = self.routable_active();
+        self.assign_with(conn, None)
+    }
+
+    /// Like [`Router::assign`], with the `params` of the miner's
+    /// `mining.authorize` when it has already sent it: a miner with a
+    /// home pool idles there instead of on the default pool.
+    pub fn assign_with(&self, conn: ConnectionId, authorize: Option<&Value>) -> Assignment {
+        let identity = authorize.and_then(|p| MinerIdentity::from_params(p, &self.home));
+        if let Some(why) = identity.as_ref().and_then(|i| i.refused_pool.as_ref()) {
+            tracing::warn!(%conn, reason = %why, "ignoring the miner's pool= option");
+        }
+        let idle = self.idle_route(identity.as_ref());
+        let borrowable = self.borrowable(identity.as_ref());
+        let active = if borrowable {
+            self.routable_active()
+        } else {
+            Vec::new()
+        };
         let now = Instant::now();
         let mut inner = self.lock();
-        inner.track_unserved(&active, now);
-        let route = pick_route(&active, &inner, None, now, &self.default_upstream);
+        inner.track_unserved(&self.routable_active(), now);
+        let route = pick_route(&active, &inner, None, now, &idle);
         let (tx, rx) = watch::channel(Signal::Stay);
         inner.conns.insert(
             conn,
@@ -361,10 +421,23 @@ impl Router {
                 fell_back_at: None,
                 pending: None,
                 rate: RigRate::new(now),
+                idle,
+                supplier: identity.map(|i| i.supplier),
+                borrowable,
             },
         );
-        if let Some(id) = route.redemption_id() {
-            tracing::info!(%conn, redemption = %id, upstream = route.upstream(), "routing connection to redeemer's pool");
+        match &route {
+            Route::Redemption { id, upstream, .. } => {
+                tracing::info!(%conn, redemption = %id, %upstream, "routing connection to redeemer's pool");
+            }
+            Route::Home {
+                upstream,
+                worker_name,
+                ..
+            } => {
+                tracing::info!(%conn, %upstream, worker = %worker_name, "routing connection to the miner's home pool");
+            }
+            Route::Default { .. } => {}
         }
         Assignment {
             conn,
@@ -376,15 +449,104 @@ impl Router {
     /// The redeemer's pool could not be dialed: put this connection on
     /// the default pool instead so the miner keeps working. The
     /// redemption stays open and the next connection tries it again.
+    /// "Default" here is the connection's idle route: its home pool if it
+    /// has one.
     pub fn fall_back_to_default(&self, conn: ConnectionId) -> Route {
-        let route = Route::Default {
-            upstream: self.default_upstream.clone(),
-        };
-        if let Some(b) = self.lock().conns.get_mut(&conn) {
-            b.route = route.clone();
-            b.fell_back_at = Some(Instant::now());
+        let mut inner = self.lock();
+        match inner.conns.get_mut(&conn) {
+            Some(b) => {
+                b.route = b.idle.clone();
+                b.fell_back_at = Some(Instant::now());
+                b.route.clone()
+            }
+            None => self.idle_route(None),
         }
-        route
+    }
+
+    /// The miner's authorize arrived after the connection was placed
+    /// (firmware that waits for the subscribe answer): remember who it
+    /// is, and its home pool for when it next goes idle.
+    pub fn identify(&self, conn: ConnectionId, authorize: &Value) {
+        let Some(id) = MinerIdentity::from_params(authorize, &self.home) else {
+            return;
+        };
+        let idle = self.idle_route(Some(&id));
+        let borrowable = self.borrowable(Some(&id));
+        if let Some(b) = self.lock().conns.get_mut(&conn) {
+            b.borrowable = borrowable;
+            if b.supplier.is_none() {
+                b.supplier = Some(id.supplier);
+            }
+            if matches!(b.idle, Route::Default { .. }) && matches!(idle, Route::Home { .. }) {
+                tracing::info!(%conn, upstream = idle.upstream(), "miner has a home pool; it goes there after its next redemption or reconnect");
+                b.idle = idle;
+            }
+        }
+    }
+
+    /// `Some(reason)` if a miner with this authorize must be refused (see
+    /// [`MinerIdentity::refusal`]).
+    pub fn refusal(&self, authorize: &Value) -> Option<&'static str> {
+        MinerIdentity::from_params(authorize, &self.home)?.refusal(&self.home)
+    }
+
+    /// Whether a miner may be borrowed for redemptions. With Hashu's own
+    /// rigs set, a miner not yet identified is not.
+    fn borrowable(&self, identity: Option<&MinerIdentity>) -> bool {
+        match identity {
+            Some(i) => i.borrowable(&self.home),
+            None => self.home.operator_worker.is_none(),
+        }
+    }
+
+    /// Where a miner with `identity` goes while no order needs it.
+    fn idle_route(&self, identity: Option<&MinerIdentity>) -> Route {
+        match identity.and_then(|i| i.home.as_ref()) {
+            Some(h) => Route::Home {
+                upstream: h.upstream.clone(),
+                worker_name: h.worker_name.clone(),
+                worker_password: h.worker_password.clone(),
+            },
+            None => Route::Default {
+                upstream: self.default_upstream.clone(),
+            },
+        }
+    }
+
+    /// Per-supplier view: live connections, their summed hashrate, and
+    /// the work delivered to redemptions since the proxy started.
+    pub fn suppliers(&self) -> Vec<SupplierView> {
+        let now = Instant::now();
+        let inner = self.lock();
+        let mut out: HashMap<String, SupplierView> = HashMap::new();
+        let view = |k: &str| SupplierView {
+            supplier: k.to_string(),
+            connections: 0,
+            hashrate: 0.0,
+            home_upstream: None,
+            delivered_hashes: 0.0,
+        };
+        for b in inner.conns.values() {
+            let Some(k) = &b.supplier else { continue };
+            let v = out.entry(k.clone()).or_insert_with(|| view(k));
+            v.connections += 1;
+            v.hashrate += b.rate.rate(now).unwrap_or(0.0);
+            if let Route::Home { upstream, .. } = &b.idle {
+                v.home_upstream = Some(upstream.clone());
+            }
+        }
+        for (k, h) in &inner.delivered {
+            out.entry(k.clone())
+                .or_insert_with(|| view(k))
+                .delivered_hashes = *h;
+        }
+        let mut v: Vec<SupplierView> = out.into_values().collect();
+        v.sort_by(|a, b| {
+            b.delivered_hashes
+                .total_cmp(&a.delivered_hashes)
+                .then(a.supplier.cmp(&b.supplier))
+        });
+        v
     }
 
     /// Forget a connection once it has closed.
@@ -393,15 +555,35 @@ impl Router {
     }
 
     /// Record an accepted share of bdiff `difficulty` from `conn`, on any
-    /// route, for its hashrate estimate.
-    pub fn observe_share(&self, conn: ConnectionId, difficulty: f64) {
-        self.observe_share_at(conn, difficulty, Instant::now());
+    /// route, for its hashrate estimate. A share sent for a redemption
+    /// (`bound_to`) also counts as work delivered by the connection's
+    /// supplier.
+    pub fn observe_share(
+        &self,
+        conn: ConnectionId,
+        difficulty: f64,
+        bound_to: Option<RedemptionId>,
+    ) {
+        self.observe_share_at(conn, difficulty, Instant::now(), bound_to);
     }
 
-    fn observe_share_at(&self, conn: ConnectionId, difficulty: f64, at: Instant) {
+    fn observe_share_at(
+        &self,
+        conn: ConnectionId,
+        difficulty: f64,
+        at: Instant,
+        bound_to: Option<RedemptionId>,
+    ) {
         let hashes = hashu_core::redemption::hashes_for_difficulty(difficulty) as f64;
-        if let Some(b) = self.lock().conns.get_mut(&conn) {
-            b.rate.observe(hashes, at);
+        let mut inner = self.lock();
+        let Some(b) = inner.conns.get_mut(&conn) else {
+            return;
+        };
+        b.rate.observe(hashes, at);
+        if bound_to.is_some() {
+            if let Some(k) = b.supplier.clone() {
+                *inner.delivered.entry(k).or_default() += hashes;
+            }
         }
     }
 
@@ -488,23 +670,20 @@ impl Router {
                 }
                 match &b.route {
                     Route::Redemption { id, .. } => {
-                        if active.iter().any(|r| r.id == *id) {
+                        if b.borrowable && active.iter().any(|r| r.id == *id) {
                             continue;
                         }
-                        if b.holding() {
-                            Route::Default {
-                                upstream: self.default_upstream.clone(),
-                            }
+                        if b.holding() || !b.borrowable {
+                            b.idle.clone()
                         } else {
-                            pick_route(&active, &inner, Some(conn), now, &self.default_upstream)
+                            pick_route(&active, &inner, Some(conn), now, &b.idle)
                         }
                     }
-                    Route::Default { .. } => {
-                        if active.is_empty() || b.holding() {
+                    Route::Default { .. } | Route::Home { .. } => {
+                        if active.is_empty() || b.holding() || !b.borrowable {
                             continue;
                         }
-                        let t =
-                            pick_route(&active, &inner, Some(conn), now, &self.default_upstream);
+                        let t = pick_route(&active, &inner, Some(conn), now, &b.idle);
                         // Every order is capped: stay on the default pool.
                         if t.redemption_id().is_none() {
                             continue;
@@ -592,8 +771,8 @@ impl RedemptionBinding for Router {
             .and_then(|b| b.route.redemption_id())
     }
 
-    fn observe_share(&self, conn: ConnectionId, difficulty: f64) {
-        Router::observe_share(self, conn, difficulty);
+    fn observe_share(&self, conn: ConnectionId, difficulty: f64, bound_to: Option<RedemptionId>) {
+        Router::observe_share(self, conn, difficulty, bound_to);
     }
 }
 
@@ -633,14 +812,14 @@ struct Order<'a> {
 
 /// Choose a route for connection `placing` (or a brand new one when
 /// `None`) over the active redemptions, oldest first. See the module docs
-/// for the rules; the default pool when nothing is active or every order
-/// is capped.
+/// for the rules; `idle` (the connection's home pool or the default pool)
+/// when nothing is active or every order is capped.
 fn pick_route(
     active: &[Redemption],
     inner: &Inner,
     placing: Option<ConnectionId>,
     now: Instant,
-    default_upstream: &str,
+    idle: &Route,
 ) -> Route {
     let rig = placing
         .and_then(|c| inner.conns.get(&c))
@@ -713,10 +892,23 @@ fn pick_route(
             worker_name: r.worker_name.clone(),
             worker_password: r.authorize_password().to_string(),
         },
-        None => Route::Default {
-            upstream: default_upstream.to_string(),
-        },
+        None => idle.clone(),
     }
+}
+
+/// One supplier as [`Router::suppliers`] reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SupplierView {
+    /// Supplier key (see [`crate::home::MinerIdentity::supplier`]).
+    pub supplier: String,
+    /// Live connections.
+    pub connections: usize,
+    /// Summed hashrate estimate of those connections, hashes per second.
+    pub hashrate: f64,
+    /// Home pool, if a live connection has one.
+    pub home_upstream: Option<String>,
+    /// Work delivered to redemptions, in hashes.
+    pub delivered_hashes: f64,
 }
 
 #[cfg(test)]
@@ -1027,7 +1219,7 @@ mod tests {
             b.rate = RigRate::new(now - Duration::from_secs(60));
         }
         for s in (0..60).rev() {
-            router.observe_share_at(conn, diff, now - Duration::from_secs(s));
+            router.observe_share_at(conn, diff, now - Duration::from_secs(s), None);
         }
     }
 
@@ -1197,12 +1389,173 @@ mod tests {
         assert_eq!(router.reconcile_at(t0), 0);
         router.lock().conns.get_mut(&a.conn).unwrap().fell_back_at = None;
         // Fresh, the 1 TH/s rig would pick the 3 THH order (best fit).
-        let fresh = pick_route(&ledger.active(), &router.lock(), Some(a.conn), t0, "d:1");
+        let idle = Route::Default {
+            upstream: "d:1".into(),
+        };
+        let fresh = pick_route(&ledger.active(), &router.lock(), Some(a.conn), t0, &idle);
         assert_eq!(fresh.redemption_id(), Some(rid(2)));
         // Both starved: oldest first.
         let later = t0 + STARVE_AFTER;
         assert_eq!(router.reconcile_at(later), 1);
         assert_eq!(switch_target(&a).redemption_id(), Some(rid(1)));
+    }
+
+    const ADDR: &str = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+
+    fn home_router(ledger: Arc<RedemptionLedger>) -> Router {
+        Router::new("default:3333", ledger).with_home_pools(HomeConfig::default())
+    }
+
+    #[test]
+    fn address_miner_idles_on_its_home_pool() {
+        let router = home_router(Arc::new(RedemptionLedger::new()));
+        let auth = serde_json::json!([format!("{ADDR}.bitaxe"), "x"]);
+        let a = router.assign_with(ConnectionId::next(), Some(&auth));
+        assert_eq!(
+            a.route,
+            Route::Home {
+                upstream: crate::home::DEFAULT_SOLO_UPSTREAM.into(),
+                worker_name: format!("{ADDR}.bitaxe"),
+                worker_password: "x".into(),
+            }
+        );
+        assert_eq!(router.current(a.conn), None);
+        // No authorize yet (or a plain account): the default pool.
+        let b = router.assign_with(ConnectionId::next(), None);
+        assert_eq!(b.route.upstream(), "default:3333");
+        let c = router.assign_with(
+            ConnectionId::next(),
+            Some(&serde_json::json!(["asherp.rig", "x"])),
+        );
+        assert_eq!(c.route.upstream(), "default:3333");
+    }
+
+    #[test]
+    fn home_miner_is_borrowed_then_sent_home() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = home_router(ledger.clone());
+        let auth = serde_json::json!([ADDR, "x"]);
+        let a = router.assign_with(ConnectionId::next(), Some(&auth));
+
+        open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
+        assert_eq!(router.reconcile(), 1);
+        let target = switch_target(&a);
+        assert_eq!(target.redemption_id(), Some(rid(1)));
+        router.switched(a.conn, target);
+
+        router.observe_share(a.conn, 4.0, Some(rid(1)));
+        router.observe_share(a.conn, 4.0, None);
+        ledger.credit_share(&rid(1), 1e9).unwrap();
+        assert_eq!(router.reconcile(), 1);
+        let back = switch_target(&a);
+        assert!(matches!(back, Route::Home { .. }), "{back:?}");
+
+        let s = router.suppliers();
+        assert_eq!(s[0].supplier, ADDR);
+        assert_eq!(s[0].delivered_hashes, 4.0 * 4_294_967_296.0);
+    }
+
+    #[test]
+    fn unreachable_redeemer_falls_back_home() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = home_router(ledger.clone());
+        open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
+        let a = router.assign_with(ConnectionId::next(), Some(&serde_json::json!([ADDR, "x"])));
+        assert_eq!(a.route.redemption_id(), Some(rid(1)));
+        let r = router.fall_back_to_default(a.conn);
+        assert!(matches!(r, Route::Home { .. }), "{r:?}");
+    }
+
+    #[test]
+    fn late_authorize_sets_home_for_next_idle() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = home_router(ledger.clone());
+        let a = router.assign_with(ConnectionId::next(), None);
+        router.identify(a.conn, &serde_json::json!([ADDR, "x"]));
+        open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
+        assert_eq!(router.reconcile(), 1);
+        router.switched(a.conn, switch_target(&a));
+        ledger.credit_share(&rid(1), 1e9).unwrap();
+        assert_eq!(router.reconcile(), 1);
+        assert!(matches!(switch_target(&a), Route::Home { .. }));
+        assert_eq!(router.suppliers()[0].supplier, ADDR);
+    }
+
+    fn operator_router(ledger: Arc<RedemptionLedger>) -> Router {
+        Router::new("default:3333", ledger).with_home_pools(HomeConfig {
+            operator_worker: Some("hashu".into()),
+            ..HomeConfig::default()
+        })
+    }
+
+    #[test]
+    fn only_hashus_rigs_are_borrowed_with_an_operator_worker() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = operator_router(ledger.clone());
+        open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
+
+        let op = router.assign_with(
+            ConnectionId::next(),
+            Some(&serde_json::json!(["hashu.mrr1", "x"])),
+        );
+        assert_eq!(op.route.redemption_id(), Some(rid(1)));
+
+        let home = router.assign_with(ConnectionId::next(), Some(&serde_json::json!([ADDR, "x"])));
+        assert!(matches!(home.route, Route::Home { .. }), "{:?}", home.route);
+        // Not yet identified: not borrowed either.
+        let unknown = router.assign_with(ConnectionId::next(), None);
+        assert_eq!(unknown.route.upstream(), "default:3333");
+        assert_eq!(unknown.route.redemption_id(), None);
+
+        open(&ledger, 2, "stratum+tcp://bob:3333", "bob.w");
+        // The new order goes to nobody else: home and unknown stay put.
+        router.reconcile();
+        assert_eq!(*home.signal.borrow(), Signal::Stay);
+        assert_eq!(*unknown.signal.borrow(), Signal::Stay);
+    }
+
+    #[test]
+    fn late_identified_home_miner_is_not_kept_on_an_order() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router =
+            Router::new("default:3333", ledger.clone()).with_home_pools(HomeConfig::default());
+        open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
+        let a = router.assign_with(ConnectionId::next(), None);
+        assert_eq!(a.route.redemption_id(), Some(rid(1)));
+        // Turning the operator rule on is a restart, so model it on a
+        // fresh router: an unidentified rig there isn't borrowed.
+        let r2 = operator_router(ledger.clone());
+        let b = r2.assign_with(ConnectionId::next(), None);
+        assert_eq!(b.route.redemption_id(), None);
+        r2.identify(b.conn, &serde_json::json!(["hashu.mrr2", "x"]));
+        assert_eq!(r2.reconcile(), 1);
+        assert_eq!(switch_target(&b).redemption_id(), Some(rid(1)));
+    }
+
+    #[test]
+    fn refuses_account_users_without_a_home() {
+        let router = operator_router(Arc::new(RedemptionLedger::new()));
+        assert_eq!(
+            router.refusal(&serde_json::json!(["bob.rig1", "x"])),
+            Some(crate::home::REFUSE_NO_HOME)
+        );
+        assert_eq!(
+            router.refusal(&serde_json::json!(["hashu.mrr1", "x"])),
+            None
+        );
+        assert_eq!(router.refusal(&serde_json::json!([ADDR, "x"])), None);
+        assert_eq!(
+            router.refusal(&serde_json::json!([
+                "bob.rig1",
+                "pool=public-pool.io:21496"
+            ])),
+            None
+        );
+        let open_router = home_router(Arc::new(RedemptionLedger::new()));
+        assert_eq!(
+            open_router.refusal(&serde_json::json!(["bob.rig1", "x"])),
+            None
+        );
     }
 
     #[test]
