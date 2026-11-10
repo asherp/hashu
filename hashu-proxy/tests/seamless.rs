@@ -53,6 +53,14 @@ enum Seen {
         /// Coinbase the pool rebuilt from the submit.
         coinbase: Vec<u8>,
     },
+    /// `mining.suggest_difficulty`, with whether the socket had
+    /// authorized by then and the password it authorized with.
+    Suggest {
+        pool: &'static str,
+        params: Value,
+        authorized: bool,
+        password: String,
+    },
 }
 
 /// A pool that answers configure/subscribe/authorize, sends its
@@ -70,6 +78,7 @@ async fn fake_pool(cfg: PoolCfg, seen: mpsc::UnboundedSender<Seen>) -> String {
                 let (r, mut w) = sock.into_split();
                 let mut br = BufReader::new(r);
                 let mut line = String::new();
+                let mut password: Option<String> = None;
                 while br.read_line(&mut line).await.unwrap_or(0) > 0 {
                     let v: Value = serde_json::from_str(line.trim()).unwrap();
                     line.clear();
@@ -85,12 +94,21 @@ async fn fake_pool(cfg: PoolCfg, seen: mpsc::UnboundedSender<Seen>) -> String {
                         "mining.extranonce.subscribe" => out.push(json!({"id": id, "result": true, "error": null})),
                         "mining.authorize" => {
                             let worker = v["params"][0].as_str().unwrap().to_string();
+                            password = Some(v["params"][1].as_str().unwrap_or_default().to_string());
                             let _ = seen.send(Seen::Auth { pool: cfg.name, worker });
                             out.push(json!({"id": id, "result": true, "error": null}));
                             out.push(json!({"id": null, "method": "mining.set_difficulty", "params": [cfg.difficulty]}));
                             out.push(json!({"id": null, "method": "mining.notify", "params": [
                                 cfg.job, H, cfg.coinb1, cfg.coinb2, [], "20000000", "1d00ffff", "60000000", false
                             ]}));
+                        }
+                        "mining.suggest_difficulty" => {
+                            let _ = seen.send(Seen::Suggest {
+                                pool: cfg.name,
+                                params: v["params"].clone(),
+                                authorized: password.is_some(),
+                                password: password.clone().unwrap_or_default(),
+                            });
                         }
                         "mining.submit" => {
                             let p = &v["params"];
@@ -637,4 +655,59 @@ async fn account_miner_still_uses_the_default_pool_with_home_pools_on() {
     assert_eq!(recv(&mut seen).await, auth("default", "miner.1"));
     let cb = m.submit_on(None).await;
     expect_submit(&mut seen, "default", "miner.1", &cb).await;
+}
+
+/// The next `mining.suggest_difficulty` the redeemer's pool saw, skipping
+/// other events.
+async fn redeemer_suggest(seen: &mut mpsc::UnboundedReceiver<Seen>) -> (Value, bool, String) {
+    loop {
+        if let Seen::Suggest {
+            pool: "redeemer",
+            params,
+            authorized,
+            password,
+        } = recv(seen).await
+        {
+            return (params, authorized, password);
+        }
+    }
+}
+
+#[tokio::test]
+async fn new_pool_is_asked_for_the_measured_difficulty_after_authorize() {
+    let mut s = setup(redeemer_cfg()).await;
+    let mut m = Miner::connect(&s.proxy, None, false).await;
+    // Enough accepted shares (difficulty 1) and time for an estimate.
+    for _ in 0..hashu_proxy::stratum::startdiff::MIN_SHARES {
+        let _ = m.submit_on(None).await;
+        assert_eq!(m.submit_result().await, true);
+    }
+    tokio::time::sleep(hashu_proxy::stratum::startdiff::MIN_ELAPSED).await;
+
+    open_redemption(&s, &s.redeemer.clone());
+    m.until_job("rj1").await;
+    let (params, authorized, password) = redeemer_suggest(&mut s.seen).await;
+    assert!(authorized, "suggest_difficulty comes after authorize");
+    let d = params[0].as_u64().expect("an integer difficulty");
+    assert!(d.is_power_of_two(), "{d}");
+    // 8 shares of 2^32 hashes in about a second, at 5 s per share: ~200.
+    assert!((16..=256).contains(&d), "{d}");
+    // The redeemer left the password at `x`, so it carries `d=` too.
+    assert_eq!(password, format!("x,d={d}"));
+}
+
+#[tokio::test]
+async fn miners_own_suggestion_is_replayed_after_authorize() {
+    let mut s = setup(redeemer_cfg()).await;
+    let mut m = Miner::connect(&s.proxy, None, false).await;
+    m.send(json!({"id": 9, "method": "mining.suggest_difficulty", "params": [512]}))
+        .await;
+    // No estimate yet: the new pool gets the miner's own suggestion, and
+    // the password stays as it was.
+    open_redemption(&s, &s.redeemer.clone());
+    m.until_job("rj1").await;
+    let (params, authorized, password) = redeemer_suggest(&mut s.seen).await;
+    assert_eq!(params, json!([512]));
+    assert!(authorized);
+    assert_eq!(password, "x");
 }
