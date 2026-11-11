@@ -17,37 +17,37 @@ trust model, components, and on-the-wire artifacts are described in
 
 ## Status
 
-Early. The project is a working scaffold of the core components but is
-**not yet a complete mint** — issuance, melt, and the operator-facing
-mint daemon are still ahead.
+Working mint, live on mainnet at <https://mint.hashu.io>. Built at the
+bitcoin++ Seoul 2026 hackathon. Buyers pay with Lightning (phoenixd) or
+dollar stablecoins, get THH vouchers, and redeem them by pointing real
+hashrate at their own pool. The mint never pays out bitcoin.
 
 | Component | Status | Where |
 |---|---|---|
-| Workspace + dual-license scaffold | done | `77663f7` |
-| Append-only Merkle commitment tree (RFC 6962) | done | `hashu-core::share` |
-| Hashprice oracle trait + interpolating buffer | done | `hashu-core::hashprice` |
-| Esplora hashprice adapter (free, default) | done | `hashu-mint::oracle::esplora` |
-| Luxor hashprice adapter (paid alternative) | done | `hashu-mint::oracle::luxor` |
-| MiningRigRentals rental-floor hashprice adapter (free, Testnet4 demo) | done | `hashu-mint::oracle::mrr` |
-| Operator manifest publisher (kind 0 nostr event) | done | `hashu-mint::manifest` |
-| Stratum V1 pass-through proxy + share counter | done | `hashu-proxy::stratum` |
-| `hashu` operator CLI (init, config, manifest, oracle, proxy) | done | `hashu-cli` |
-| Mint daemon: `hashu mint run` (mint + rails + proxy + control API) | done | `hashu-cli::mint` |
-| Share commitment tree integration in the proxy | done | `hashu-proxy::stratum::{session,header,committer,compact}` |
+| Mint daemon: `hashu mint run` (mint + payment rails + proxy + control API) | done | `hashu-cli::mint` |
+| Lightning payment rail via phoenixd (LSP fees absorbed) | done | `hashu-mint::phoenixd` |
+| Stablecoin rails: USDT on Ethereum, USDC on Base (per-coin chain config) | done | `hashu-mint::tether` |
 | `hashrate` melt method via cdk (redemption ledger + `MintPayment` backend) | done | `hashu-core::redemption`, `hashu-mint::melt` |
-| Tether (USDT) payment rail: buy `THH` with dollars (ERC-20 over EVM JSON-RPC) | done | `hashu-mint::tether` |
-| Proxy control API (`GET /status`, demo `POST /redemptions`) | done | `hashu-proxy::control` |
+| Stop a redemption partway and get change back | done | `hashu-cli::orders` |
+| NUT-24 paid redeem (`POST /api/redeem` with `X-Cashu`) | done | `hashu-cli::paid` |
+| Sales capped at rented capacity (MiningRigRentals sync) | done | `hashu-mint::capacity` |
+| Stratum V1 proxy: share counting, seamless pool switching, size-aware routing | done | `hashu-proxy::{stratum,router}` |
 | Per-redemption share tree + audit API (`GET /redemptions/{id}/root`, `/proof/{n}`) | done | `hashu-proxy::{audit,control}` |
-| Mint operator GUI (live hashrate, redemption delivery, obligations, pause/markup) | done | `hashu-cli::operator`, `hashu-proxy::meter` |
-| Buyer checkout page (pay by Lightning QR or USDT, get a token, redeem to a pool) | done | `hashu-cli::checkout` |
+| Home pools: Bitaxes and other rigs on one endpoint | done | `hashu-proxy::home` |
+| Supplier-scoped routing (each order stays on its supplier's rigs) | done | `hashu-proxy::suppliers` |
+| Buyer checkout and order page (Lightning QR or stablecoin, token QR, redeem) | done | `hashu-cli::checkout` |
+| Vouchers as English words (Glossia) | done | `hashu-cli::words` |
+| Mint operator GUI (hashrate, delivery, obligations, capacity, heat, pause/markup) | done | `hashu-cli::operator` |
+| Hashprice oracles: Esplora, Luxor, MiningRigRentals | done | `hashu-mint::oracle` |
 | MDK heater stack: Worker + app switching pools on redeem, thermostat | done | [`mdk/`](mdk/README.md) |
-| Per-share nostr receipts + completion certificate | planned | — |
-| Stratum V2 via SRI | fast-follow | — |
-| Lightning backend (LND/CLN via cdk) | planned | — |
+| Hosted mint per supplier (`alice.mint.hashu.io`) | in progress | — |
+| Streaming redemption with change via NUT-08 blanks | design ([#44](https://github.com/asherp/hashu/issues/44)) | — |
+| Stratum V2 and TLS | design ([#53](https://github.com/asherp/hashu/issues/53)) | — |
+| TEE-held mint keys and attested share counting | design ([#47](https://github.com/asherp/hashu/issues/47)) | — |
 
-99 tests across the workspace, plus a loopback end-to-end test for the
-proxy that asserts an accepted share gets committed to the per-connection
-share tree (and a rejected one does not).
+Over 350 tests across the workspace, including a loopback end-to-end test
+for the proxy that asserts an accepted share gets committed to the
+per-connection share tree (and a rejected one does not).
 
 ## Build
 

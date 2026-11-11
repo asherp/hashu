@@ -17,7 +17,6 @@ the exact values to type in.
 | [Foundry USA](foundry.md) | Yes, institutional | `account.worker` |
 | [solo.ckpool.org](ckpool-solo.md) | No | BTC address (+ `.worker`) |
 | [public-pool.io](public-pool.md) | No | BTC address (+ `.worker`) |
-| [Hashu Testnet4 ckpool](testnet4.md) | No | any label |
 
 ## What you supply
 
