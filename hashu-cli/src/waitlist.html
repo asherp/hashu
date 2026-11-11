@@ -85,6 +85,17 @@ textarea { resize: vertical; min-height: 72px; }
 .name-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .name-row input { flex: 1 1 140px; width: auto; }
 .name-row .suffix { color: var(--ink-3); font-size: 14px; overflow-wrap: anywhere; }
+fieldset.cap { border: 0; margin: 0; padding: 0; display: grid; gap: 10px; min-width: 0; }
+fieldset.cap legend { font-size: 14px; font-weight: 600; padding: 0; margin-bottom: 6px; }
+fieldset.cap legend small { font-weight: 400; color: var(--ink-3); }
+.cap-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+label.sub { font-weight: 400; font-size: 13px; color: var(--ink-2); gap: 4px; }
+.unit-row { display: flex; align-items: center; gap: 6px; }
+.unit-row input { flex: 1 1 0; width: 0; min-width: 0; }
+.cap-row > label { min-width: 0; }
+.unit-row .suffix { color: var(--ink-3); font-size: 14px; }
+.est { margin: 0; font-size: 14px; color: var(--ink-2); background: var(--brand-fill); border-radius: 8px; padding: 8px 12px; }
+.est b { color: var(--ink); }
 fieldset.pay { border: 0; margin: 0; padding: 0; display: grid; gap: 8px; min-width: 0; }
 fieldset.pay legend { font-size: 14px; font-weight: 600; padding: 0; margin-bottom: 6px; }
 fieldset.pay legend small { font-weight: 400; color: var(--ink-3); }
@@ -136,20 +147,28 @@ button.btn[disabled] { opacity: 0.6; cursor: wait; }
         <label><span>Mint name you'd like <small>(optional)</small></span>
           <span class="name-row"><input name="mint_name" maxlength="32" pattern="[a-z0-9][a-z0-9\-]*[a-z0-9]" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="alice"><span class="suffix" id="suffix">.this-mint</span></span>
         </label>
-        <label><span>Roughly how much hashrate <small>(optional)</small></span>
-          <input name="hashrate" maxlength="80" autocomplete="off" placeholder="2 Bitaxes, 1 S21, 300 TH/s…">
-        </label>
-        <label><span>How long would you commit your hashrate? <small>(optional)</small></span>
-          <select name="horizon">
-            <option value="">Not sure yet</option>
-            <option value="days">A few days</option>
-            <option value="weeks">A few weeks</option>
-            <option value="months">A few months</option>
-            <option value="year">A year or more</option>
-            <option value="ongoing">Ongoing, no end date</option>
-          </select>
-          <small>Vouchers you sell are backed by your rigs, so this is how far ahead buyers could redeem them.</small>
-        </label>
+        <fieldset class="cap">
+          <legend>What you'd sell <small>(optional)</small></legend>
+          <div class="cap-row">
+            <label class="sub">Hashrate
+              <span class="unit-row"><input name="hashrate_ths" type="number" inputmode="decimal" min="0" step="any" placeholder="1.2"><span class="suffix">TH/s</span></span>
+            </label>
+            <label class="sub">For how long
+              <select name="horizon">
+                <option value="">Not sure yet</option>
+                <option value="week" data-hours="168">1 week</option>
+                <option value="month" data-hours="720">1 month</option>
+                <option value="quarter" data-hours="2160">3 months</option>
+                <option value="half-year" data-hours="4368">6 months</option>
+                <option value="year" data-hours="8760">1 year</option>
+              </select>
+            </label>
+          </div>
+          <p class="est" id="est">Your hashrate × how long = the terahash-hours (THH) your mint could sell.</p>
+          <label class="sub">Your rigs
+            <input name="hashrate" maxlength="80" autocomplete="off" placeholder="2 Bitaxes, 1 S21…">
+          </label>
+        </fieldset>
         <fieldset class="pay">
           <legend>How would you like to be paid? <small>(optional)</small></legend>
           <label class="opt"><input type="radio" name="payout" value="stablecoin"> USDC / USDT</label>
@@ -187,6 +206,22 @@ fetch('/checkout/api/info', { cache: 'no-store' })
   .catch(() => {});
 
 const form = document.getElementById('join');
+// THH for sale = TH/s × hours.
+const est = document.getElementById('est');
+const estHint = est.textContent;
+function updateEstimate() {
+  const ths = parseFloat(form.hashrate_ths.value);
+  const opt = form.horizon.selectedOptions[0];
+  const hours = opt && opt.dataset.hours ? Number(opt.dataset.hours) : 0;
+  if (!(ths > 0) || !hours) { est.textContent = estHint; return; }
+  const thh = ths * hours;
+  est.innerHTML = '';
+  est.append(ths + ' TH/s × ' + hours.toLocaleString() + ' h ≈ ');
+  const b = document.createElement('b');
+  b.textContent = thh.toLocaleString(undefined, { maximumFractionDigits: thh < 10 ? 2 : 0 }) + ' THH';
+  est.append(b, ' for sale');
+}
+form.addEventListener('input', updateEstimate);
 const other = document.getElementById('payout-other');
 form.addEventListener('change', (ev) => {
   if (ev.target.name !== 'payout') return;
@@ -211,6 +246,7 @@ form.addEventListener('submit', async (ev) => {
       say(j.already ? "You're already on the list. Thanks!" : "You're on the list. We'll be in touch when hosted mints open.", true);
       form.reset();
       other.hidden = true;
+      updateEstimate();
     } else {
       say((j.error || 'Something went wrong') + '.', false);
     }

@@ -111,8 +111,10 @@ async function load() {
     const meta = [new Date(e.at * 1000).toLocaleString()];
     if (e.mint_name) meta.push('mint: ' + e.mint_name);
     if (e.hashrate) meta.push(e.hashrate);
-    const HOR = { days: 'days', weeks: 'weeks', months: 'months', year: 'a year+', ongoing: 'ongoing' };
+    const HOR = { week: '1 week', month: '1 month', quarter: '3 months', 'half-year': '6 months', year: '1 year' };
+    if (e.hashrate_ths) meta.push(e.hashrate_ths + ' TH/s');
     if (e.horizon) meta.push('for ' + (HOR[e.horizon] || e.horizon));
+    if (e.thh_for_sale != null) meta.push('≈ ' + Math.round(e.thh_for_sale).toLocaleString() + ' THH for sale');
     const PAY = { stablecoin: 'USDC/USDT', lightning: 'Lightning', onchain: 'on-chain' };
     if (e.payout) meta.push('paid in ' + (e.payout === 'other' ? (e.payout_other || 'other') : PAY[e.payout] || e.payout));
     row.append(el('div', 'meta', meta.join(' · ')));
