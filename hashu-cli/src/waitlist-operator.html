@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hashu operator · waitlist</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f7931a'/%3E%3Cpath d='M10 7v18M22 7v18M10 16h12' stroke='%23111' stroke-width='3.4' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f6f6f4; --surface: #ffffff; --ink: #1b1b1a; --ink-2: #55534f; --ink-3: #8a8782;
+  --line: rgba(27,27,26,0.12); --brand: #e8850c; --brand-fill: rgba(232,133,12,0.12); --brand-ink: #111;
+  --good: #2f8a57; --good-bg: rgba(47,138,87,0.14); --bad: #c2403a; --bad-bg: rgba(194,64,58,0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111110; --surface: #1a1a19; --ink: #f1efea; --ink-2: #b5b2ab; --ink-3: #85827c;
+    --line: rgba(241,239,234,0.14); --brand: #f7931a; --brand-fill: rgba(247,147,26,0.14);
+    --good: #5cc28a; --good-bg: rgba(92,194,138,0.16); --bad: #e06c6c; --bad-bg: rgba(224,108,108,0.14);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: inherit; }
+.wrap { max-width: 960px; margin: 0 auto; padding: 0 16px; }
+nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 0; flex-wrap: wrap; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; text-decoration: none; }
+.logo svg { width: 28px; height: 28px; }
+nav .links { display: flex; gap: 18px; font-size: 14px; flex-wrap: wrap; }
+nav .links a { color: var(--ink-2); text-decoration: none; }
+nav .links a:hover { color: var(--ink); }
+.hero { padding: 48px 0 32px; }
+.hero h1 { font-size: clamp(34px, 6vw, 56px); line-height: 1.05; letter-spacing: -0.02em; margin: 0 0 18px; max-width: 14ch; }
+.hero h1 span { color: var(--brand); }
+.hero p { font-size: 19px; color: var(--ink-2); max-width: 60ch; margin: 0 0 28px; }
+.cta { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn { display: inline-block; text-decoration: none; border: 1px solid var(--line); border-radius: 10px; padding: 12px 20px; font-weight: 600; font-size: 15px; }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+.btn:hover { filter: brightness(1.05); }
+.btn.soldout { background: transparent; border-color: var(--line); color: var(--ink-3, #888); cursor: not-allowed; pointer-events: none; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 40px 0 8px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.stat .k { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); }
+.stat .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; overflow-wrap: anywhere; }
+.stat .v small { font-size: 13px; font-weight: 500; color: var(--ink-2); }
+.pill { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 13px; font-weight: 600; }
+.pill.ok { background: var(--good-bg); color: var(--good); }
+.pill.no { background: var(--bad-bg); color: var(--bad); }
+section { padding: 40px 0; border-top: 1px solid var(--line); }
+section > h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-2); margin: 0 0 20px; }
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; min-width: 0; }
+.card h3 { margin: 0 0 6px; font-size: 18px; }
+.card p { margin: 0; color: var(--ink-2); }
+.num { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--brand-fill); color: var(--brand); font-weight: 700; margin-bottom: 10px; }
+.flow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-weight: 600; margin: 4px 0 0; }
+.flow span { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; }
+.flow i { color: var(--ink-3); font-style: normal; }
+.unit { font-size: 15px; color: var(--ink-2); margin: 0; }
+.unit b { color: var(--ink); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+pre { margin: 10px 0 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; }
+.copy { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.copy code { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; overflow-wrap: anywhere; flex: 1 1 200px; }
+.copy button { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 8px; padding: 8px 14px; cursor: pointer; font: inherit; font-size: 14px; }
+dl { margin: 12px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 14px; }
+dt { color: var(--ink-3); }
+dd { margin: 0; overflow-wrap: anywhere; }
+footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 14px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+h1 { font-size: 24px; margin: 8px 0 4px; }
+.sub { color: var(--ink-2); margin: 0 0 20px; }
+.bar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+.list { display: grid; gap: 10px; padding-bottom: 40px; }
+.row { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; min-width: 0; }
+.row .c { font-weight: 650; overflow-wrap: anywhere; }
+.row .meta { color: var(--ink-2); font-size: 14px; overflow-wrap: anywhere; }
+.row .note { grid-column: 1 / -1; color: var(--ink-2); font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.row button { grid-row: 1 / span 2; grid-column: 2; align-self: start; border: 1px solid var(--line); background: transparent; color: var(--bad); border-radius: 8px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 13px; }
+.empty { color: var(--ink-3); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="logo" href="./">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#f7931a"/><path d="M10 7v18M22 7v18M10 16h12" stroke="#111" stroke-width="3.4" stroke-linecap="round"/></svg>
+      Operator
+    </a>
+    <div class="links"><a href="./">Dashboard</a><a href="/join/">Public sign-up page</a></div>
+  </nav>
+  <h1>Hosted-mint waitlist</h1>
+  <p class="sub" id="count">Loading…</p>
+  <div class="bar"><a class="btn" href="api/waitlist.csv">Download CSV</a></div>
+  <div class="list" id="list"></div>
+</div>
+<script>
+const list = document.getElementById('list');
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+async function load() {
+  const r = await fetch('api/waitlist', { cache: 'no-store' });
+  if (!r.ok) { document.getElementById('count').textContent = 'Could not load the waitlist (' + r.status + ').'; return; }
+  const j = await r.json();
+  document.getElementById('count').textContent = j.count + ' miner' + (j.count === 1 ? '' : 's') + ' waiting (newest first, at most ' + j.max + ').';
+  list.replaceChildren();
+  if (!j.entries.length) { list.append(el('p', 'empty', 'Nobody yet. Share /join/.')); return; }
+  for (const e of j.entries) {
+    const row = el('div', 'row');
+    row.append(el('div', 'c', e.contact));
+    const meta = [new Date(e.at * 1000).toLocaleString()];
+    if (e.mint_name) meta.push('mint: ' + e.mint_name);
+    if (e.hashrate) meta.push(e.hashrate);
+    const PAY = { stablecoin: 'USDC/USDT', lightning: 'Lightning', onchain: 'on-chain' };
+    if (e.payout) meta.push('paid in ' + (e.payout === 'other' ? (e.payout_other || 'other') : PAY[e.payout] || e.payout));
+    row.append(el('div', 'meta', meta.join(' · ')));
+    const del = el('button', null, 'Delete');
+    del.onclick = async () => {
+      if (!confirm('Delete ' + e.contact + ' from the waitlist?')) return;
+      const d = await fetch('api/waitlist/' + encodeURIComponent(e.id), { method: 'DELETE' });
+      if (d.ok) load(); else alert('Delete failed (' + d.status + ')');
+    };
+    row.append(del);
+    if (e.note) row.append(el('div', 'note', e.note));
+    list.append(row);
+  }
+}
+load();
+</script>
+</body>
+</html>

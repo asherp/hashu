@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hashu · hosted mints for miners</title>
+<meta name="description" content="Join the waitlist for a hosted Hashu mint: sell your hashrate as Chaumian hashrate vouchers from your own mint, with buyers paying your own Lightning wallet.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f7931a'/%3E%3Cpath d='M10 7v18M22 7v18M10 16h12' stroke='%23111' stroke-width='3.4' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f6f6f4; --surface: #ffffff; --ink: #1b1b1a; --ink-2: #55534f; --ink-3: #8a8782;
+  --line: rgba(27,27,26,0.12); --brand: #e8850c; --brand-fill: rgba(232,133,12,0.12); --brand-ink: #111;
+  --good: #2f8a57; --good-bg: rgba(47,138,87,0.14); --bad: #c2403a; --bad-bg: rgba(194,64,58,0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111110; --surface: #1a1a19; --ink: #f1efea; --ink-2: #b5b2ab; --ink-3: #85827c;
+    --line: rgba(241,239,234,0.14); --brand: #f7931a; --brand-fill: rgba(247,147,26,0.14);
+    --good: #5cc28a; --good-bg: rgba(92,194,138,0.16); --bad: #e06c6c; --bad-bg: rgba(224,108,108,0.14);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: inherit; }
+.wrap { max-width: 960px; margin: 0 auto; padding: 0 16px; }
+nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 0; flex-wrap: wrap; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; text-decoration: none; }
+.logo svg { width: 28px; height: 28px; }
+nav .links { display: flex; gap: 18px; font-size: 14px; flex-wrap: wrap; }
+nav .links a { color: var(--ink-2); text-decoration: none; }
+nav .links a:hover { color: var(--ink); }
+.hero { padding: 48px 0 32px; }
+.hero h1 { font-size: clamp(34px, 6vw, 56px); line-height: 1.05; letter-spacing: -0.02em; margin: 0 0 18px; max-width: 14ch; }
+.hero h1 span { color: var(--brand); }
+.hero p { font-size: 19px; color: var(--ink-2); max-width: 60ch; margin: 0 0 28px; }
+.cta { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn { display: inline-block; text-decoration: none; border: 1px solid var(--line); border-radius: 10px; padding: 12px 20px; font-weight: 600; font-size: 15px; }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+.btn:hover { filter: brightness(1.05); }
+.btn.soldout { background: transparent; border-color: var(--line); color: var(--ink-3, #888); cursor: not-allowed; pointer-events: none; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 40px 0 8px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.stat .k { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); }
+.stat .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; overflow-wrap: anywhere; }
+.stat .v small { font-size: 13px; font-weight: 500; color: var(--ink-2); }
+.pill { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 13px; font-weight: 600; }
+.pill.ok { background: var(--good-bg); color: var(--good); }
+.pill.no { background: var(--bad-bg); color: var(--bad); }
+section { padding: 40px 0; border-top: 1px solid var(--line); }
+section > h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-2); margin: 0 0 20px; }
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; min-width: 0; }
+.card h3 { margin: 0 0 6px; font-size: 18px; }
+.card p { margin: 0; color: var(--ink-2); }
+.num { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--brand-fill); color: var(--brand); font-weight: 700; margin-bottom: 10px; }
+.flow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-weight: 600; margin: 4px 0 0; }
+.flow span { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; }
+.flow i { color: var(--ink-3); font-style: normal; }
+.unit { font-size: 15px; color: var(--ink-2); margin: 0; }
+.unit b { color: var(--ink); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+pre { margin: 10px 0 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; }
+.copy { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.copy code { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; overflow-wrap: anywhere; flex: 1 1 200px; }
+.copy button { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 8px; padding: 8px 14px; cursor: pointer; font: inherit; font-size: 14px; }
+dl { margin: 12px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 14px; }
+dt { color: var(--ink-3); }
+dd { margin: 0; overflow-wrap: anywhere; }
+footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 14px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+.hero .kicker { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--brand); margin: 0 0 12px; }
+.hero h1 { max-width: 16ch; }
+.layout { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; align-items: start; }
+.points { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.points li { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+.points b { display: block; margin-bottom: 2px; }
+.points span { color: var(--ink-2); font-size: 15px; }
+form.card { display: grid; gap: 14px; }
+label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
+label small { font-weight: 400; color: var(--ink-3); }
+input, textarea { font: inherit; font-size: 15px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; width: 100%; min-width: 0; }
+input:focus, textarea:focus { outline: 2px solid var(--brand); outline-offset: 1px; }
+textarea { resize: vertical; min-height: 72px; }
+.name-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.name-row input { flex: 1 1 140px; width: auto; }
+.name-row .suffix { color: var(--ink-3); font-size: 14px; overflow-wrap: anywhere; }
+fieldset.pay { border: 0; margin: 0; padding: 0; display: grid; gap: 8px; min-width: 0; }
+fieldset.pay legend { font-size: 14px; font-weight: 600; padding: 0; margin-bottom: 6px; }
+fieldset.pay legend small { font-weight: 400; color: var(--ink-3); }
+label.opt { display: flex; align-items: center; gap: 8px; font-weight: 400; font-size: 15px; cursor: pointer; }
+label.opt input { width: auto; margin: 0; accent-color: var(--brand); }
+.hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+button.btn { cursor: pointer; font: inherit; font-weight: 600; font-size: 15px; }
+button.btn[disabled] { opacity: 0.6; cursor: wait; }
+.msg { margin: 0; font-size: 14px; border-radius: 8px; padding: 10px 12px; }
+.msg.ok { background: var(--good-bg); color: var(--good); }
+.msg.no { background: var(--bad-bg); color: var(--bad); }
+.fine { font-size: 13px; color: var(--ink-3); margin: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="logo" href="/">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#f7931a"/><path d="M10 7v18M22 7v18M10 16h12" stroke="#111" stroke-width="3.4" stroke-linecap="round"/></svg>
+      Hashu
+    </a>
+    <div class="links">
+      <a href="/">Home</a>
+      <a href="/redeem/">Pool guides</a>
+      <a href="https://github.com/asherp/hashu">GitHub</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <p class="kicker">For miners · waitlist</p>
+    <h1>Want a <span>hosted mint</span>?</h1>
+    <p>Sell your hashrate as Chaumian hashrate vouchers from a mint of your own, without running a server. Point your rigs at one Stratum endpoint and get a mint at <b class="mono" id="example-host">yourname.this-mint</b>. Hosted mints aren't open yet: leave one way to reach you and you'll hear when they are.</p>
+  </header>
+
+  <section>
+    <div class="layout">
+      <ul class="points">
+        <li><b>Your own mint, your own price</b><span>Each miner gets a separate mint and sets their own ask. Vouchers from your mint are backed by your rigs only.</span></li>
+        <li><b>Buyers pay you directly</b><span>Sales settle straight to your own wallet. The hosting operator never holds your earnings.</span></li>
+        <li><b>Hashrate, not money</b><span>Vouchers are redeemed only as work delivered to the holder's pool. Between orders your rigs keep mining to your home pool.</span></li>
+        <li><b>Or run it yourself</b><span>Hashu is open source. <a href="https://github.com/asherp/hashu">Self-host a mint</a> today if you'd rather not wait.</span></li>
+      </ul>
+
+      <form class="card" id="join" novalidate>
+        <label>How to reach you
+          <small>Email, Nostr npub, Signal, Telegram or X handle. Just one.</small>
+          <input name="contact" required maxlength="200" autocomplete="off" placeholder="npub1… or you@example.com">
+        </label>
+        <label><span>Mint name you'd like <small>(optional)</small></span>
+          <span class="name-row"><input name="mint_name" maxlength="32" pattern="[a-z0-9][a-z0-9\-]*[a-z0-9]" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="alice"><span class="suffix" id="suffix">.this-mint</span></span>
+        </label>
+        <label><span>Roughly how much hashrate <small>(optional)</small></span>
+          <input name="hashrate" maxlength="80" autocomplete="off" placeholder="2 Bitaxes, 1 S21, 300 TH/s…">
+        </label>
+        <fieldset class="pay">
+          <legend>How would you like to be paid? <small>(optional)</small></legend>
+          <label class="opt"><input type="radio" name="payout" value="stablecoin"> USDC / USDT</label>
+          <label class="opt"><input type="radio" name="payout" value="lightning"> Lightning</label>
+          <label class="opt"><input type="radio" name="payout" value="onchain"> On-chain bitcoin</label>
+          <label class="opt"><input type="radio" name="payout" value="other"> Something else</label>
+          <input name="payout_other" id="payout-other" maxlength="80" autocomplete="off" placeholder="Which? e.g. Liquid, eCash, bank transfer" hidden>
+        </fieldset>
+        <label><span>Anything else <small>(optional)</small></span>
+          <textarea name="note" maxlength="500" rows="3"></textarea>
+        </label>
+        <div class="hp" aria-hidden="true"><label>Website <input name="website" tabindex="-1" autocomplete="off"></label></div>
+        <button class="btn primary" type="submit">Join the waitlist</button>
+        <p class="msg" id="msg" role="status" hidden></p>
+        <p class="fine">Only what you type here is stored, on this mint's server, readable by its operator. No IP address, cookies or trackers. To be removed, ask the operator and your entry is deleted.</p>
+      </form>
+    </div>
+  </section>
+
+  <footer>
+    <span>Hashu · open source · MIT / Apache-2.0</span>
+    <span><a href="https://github.com/asherp/hashu">github.com/asherp/hashu</a></span>
+  </footer>
+</div>
+<script>
+// Show the real mint domain (its advertised URL) in the name field.
+fetch('/checkout/api/info', { cache: 'no-store' })
+  .then((r) => (r.ok ? r.json() : null))
+  .then((i) => {
+    const m = i && /^https?:\/\/([^/:]+)/.exec(i.mint_url || '');
+    if (!m) return;
+    document.getElementById('suffix').textContent = '.' + m[1];
+    document.getElementById('example-host').textContent = 'yourname.' + m[1];
+  })
+  .catch(() => {});
+
+const form = document.getElementById('join');
+const other = document.getElementById('payout-other');
+form.addEventListener('change', (ev) => {
+  if (ev.target.name !== 'payout') return;
+  other.hidden = ev.target.value !== 'other';
+  if (!other.hidden) other.focus();
+});
+const msg = document.getElementById('msg');
+function say(text, ok) { msg.textContent = text; msg.className = 'msg ' + (ok ? 'ok' : 'no'); msg.hidden = false; }
+form.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const data = Object.fromEntries(new FormData(form));
+  data.mint_name = (data.mint_name || '').trim().toLowerCase();
+  if (!(data.contact || '').trim()) { say('Leave one way to reach you.', false); return; }
+  if (data.payout === 'other' && !(data.payout_other || '').trim()) { say("Say how you'd like to be paid.", false); other.focus(); return; }
+  if (data.payout !== 'other') delete data.payout_other;
+  const btn = form.querySelector('button');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/join/api', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) {
+      say(j.already ? "You're already on the list. Thanks!" : "You're on the list. We'll be in touch when hosted mints open.", true);
+      form.reset();
+      other.hidden = true;
+    } else {
+      say((j.error || 'Something went wrong') + '.', false);
+    }
+  } catch (e) {
+    say('Could not reach the server. Try again in a moment.', false);
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

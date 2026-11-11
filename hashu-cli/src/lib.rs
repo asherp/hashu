@@ -25,5 +25,6 @@ pub mod paid;
 pub mod proxy;
 pub mod tenants;
 mod ur;
+pub mod waitlist;
 pub mod wallet;
 pub mod words;

@@ -441,7 +441,8 @@ function render () {
   const o = op.obligations, mint = op.mint, px = op.proxy, ctl = mint.controls
   $('sub').textContent = `${mint.name} · mint ${mint.url || mint.listen} · up ${fmtDur((op.now_ms - op.started_ms) / 1000)}`
   $('badges').innerHTML = `<span class="pill ${ctl.issuance_paused ? 'off' : 'on'}">${ctl.issuance_paused ? 'Issuance paused' : 'Issuing THH'}</span>` +
-    (mint.rails.length ? mint.rails : ['no payment rail']).map((r) => `<span class="pill rail">${esc(r)}</span>`).join('')
+    (mint.rails.length ? mint.rails : ['no payment rail']).map((r) => `<span class="pill rail">${esc(r)}</span>`).join('')+
+    (op.waitlist != null ? `<a class="pill rail" style="text-decoration:none" href="waitlist">Waitlist: ${op.waitlist}</a>` : '')
 
   const rate = rateSeries(state.samples.slice(-Math.ceil(state.avg) - 2), state.avg)
   $('t-rate').textContent = fmtRate(rate.length ? rate[rate.length - 1][1] : px.hashrate_hs)

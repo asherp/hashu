@@ -279,14 +279,19 @@ pub struct OperatorState {
     pub started_ms: u64,
     /// For the operator's test mint and one-click redeem.
     pub checkout: Arc<CheckoutState>,
+    /// Hosted-mint waitlist (`--waitlist`), listed at `/waitlist`.
+    pub waitlist: Option<Arc<crate::waitlist::Waitlist>>,
 }
 
 /// Largest test mint in one go.
 pub const MAX_TEST_MINT_THH: u64 = 1_000;
 
 pub fn router(state: Arc<OperatorState>) -> axum::Router {
-    axum::Router::new()
-        .route("/", get(page))
+    let mut r = axum::Router::new();
+    if let Some(w) = &state.waitlist {
+        r = r.merge(crate::waitlist::operator_router(w.clone()));
+    }
+    r.route("/", get(page))
         .route("/scan.js", get(crate::checkout::scan_js))
         .route("/api/operator", get(operator))
         .route("/api/hashrate", get(hashrate))
@@ -713,6 +718,8 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
         },
         "redemptions": redemptions,
         "current": s.meter.current_track(),
+        // Hosted-mint waitlist sign-ups, or null when --waitlist is off.
+        "waitlist": s.waitlist.as_ref().map(|w| w.len()),
     }))
 }
 
