@@ -60,6 +60,7 @@ again at startup, so running them without compose fails the same way.
 | `HASHU_MINT_NAME`, `HASHU_MINT_DESCRIPTION` | no | NUT-06 name and description (defaults: `Hashu` and a generic description). |
 | `HASHU_MINT_CONTACT` | no | Operator contact, `method:info` pairs, comma separated (`email:ops@example.com,nostr:npub1...`). Shown in wallets and on the landing page; default none. |
 | `HASHU_OPERATOR_WORKER` | no | Your own rigs' pool user (rigs mine as `<user>.<rig>`). Set: only those rigs fill this mint's orders, other miners stay on their home pool. Unset: any connected rig may be borrowed. |
+| `HASHU_SUPPLIERS_FILE` | no | Registered suppliers (JSON in the data volume, e.g. `/data/suppliers.json`; see [docs/mine/bitaxe.md](../docs/mine/bitaxe.md)). Each gets its own mint at `<name>.$HASHU_DOMAIN`; add a wildcard A record `*.$HASHU_DOMAIN` for it. Unset: none. |
 | `HASHU_HOME_SOLO_UPSTREAM`, `HASHU_HOME_POOLS`, `HASHU_HOME_POOLS_OFF` | no | Home pools for Bitaxes ([docs/mine/bitaxe.md](../docs/mine/bitaxe.md)): default solo pool `solo.ckpool.org:3333`, allowed `pool=` hosts (public pools), or `true` to turn home pools off. |
 | `HASHU_WAITLIST` | no | `true` serves the hosted-mint waitlist for miners at `/join/` (contact plus optional mint name, hashrate, payout preference and note; no IPs stored; rate limited). Sign-ups go to `waitlist.jsonl` in the data volume and are listed, exported as CSV and deleted at `/operator/waitlist`. Default `false`. |
 | `HASHU_STRATUM_PORT` | no | Host port for miners, default `3335`. |

@@ -87,8 +87,10 @@ number a payout would be based on.
 
 ## Registered suppliers (your own mint)
 
-A miner with their own mint (`<name>.mint.<domain>`, sign-up coming in a
-later release) proves each rig belongs to them with a secret:
+A registered supplier `alice` has their own mint at
+`alice.<mint host>` (e.g. `alice.mint.hashu.io`, sign-up coming in a
+later release), with its own keys, served by the same process as the
+operator's mint. Alice proves each rig belongs to her with a secret:
 
 | AxeOS field | Value |
 |---|---|
@@ -102,6 +104,12 @@ invoice spreads over all of Alice's free rigs. `pw=` is never sent to any
 pool. A registered name with a wrong or missing secret is refused, and so
 is a supplier rig with no home pool.
 
+Melting THH from `alice.mint.hashu.io` (method `hashrate`) opens a
+redemption that only Alice's rigs fill. Her mint does not sell yet:
+buyers paying Alice's own wallet comes next (until then it sells only on a
+proxy run with `--lightning fake`, for testing; the operator's phoenixd
+wallet is never used for a supplier's mint).
+
 Operators list suppliers in a JSON file (`HASHU_SUPPLIERS_FILE`), re-read
 when it changes; only the SHA-256 of each secret is stored:
 
@@ -109,6 +117,12 @@ when it changes; only the SHA-256 of each secret is stored:
 { "suppliers": { "alice": { "secret_sha256": "<sha256 hex of the secret>" } } }
 ```
 
-`printf %s "$SECRET" | sha256sum` gives the hash. Names are 3 to 32
+`printf %s "$SECRET" | sha256sum` gives the hash. A supplier's mint lives
+in `<data-dir>/mints/<name>/` (seed and database; back up the seed) and is
+started on the next request after the name is added. It needs
+`HASHU_MINT_URL` (supplier mints are named under its host) and a wildcard
+DNS record `*.<mint host>`. The bundled Caddy gets each supplier's
+certificate on first visit, asking the mint's `GET /tls-ask?domain=` first,
+which answers 200 only for registered names. Names are 3 to 32
 lowercase letters, digits and hyphens. For testing, `POST /redemptions` on
 the control API (with `--control-allow-open`) takes `"supplier": "alice"`.

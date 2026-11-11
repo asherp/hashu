@@ -74,8 +74,9 @@ services:
       # other miners stay on their home pool, and account-name users with no
       # home pool are refused. Unset: any rig may be borrowed.
       HASHU_OPERATOR_WORKER: ${HASHU_OPERATOR_WORKER:-}
-      # Registered suppliers (their rigs fill only their own orders), a
-      # JSON file in the data volume, e.g. /data/suppliers.json. Unset: none.
+      # Registered suppliers, a JSON file in the data volume, e.g.
+      # /data/suppliers.json. Each gets a mint at <name>.$HASHU_DOMAIN
+      # (wildcard DNS record) filled only by its own rigs. Unset: none.
       HASHU_SUPPLIERS_FILE: ${HASHU_SUPPLIERS_FILE:-}
       # Hosted-mint waitlist for miners at /join/ (sign-ups in
       # /data/waitlist.jsonl, listed at /operator/waitlist). Off unless set.

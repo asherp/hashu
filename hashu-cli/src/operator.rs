@@ -576,7 +576,8 @@ pub async fn obligations(mint: &Mint, ledger: &RedemptionLedger) -> anyhow::Resu
 
     let mut open_count = 0;
     let mut open_remaining_thh = 0.0;
-    for r in ledger.all() {
+    // Suppliers' own mints owe their redemptions, not this one.
+    for r in ledger.all().into_iter().filter(|r| r.supplier.is_none()) {
         if !r.state.is_finished() {
             let filled = r.accumulated_hashes as f64 / HASHES_PER_THH as f64;
             open_remaining_thh += (r.amount_thh as f64 - filled).max(0.0);
