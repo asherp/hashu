@@ -539,6 +539,12 @@ impl Router {
     /// supplier rig with no home pool, or [`MinerIdentity::refusal`].
     pub fn refusal(&self, authorize: &Value) -> Option<String> {
         let id = MinerIdentity::from_params(authorize, &self.home)?;
+        // Hashu's own rigs never need a supplier secret, even if the
+        // registry lists a supplier under the same name.
+        if id.operator {
+            self.warn_if_operator_registered(&id.supplier);
+            return id.refusal(&self.home).map(str::to_string);
+        }
         match self.registry.check(&id.supplier, id.secret.as_deref()) {
             Check::WrongSecret(n) => return Some(format!("{REFUSE_WRONG_SECRET} {n}")),
             Check::Verified(_) if id.home.is_none() => return Some(REFUSE_NO_HOME.to_string()),
@@ -559,13 +565,24 @@ impl Router {
                 Serves::Nobody
             };
         };
+        if i.operator {
+            return Serves::Operator;
+        }
         if let Check::Verified(n) = self.registry.check(&i.supplier, i.secret.as_deref()) {
             return Serves::Supplier(n);
         }
-        if i.operator || open {
+        if open {
             Serves::Operator
         } else {
             Serves::Nobody
+        }
+    }
+
+    /// A supplier registered under the operator's own name can never be
+    /// verified (Hashu's rigs win), so its mint could not fill orders.
+    fn warn_if_operator_registered(&self, name: &str) {
+        if self.registry.contains(name) {
+            tracing::warn!(supplier = %name, "supplier registry lists HASHU_OPERATOR_WORKER's name; Hashu's own rigs take it and that supplier is ignored");
         }
     }
 
@@ -1693,7 +1710,7 @@ mod tests {
         open_for(&ledger, 3, Some("alice"));
         let alice2 = rig(&router, "alice.rig2", home);
         assert_eq!(alice2.route.redemption_id(), Some(rid(3)));
-        // Her home pool password never carries pw=.
+        // Bob's home pool password never carries pw=.
         if let Route::Home {
             worker_password, ..
         } = &bob.route
@@ -1762,6 +1779,25 @@ mod tests {
             refuse("alice.rig1", "pw=a-secret"),
             Some(REFUSE_NO_HOME.to_string())
         );
+    }
+
+    #[test]
+    fn operator_rigs_ignore_a_supplier_with_their_name() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = supplier_router(ledger.clone()).with_suppliers(Arc::new(
+            SupplierRegistry::from_secrets([("hashu", "squatter")]),
+        ));
+        assert_eq!(
+            router.refusal(&serde_json::json!(["hashu.mrr1", "x"])),
+            None
+        );
+        open_for(&ledger, 1, None);
+        open_for(&ledger, 2, Some("hashu"));
+        let op = rig(&router, "hashu.mrr1", "x");
+        assert_eq!(op.route.redemption_id(), Some(rid(1)));
+        // Even with the registered secret, it stays one of Hashu's rigs.
+        let op2 = rig(&router, "hashu.mrr2", "pw=squatter");
+        assert_eq!(op2.route.redemption_id(), Some(rid(1)));
     }
 
     #[test]
