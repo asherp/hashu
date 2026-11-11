@@ -86,6 +86,22 @@ pub struct HomePoolArgs {
     /// refused. Unset: every rig may be borrowed, as before.
     #[arg(long, env = "HASHU_OPERATOR_WORKER")]
     pub operator_worker: Option<String>,
+    /// Registered suppliers (JSON, see `hashu_proxy::suppliers`): rigs
+    /// authorizing as `<name>.<rig>` with `pw=<secret>` fill only orders
+    /// for supplier `<name>`. Re-read when it changes. Unset: none.
+    #[arg(long, env = "HASHU_SUPPLIERS_FILE")]
+    pub suppliers_file: Option<std::path::PathBuf>,
+}
+
+impl HomePoolArgs {
+    /// The supplier registry from `--suppliers-file`, empty if unset.
+    pub fn registry(&self) -> Arc<hashu_proxy::suppliers::SupplierRegistry> {
+        use hashu_proxy::suppliers::SupplierRegistry;
+        Arc::new(match &self.suppliers_file {
+            Some(p) if !p.as_os_str().is_empty() => SupplierRegistry::from_file(p),
+            _ => SupplierRegistry::empty(),
+        })
+    }
 }
 
 impl HomePoolArgs {
@@ -144,7 +160,8 @@ async fn run_listener_cmd(args: RunArgs) -> Result<()> {
     let router = Arc::new(
         Router::new(upstream, ledger.clone())
             .with_switch_mode(args.switch_mode)
-            .with_home_pools(args.home.config()?),
+            .with_home_pools(args.home.config()?)
+            .with_suppliers(args.home.registry()),
     );
     // The router is also the binding: shares credit the redemption the
     // connection was routed to.

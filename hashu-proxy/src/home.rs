@@ -123,6 +123,9 @@ pub struct MinerIdentity {
     pub refused_pool: Option<String>,
     /// One of Hashu's own rigs ([`HomeConfig::operator_worker`]).
     pub operator: bool,
+    /// The `pw=` option: the supplier secret this rig proves its name with
+    /// (see [`crate::suppliers`]). Never passed to a pool.
+    pub secret: Option<String>,
 }
 
 /// Why the proxy refuses a miner, sent back as its authorize error.
@@ -150,12 +153,15 @@ impl MinerIdentity {
         let supplier = user.split('.').next().unwrap_or_default().to_string();
 
         let mut pool: Option<&str> = None;
+        let mut secret: Option<String> = None;
         let mut rest: Vec<&str> = Vec::new();
         for opt in password.split(',').map(str::trim).filter(|o| !o.is_empty()) {
-            match opt.strip_prefix("pool=") {
-                Some(p) if pool.is_none() => pool = Some(p),
-                Some(_) => {}
-                None => rest.push(opt),
+            if let Some(p) = opt.strip_prefix("pool=") {
+                pool = pool.or(Some(p));
+            } else if let Some(pw) = opt.strip_prefix("pw=") {
+                secret = secret.or_else(|| Some(pw.to_string()));
+            } else {
+                rest.push(opt);
             }
         }
         let worker_password = if rest.is_empty() {
@@ -184,6 +190,7 @@ impl MinerIdentity {
         let operator = cfg.is_operator(user);
         Self {
             supplier,
+            secret,
             operator,
             home: upstream.filter(|_| !operator).map(|upstream| HomePool {
                 upstream,
@@ -358,6 +365,17 @@ mod tests {
         let id = MinerIdentity::from_authorize("bob.rig1", "x", &HomeConfig::default());
         assert!(id.borrowable(&HomeConfig::default()));
         assert_eq!(id.refusal(&HomeConfig::default()), None);
+    }
+
+    #[test]
+    fn pw_option_is_kept_out_of_the_pool_password() {
+        let id = MinerIdentity::from_authorize(
+            "alice.rig1",
+            "pw=s3cret,d=512,pool=public-pool.io:21496",
+            &HomeConfig::default(),
+        );
+        assert_eq!(id.secret.as_deref(), Some("s3cret"));
+        assert_eq!(id.home.unwrap().worker_password, "d=512");
     }
 
     #[test]

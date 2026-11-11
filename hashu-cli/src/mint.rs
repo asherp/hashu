@@ -853,7 +853,8 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let router = Arc::new(
         Router::new(upstream.clone(), ledger.clone())
             .with_switch_mode(args.switch_mode)
-            .with_home_pools(args.home.config()?),
+            .with_home_pools(args.home.config()?)
+            .with_suppliers(args.home.registry()),
     );
     let crediter = Arc::new(ShareCrediter::with_audit(ledger.clone(), audit.clone()));
     let credit = CreditContext::new(crediter, router.clone());

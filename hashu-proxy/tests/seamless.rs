@@ -759,3 +759,101 @@ async fn account_miner_without_home_is_refused_when_operator_worker_is_set() {
     // submits as `miner.1`).
     expect_submit(&mut seen, "default", "miner.1", &cb).await;
 }
+
+/// A registered supplier's rig fills its own mint's order end to end;
+/// an unregistered Bitaxe on the same proxy is left on its home pool.
+#[tokio::test]
+async fn supplier_order_is_filled_by_that_suppliers_rig_only() {
+    use hashu_proxy::home::HomeConfig;
+    use hashu_proxy::suppliers::SupplierRegistry;
+
+    let (tx, mut seen) = mpsc::unbounded_channel();
+    let default_pool = fake_pool(default_cfg(), tx.clone()).await;
+    let home_pool = fake_pool(
+        PoolCfg {
+            name: "home",
+            en1: "a0a1a2a3",
+            job: "hj1",
+            ..default_cfg()
+        },
+        tx.clone(),
+    )
+    .await;
+    let redeemer = fake_pool(redeemer_cfg(), tx).await;
+    let ledger = Arc::new(RedemptionLedger::new());
+    let router = Arc::new(
+        Router::new(default_pool, ledger.clone())
+            .with_home_pools(HomeConfig {
+                solo_upstream: None,
+                allowed_hosts: vec!["127.0.0.1".into()],
+                operator_worker: Some("hashu".into()),
+            })
+            .with_suppliers(Arc::new(SupplierRegistry::from_secrets([(
+                "alice", "s3cret",
+            )]))),
+    );
+    let credit = CreditContext::new(Arc::new(ShareCrediter::new(ledger.clone())), router.clone());
+    let (proxy, _metrics) = spawn_proxy(router.clone(), Some(credit)).await;
+
+    let home = format!("pool=stratum+tcp://{home_pool}");
+    let mut stranger = Miner::connect_as(
+        &proxy,
+        None,
+        false,
+        "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq.x",
+        &home,
+    )
+    .await;
+    let mut alice = Miner::connect_as(
+        &proxy,
+        None,
+        false,
+        "alice.rig1",
+        &format!("pw=s3cret,{home}"),
+    )
+    .await;
+    for _ in 0..2 {
+        assert!(matches!(
+            recv(&mut seen).await,
+            Seen::Auth { pool: "home", .. }
+        ));
+    }
+
+    let id = RedemptionId::from_bytes([9; 16]);
+    ledger
+        .open(
+            Redemption::new(
+                id,
+                1,
+                format!("stratum+tcp://{redeemer}"),
+                "buyer.rig".into(),
+            )
+            .with_supplier(Some("alice".into())),
+        )
+        .unwrap();
+    alice.until_job("rj1").await;
+    assert_eq!(recv(&mut seen).await, auth("redeemer", "buyer.rig"));
+    for _ in 0..2 {
+        let cb = alice.submit_on(None).await;
+        expect_submit(&mut seen, "redeemer", "buyer.rig", &cb).await;
+        assert_eq!(alice.submit_result().await, true);
+    }
+    assert_eq!(ledger.get(&id).unwrap().state, RedemptionState::Completed);
+    alice.until_job("hj1").await;
+
+    // The stranger never left home: its next share still goes there.
+    let cb = stranger.submit_on(None).await;
+    loop {
+        match recv(&mut seen).await {
+            Seen::Submit { pool, coinbase, .. } if coinbase == cb => {
+                assert_eq!(pool, "home");
+                break;
+            }
+            _ => {}
+        }
+    }
+    let sup = router.suppliers();
+    let a = sup.iter().find(|s| s.supplier == "alice").unwrap();
+    assert!(a.verified);
+    assert_eq!(a.delivered_hashes, 2.0 * (1u64 << 51) as f64);
+}

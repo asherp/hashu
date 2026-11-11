@@ -57,7 +57,12 @@ use serde_json::Value;
 use tokio::sync::{broadcast, watch};
 
 use crate::credit::{ConnectionId, RedemptionBinding};
-use crate::home::{HomeConfig, MinerIdentity};
+use crate::home::{HomeConfig, MinerIdentity, REFUSE_NO_HOME};
+use crate::suppliers::{Check, SupplierRegistry};
+
+/// Start of the authorize error for a supplier name with a wrong or
+/// missing `pw=`; the name follows.
+pub const REFUSE_WRONG_SECRET: &str = "wrong or missing pw= for supplier";
 use crate::upstream::normalize_upstream;
 
 /// How long a connection that fell back to the default pool (redeemer's
@@ -293,9 +298,36 @@ struct Binding {
     idle: Route,
     /// Supplier key from the miner's authorize, once seen.
     supplier: Option<String>,
-    /// May be borrowed for redemptions (see
-    /// [`crate::home::HomeConfig::operator_worker`]).
-    borrowable: bool,
+    /// Which orders this rig may fill.
+    serves: Serves,
+}
+
+/// Which orders a rig may fill.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Serves {
+    /// Orders from the operator's own mint (`supplier: None`): Hashu's
+    /// rigs, or any unregistered rig when no
+    /// [`crate::home::HomeConfig::operator_worker`] is set.
+    Operator,
+    /// Orders from this registered supplier's mint only.
+    Supplier(String),
+    /// None: the rig mines to its home pool and is never borrowed.
+    Nobody,
+}
+
+impl Serves {
+    /// Whether a rig with this role may fill `r`.
+    pub fn fits(&self, r: &Redemption) -> bool {
+        match self {
+            Serves::Operator => r.supplier.is_none(),
+            Serves::Supplier(n) => r.supplier.as_deref() == Some(n.as_str()),
+            Serves::Nobody => false,
+        }
+    }
+
+    fn filter(&self, active: &[Redemption]) -> Vec<Redemption> {
+        active.iter().filter(|r| self.fits(r)).cloned().collect()
+    }
 }
 
 impl Binding {
@@ -335,6 +367,7 @@ pub struct Router {
     ledger: Arc<RedemptionLedger>,
     mode: SwitchMode,
     home: HomeConfig,
+    registry: Arc<SupplierRegistry>,
     inner: Mutex<Inner>,
 }
 
@@ -355,6 +388,7 @@ impl Router {
             ledger,
             mode: SwitchMode::default(),
             home: HomeConfig::off(),
+            registry: Arc::new(SupplierRegistry::empty()),
             inner: Mutex::new(Inner::default()),
         }
     }
@@ -363,6 +397,19 @@ impl Router {
     pub fn with_home_pools(mut self, cfg: HomeConfig) -> Self {
         self.home = cfg;
         self
+    }
+
+    /// Registered suppliers whose rigs fill only their own mint's orders
+    /// (see [`crate::suppliers`]). Empty by default.
+    pub fn with_suppliers(mut self, registry: Arc<SupplierRegistry>) -> Self {
+        self.registry = registry;
+        self
+    }
+
+    /// Whether the proxy should read each miner's authorize before placing
+    /// it: home pools, Hashu's own rigs or suppliers are configured.
+    pub fn wants_authorize(&self) -> bool {
+        self.home != HomeConfig::off() || self.registry.path_configured()
     }
 
     pub fn home_config(&self) -> &HomeConfig {
@@ -402,15 +449,12 @@ impl Router {
             tracing::warn!(%conn, reason = %why, "ignoring the miner's pool= option");
         }
         let idle = self.idle_route(identity.as_ref());
-        let borrowable = self.borrowable(identity.as_ref());
-        let active = if borrowable {
-            self.routable_active()
-        } else {
-            Vec::new()
-        };
+        let serves = self.serves(identity.as_ref());
+        let all = self.routable_active();
+        let active = serves.filter(&all);
         let now = Instant::now();
         let mut inner = self.lock();
-        inner.track_unserved(&self.routable_active(), now);
+        inner.track_unserved(&all, now);
         let route = pick_route(&active, &inner, None, now, &idle);
         let (tx, rx) = watch::channel(Signal::Stay);
         inner.conns.insert(
@@ -422,8 +466,11 @@ impl Router {
                 pending: None,
                 rate: RigRate::new(now),
                 idle,
-                supplier: identity.map(|i| i.supplier),
-                borrowable,
+                supplier: identity.map(|i| match &serves {
+                    Serves::Supplier(n) => n.clone(),
+                    _ => i.supplier,
+                }),
+                serves,
             },
         );
         match &route {
@@ -471,12 +518,15 @@ impl Router {
             return;
         };
         let idle = self.idle_route(Some(&id));
-        let borrowable = self.borrowable(Some(&id));
+        let serves = self.serves(Some(&id));
         if let Some(b) = self.lock().conns.get_mut(&conn) {
-            b.borrowable = borrowable;
             if b.supplier.is_none() {
-                b.supplier = Some(id.supplier);
+                b.supplier = Some(match &serves {
+                    Serves::Supplier(n) => n.clone(),
+                    _ => id.supplier,
+                });
             }
+            b.serves = serves;
             if matches!(b.idle, Route::Default { .. }) && matches!(idle, Route::Home { .. }) {
                 tracing::info!(%conn, upstream = idle.upstream(), "miner has a home pool; it goes there after its next redemption or reconnect");
                 b.idle = idle;
@@ -484,19 +534,68 @@ impl Router {
         }
     }
 
-    /// `Some(reason)` if a miner with this authorize must be refused (see
-    /// [`MinerIdentity::refusal`]).
-    pub fn refusal(&self, authorize: &Value) -> Option<&'static str> {
-        MinerIdentity::from_params(authorize, &self.home)?.refusal(&self.home)
+    /// `Some(reason)` if a miner with this authorize must be refused: a
+    /// registered supplier's name with a wrong or missing `pw=`, a
+    /// supplier rig with no home pool, or [`MinerIdentity::refusal`].
+    pub fn refusal(&self, authorize: &Value) -> Option<String> {
+        let id = MinerIdentity::from_params(authorize, &self.home)?;
+        // Hashu's own rigs never need a supplier secret, even if the
+        // registry lists a supplier under the same name.
+        if id.operator {
+            self.warn_if_operator_registered(&id.supplier);
+            return id.refusal(&self.home).map(str::to_string);
+        }
+        match self.registry.check(&id.supplier, id.secret.as_deref()) {
+            Check::WrongSecret(n) => return Some(format!("{REFUSE_WRONG_SECRET} {n}")),
+            Check::Verified(_) if id.home.is_none() => return Some(REFUSE_NO_HOME.to_string()),
+            Check::Verified(_) => return None,
+            Check::Unregistered => {}
+        }
+        id.refusal(&self.home).map(str::to_string)
     }
 
-    /// Whether a miner may be borrowed for redemptions. With Hashu's own
-    /// rigs set, a miner not yet identified is not.
-    fn borrowable(&self, identity: Option<&MinerIdentity>) -> bool {
-        match identity {
-            Some(i) => i.borrowable(&self.home),
-            None => self.home.operator_worker.is_none(),
+    /// Which orders a miner may fill. With Hashu's own rigs set, a miner
+    /// not yet identified fills none.
+    fn serves(&self, identity: Option<&MinerIdentity>) -> Serves {
+        let open = self.home.operator_worker.is_none();
+        let Some(i) = identity else {
+            return if open {
+                Serves::Operator
+            } else {
+                Serves::Nobody
+            };
+        };
+        if i.operator {
+            return Serves::Operator;
         }
+        if let Check::Verified(n) = self.registry.check(&i.supplier, i.secret.as_deref()) {
+            return Serves::Supplier(n);
+        }
+        if open {
+            Serves::Operator
+        } else {
+            Serves::Nobody
+        }
+    }
+
+    /// A supplier registered under the operator's own name can never be
+    /// verified (Hashu's rigs win), so its mint could not fill orders.
+    fn warn_if_operator_registered(&self, name: &str) {
+        if self.registry.contains(name) {
+            tracing::warn!(supplier = %name, "supplier registry lists HASHU_OPERATOR_WORKER's name; Hashu's own rigs take it and that supplier is ignored");
+        }
+    }
+
+    /// Live hashrate (hashes per second) of a registered supplier's
+    /// verified rigs: what its mint can sell against.
+    pub fn supplier_hashrate(&self, name: &str) -> f64 {
+        let now = Instant::now();
+        self.lock()
+            .conns
+            .values()
+            .filter(|b| b.serves == Serves::Supplier(name.to_string()))
+            .filter_map(|b| b.rate.rate(now))
+            .sum()
     }
 
     /// Where a miner with `identity` goes while no order needs it.
@@ -525,11 +624,13 @@ impl Router {
             hashrate: 0.0,
             home_upstream: None,
             delivered_hashes: 0.0,
+            verified: false,
         };
         for b in inner.conns.values() {
             let Some(k) = &b.supplier else { continue };
             let v = out.entry(k.clone()).or_insert_with(|| view(k));
             v.connections += 1;
+            v.verified |= matches!(b.serves, Serves::Supplier(_));
             v.hashrate += b.rate.rate(now).unwrap_or(0.0);
             if let Route::Home { upstream, .. } = &b.idle {
                 v.home_upstream = Some(upstream.clone());
@@ -668,22 +769,23 @@ impl Router {
                 if b.pending.is_some() || *b.signal.borrow() == Signal::Kick {
                     continue;
                 }
+                let mine = b.serves.filter(&active);
                 match &b.route {
                     Route::Redemption { id, .. } => {
-                        if b.borrowable && active.iter().any(|r| r.id == *id) {
+                        if mine.iter().any(|r| r.id == *id) {
                             continue;
                         }
-                        if b.holding() || !b.borrowable {
+                        if b.holding() {
                             b.idle.clone()
                         } else {
-                            pick_route(&active, &inner, Some(conn), now, &b.idle)
+                            pick_route(&mine, &inner, Some(conn), now, &b.idle)
                         }
                     }
                     Route::Default { .. } | Route::Home { .. } => {
-                        if active.is_empty() || b.holding() || !b.borrowable {
+                        if mine.is_empty() || b.holding() {
                             continue;
                         }
-                        let t = pick_route(&active, &inner, Some(conn), now, &b.idle);
+                        let t = pick_route(&mine, &inner, Some(conn), now, &b.idle);
                         // Every order is capped: stay on the default pool.
                         if t.redemption_id().is_none() {
                             continue;
@@ -909,6 +1011,8 @@ pub struct SupplierView {
     pub home_upstream: Option<String>,
     /// Work delivered to redemptions, in hashes.
     pub delivered_hashes: f64,
+    /// A live connection proved it is this registered supplier (`pw=`).
+    pub verified: bool,
 }
 
 #[cfg(test)]
@@ -1537,7 +1641,7 @@ mod tests {
         let router = operator_router(Arc::new(RedemptionLedger::new()));
         assert_eq!(
             router.refusal(&serde_json::json!(["bob.rig1", "x"])),
-            Some(crate::home::REFUSE_NO_HOME)
+            Some(crate::home::REFUSE_NO_HOME.to_string())
         );
         assert_eq!(
             router.refusal(&serde_json::json!(["hashu.mrr1", "x"])),
@@ -1556,6 +1660,162 @@ mod tests {
             open_router.refusal(&serde_json::json!(["bob.rig1", "x"])),
             None
         );
+    }
+
+    fn supplier_router(ledger: Arc<RedemptionLedger>) -> Router {
+        Router::new("default:3333", ledger)
+            .with_home_pools(HomeConfig {
+                operator_worker: Some("hashu".into()),
+                ..HomeConfig::default()
+            })
+            .with_suppliers(Arc::new(SupplierRegistry::from_secrets([
+                ("alice", "a-secret"),
+                ("bob", "b-secret"),
+            ])))
+    }
+
+    fn open_for(ledger: &RedemptionLedger, n: u8, supplier: Option<&str>) {
+        ledger
+            .open(
+                Redemption::new(
+                    rid(n),
+                    1,
+                    format!("stratum+tcp://buyer{n}:3333"),
+                    format!("buyer{n}.w"),
+                )
+                .with_supplier(supplier.map(str::to_string)),
+            )
+            .unwrap();
+    }
+
+    fn rig(router: &Router, user: &str, pw: &str) -> Assignment {
+        router.assign_with(ConnectionId::next(), Some(&serde_json::json!([user, pw])))
+    }
+
+    #[test]
+    fn orders_only_go_to_their_own_suppliers_rigs() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = supplier_router(ledger.clone());
+        open_for(&ledger, 1, Some("alice"));
+        open_for(&ledger, 2, None);
+
+        let home = "pw=a-secret,pool=public-pool.io:21496";
+        let alice = rig(&router, "alice.rig1", home);
+        assert_eq!(alice.route.redemption_id(), Some(rid(1)));
+        let bob = rig(&router, "bob.rig1", "pw=b-secret,pool=public-pool.io:21496");
+        assert!(matches!(bob.route, Route::Home { .. }), "{:?}", bob.route);
+        let op = rig(&router, "hashu.mrr1", "x");
+        assert_eq!(op.route.redemption_id(), Some(rid(2)));
+        // A second order from Alice goes to her next rig, in parallel.
+        open_for(&ledger, 3, Some("alice"));
+        let alice2 = rig(&router, "alice.rig2", home);
+        assert_eq!(alice2.route.redemption_id(), Some(rid(3)));
+        // Bob's home pool password never carries pw=.
+        if let Route::Home {
+            worker_password, ..
+        } = &bob.route
+        {
+            assert!(!worker_password.contains("pw="));
+        }
+    }
+
+    #[test]
+    fn spare_supplier_rigs_join_an_open_order() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = supplier_router(ledger.clone());
+        open_for(&ledger, 1, Some("alice"));
+        let home = "pw=a-secret,pool=public-pool.io:21496";
+        let a = rig(&router, "alice.rig1", home);
+        let b = rig(&router, "alice.rig2", home);
+        assert_eq!(a.route.redemption_id(), Some(rid(1)));
+        assert_eq!(
+            b.route.redemption_id(),
+            Some(rid(1)),
+            "one invoice, several rigs"
+        );
+    }
+
+    #[test]
+    fn supplier_rigs_go_home_when_their_order_fills() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = supplier_router(ledger.clone());
+        let a = rig(
+            &router,
+            "alice.rig1",
+            "pw=a-secret,pool=public-pool.io:21496",
+        );
+        assert!(matches!(a.route, Route::Home { .. }));
+        // Another supplier's or the operator's order never takes her rig.
+        open_for(&ledger, 1, Some("bob"));
+        open_for(&ledger, 2, None);
+        assert_eq!(router.reconcile(), 0);
+        open_for(&ledger, 3, Some("alice"));
+        assert_eq!(router.reconcile(), 1);
+        let t = switch_target(&a);
+        assert_eq!(t.redemption_id(), Some(rid(3)));
+        router.switched(a.conn, t);
+        ledger.credit_share(&rid(3), 1e9).unwrap();
+        assert_eq!(router.reconcile(), 1);
+        assert!(matches!(switch_target(&a), Route::Home { .. }));
+    }
+
+    #[test]
+    fn supplier_names_need_their_secret_and_a_home() {
+        let router = supplier_router(Arc::new(RedemptionLedger::new()));
+        let refuse = |u: &str, p: &str| router.refusal(&serde_json::json!([u, p]));
+        assert_eq!(
+            refuse("alice.rig1", "pw=a-secret,pool=public-pool.io:21496"),
+            None
+        );
+        assert_eq!(
+            refuse("alice.rig1", "pw=wrong,pool=public-pool.io:21496"),
+            Some(format!("{REFUSE_WRONG_SECRET} alice"))
+        );
+        assert_eq!(
+            refuse("alice.rig1", "pool=public-pool.io:21496"),
+            Some(format!("{REFUSE_WRONG_SECRET} alice"))
+        );
+        assert_eq!(
+            refuse("alice.rig1", "pw=a-secret"),
+            Some(REFUSE_NO_HOME.to_string())
+        );
+    }
+
+    #[test]
+    fn operator_rigs_ignore_a_supplier_with_their_name() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = supplier_router(ledger.clone()).with_suppliers(Arc::new(
+            SupplierRegistry::from_secrets([("hashu", "squatter")]),
+        ));
+        assert_eq!(
+            router.refusal(&serde_json::json!(["hashu.mrr1", "x"])),
+            None
+        );
+        open_for(&ledger, 1, None);
+        open_for(&ledger, 2, Some("hashu"));
+        let op = rig(&router, "hashu.mrr1", "x");
+        assert_eq!(op.route.redemption_id(), Some(rid(1)));
+        // Even with the registered secret, it stays one of Hashu's rigs.
+        let op2 = rig(&router, "hashu.mrr2", "pw=squatter");
+        assert_eq!(op2.route.redemption_id(), Some(rid(1)));
+    }
+
+    #[test]
+    fn supplier_hashrate_counts_only_verified_rigs() {
+        let router = supplier_router(Arc::new(RedemptionLedger::new()));
+        let a = rig(
+            &router,
+            "alice.rig1",
+            "pw=a-secret,pool=public-pool.io:21496",
+        );
+        let fake = rig(&router, "alicex.rig1", "pool=public-pool.io:21496");
+        warm(&router, a.conn, 1.0, Instant::now());
+        warm(&router, fake.conn, 1.0, Instant::now());
+        assert!(router.supplier_hashrate("alice") > 0.0);
+        assert_eq!(router.supplier_hashrate("alicex"), 0.0);
+        let v = router.suppliers();
+        assert!(v.iter().any(|s| s.supplier == "alice" && s.verified));
+        assert!(v.iter().any(|s| s.supplier == "alicex" && !s.verified));
     }
 
     #[test]

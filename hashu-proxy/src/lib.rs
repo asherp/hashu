@@ -11,6 +11,7 @@ pub mod home;
 pub mod meter;
 pub mod router;
 pub mod stratum;
+pub mod suppliers;
 pub mod upstream;
 
 /// Counters maintained by the proxy. Updated atomically; readable
