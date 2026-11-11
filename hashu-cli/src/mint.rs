@@ -60,6 +60,7 @@ use crate::landing;
 use crate::network::{default_esplora_url, parse_network};
 use crate::operator::{self, ControlledPricer, DaemonInfo, MintControls, OperatorState};
 use crate::orders::OrderBook;
+use crate::waitlist::{self, Waitlist};
 
 /// Public JSON-RPC endpoints the stablecoin rails watch by default: USDT
 /// on Ethereum mainnet, USDC on Base. Fine to start; a mint taking real
@@ -153,6 +154,11 @@ pub struct RunArgs {
     /// Smallest redemption, in THH.
     #[arg(long, default_value_t = hashu_mint::melt::DEFAULT_MIN_THH)]
     pub min_redeem_thh: u64,
+    /// Serve the hosted-mint waitlist for miners at `/join/` and store
+    /// sign-ups in `<data-dir>/waitlist.jsonl` (operator view at
+    /// `/waitlist` on the control API). Off: `/join/` is a 404.
+    #[arg(long, env = "HASHU_WAITLIST", default_value_t = false)]
+    pub waitlist: bool,
 
     // ---- pricing ----------------------------------------------------
     /// Where the sats price of a THH comes from.
@@ -839,11 +845,22 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         ),
     ));
 
-    let app = cdk_axum::create_mint_router(mint.clone(), methods)
+    let waitlist = if args.waitlist {
+        let path = args.data_dir.join("waitlist.jsonl");
+        Some(Arc::new(
+            Waitlist::open(path.clone()).with_context(|| format!("open waitlist {path:?}"))?,
+        ))
+    } else {
+        None
+    };
+    let mut app = cdk_axum::create_mint_router(mint.clone(), methods)
         .await
         .context("build mint HTTP router")?
         .merge(checkout::router(checkout.clone()))
         .merge(landing::router());
+    if let Some(w) = &waitlist {
+        app = app.merge(waitlist::router(w.clone()));
+    }
     let http = tokio::net::TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("bind mint API on {}", args.listen))?;
@@ -915,6 +932,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             },
             started_ms,
             checkout: checkout.clone(),
+            waitlist: waitlist.clone(),
         });
         let listener = tokio::net::TcpListener::bind(bind)
             .await

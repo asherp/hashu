@@ -61,6 +61,7 @@ again at startup, so running them without compose fails the same way.
 | `HASHU_MINT_CONTACT` | no | Operator contact, `method:info` pairs, comma separated (`email:ops@example.com,nostr:npub1...`). Shown in wallets and on the landing page; default none. |
 | `HASHU_OPERATOR_WORKER` | no | Your own rigs' pool user (rigs mine as `<user>.<rig>`). Set: only those rigs fill this mint's orders, other miners stay on their home pool. Unset: any connected rig may be borrowed. |
 | `HASHU_HOME_SOLO_UPSTREAM`, `HASHU_HOME_POOLS`, `HASHU_HOME_POOLS_OFF` | no | Home pools for Bitaxes ([docs/mine/bitaxe.md](../docs/mine/bitaxe.md)): default solo pool `solo.ckpool.org:3333`, allowed `pool=` hosts (public pools), or `true` to turn home pools off. |
+| `HASHU_WAITLIST` | no | `true` serves the hosted-mint waitlist for miners at `/join/` (contact plus optional mint name, hashrate and note; no IPs stored; rate limited). Sign-ups go to `waitlist.jsonl` in the data volume and are listed, exported as CSV and deleted at `/operator/waitlist`. Default `false`. |
 | `HASHU_STRATUM_PORT` | no | Host port for miners, default `3335`. |
 | `HASHU_PRICE`, `HASHU_SATS_PER_THH`, `HASHU_NETWORK` | no | Pricing: `mrr` (default), `esplora` or `fixed`; fallback 40 sats/THH. |
 | `HASHU_LIGHTNING`, `PHOENIXD_CHAIN` | no | `phoenixd` (default), `fake`, `off`; `mainnet`. |

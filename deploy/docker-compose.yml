@@ -77,6 +77,9 @@ services:
       # Registered suppliers (their rigs fill only their own orders), a
       # JSON file in the data volume, e.g. /data/suppliers.json. Unset: none.
       HASHU_SUPPLIERS_FILE: ${HASHU_SUPPLIERS_FILE:-}
+      # Hosted-mint waitlist for miners at /join/ (sign-ups in
+      # /data/waitlist.jsonl, listed at /operator/waitlist). Off unless set.
+      HASHU_WAITLIST: ${HASHU_WAITLIST:-false}
       # Fallback price while the live (MRR) source has no fresh sample.
       HASHU_SATS_PER_THH: ${HASHU_SATS_PER_THH:-40}
       # Lightning: mainnet phoenixd, limited-access password (can create
