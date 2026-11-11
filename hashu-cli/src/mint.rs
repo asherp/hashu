@@ -60,6 +60,7 @@ use crate::landing;
 use crate::network::{default_esplora_url, parse_network};
 use crate::operator::{self, ControlledPricer, DaemonInfo, MintControls, OperatorState};
 use crate::orders::OrderBook;
+use crate::tenants::{self, TenantConfig, Tenants};
 
 /// Public JSON-RPC endpoints the stablecoin rails watch by default: USDT
 /// on Ethereum mainnet, USDC on Base. Fine to start; a mint taking real
@@ -402,7 +403,7 @@ fn sats_pricer(
 /// payment rail or a new description would never show up in `/v1/info`.
 /// Overwrite the stored copy with this boot's, keeping the pubkey cdk
 /// derived from the keysets.
-async fn refresh_stored_mint_info(
+pub(crate) async fn refresh_stored_mint_info(
     mint: &cdk::mint::Mint,
     mut info: cdk::nuts::MintInfo,
 ) -> Result<()> {
@@ -419,7 +420,7 @@ async fn refresh_stored_mint_info(
 }
 
 /// Load the mint seed from `dir/seed.hex`, creating it on first run.
-fn load_or_create_seed(dir: &Path) -> Result<Vec<u8>> {
+pub(crate) fn load_or_create_seed(dir: &Path) -> Result<Vec<u8>> {
     let path = dir.join("seed.hex");
     if path.exists() {
         let s = std::fs::read_to_string(&path).with_context(|| format!("read {path:?}"))?;
@@ -687,7 +688,9 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let mut rails = Vec::new();
 
     // Lightning: mint-only.
+    let mut fake_lightning = false;
     if let Some((node, kind)) = lightning_node(&args).await? {
+        fake_lightning = kind == "fake";
         let issuer = ThhIssuer::new(sats_controlled.clone(), node, CurrencyUnit::Sat);
         builder = add_lightning_issuance(builder, issuer, limits)
             .await
@@ -839,11 +842,26 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         ),
     ));
 
-    let app = cdk_axum::create_mint_router(mint.clone(), methods)
+    // Registered suppliers' mints, on <name>.<this mint's host>.
+    let registry = args.home.registry();
+    let tenants = supplier_mints(&args, &registry, &ledger, fake_lightning, &sats_controlled);
+    if let Some(t) = &tenants {
+        t.start_all().await;
+    }
+
+    let mut app = cdk_axum::create_mint_router(mint.clone(), methods)
         .await
         .context("build mint HTTP router")?
         .merge(checkout::router(checkout.clone()))
         .merge(landing::router());
+    if let Some(t) = &tenants {
+        app =
+            app.merge(tenants::ask_router(t.clone()))
+                .layer(axum::middleware::from_fn_with_state(
+                    t.clone(),
+                    tenants::dispatch,
+                ));
+    }
     let http = tokio::net::TcpListener::bind(args.listen)
         .await
         .with_context(|| format!("bind mint API on {}", args.listen))?;
@@ -854,7 +872,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         Router::new(upstream.clone(), ledger.clone())
             .with_switch_mode(args.switch_mode)
             .with_home_pools(args.home.config()?)
-            .with_suppliers(args.home.registry()),
+            .with_suppliers(registry),
     );
     let crediter = Arc::new(ShareCrediter::with_audit(ledger.clone(), audit.clone()));
     let credit = CreditContext::new(crediter, router.clone());
@@ -956,7 +974,48 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     if let Err(e) = mint.stop().await {
         tracing::warn!(error = %e, "mint stop");
     }
+    if let Some(t) = &tenants {
+        t.stop_all().await;
+    }
     result
+}
+
+/// Supplier mints, when a supplier registry is configured and this mint
+/// has a public URL to name them under.
+fn supplier_mints(
+    args: &RunArgs,
+    registry: &Arc<hashu_proxy::suppliers::SupplierRegistry>,
+    ledger: &Arc<RedemptionLedger>,
+    fake_lightning: bool,
+    sats: &Arc<ControlledPricer>,
+) -> Option<Arc<Tenants>> {
+    if !registry.path_configured() {
+        return None;
+    }
+    let base = args
+        .mint_url
+        .as_deref()
+        .and_then(|u| u.trim().parse::<axum::http::Uri>().ok())
+        .and_then(|u| u.host().map(str::to_string));
+    let Some(base) = base else {
+        tracing::warn!(
+            "HASHU_SUPPLIERS_FILE is set but HASHU_MINT_URL is not a URL: supplier mints \
+             (<name>.<mint host>) are off"
+        );
+        return None;
+    };
+    tracing::info!(host = %format!("*.{base}"), "serving supplier mints");
+    Some(Arc::new(Tenants::new(
+        TenantConfig {
+            base,
+            dir: args.data_dir.join("mints"),
+            ledger: ledger.clone(),
+            min_redeem_thh: args.min_redeem_thh,
+            max_thh: args.max_thh,
+            fake_lightning: fake_lightning.then(|| sats.clone() as Arc<dyn ThhPricer>),
+        },
+        registry.clone(),
+    )))
 }
 
 #[cfg(test)]

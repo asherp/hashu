@@ -123,6 +123,14 @@ impl SupplierRegistry {
         self.lock().entries.contains_key(name)
     }
 
+    /// Registered names, sorted.
+    pub fn names(&self) -> Vec<String> {
+        self.refresh();
+        let mut v: Vec<String> = self.lock().entries.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
     /// Check rig `user` (`<name>.<rig>`) with `secret` from its `pw=`.
     pub fn check(&self, user: &str, secret: Option<&str>) -> Check {
         self.refresh();

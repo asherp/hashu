@@ -6,6 +6,16 @@
 # same site, with the project splash page at /; Caddy only gets their
 # certificates once their A records point here, and $HASHU_DOMAIN keeps
 # working either way.
+{
+	# Supplier mints (<name>.$HASHU_DOMAIN, see below) get their
+	# certificates on first visit. The mint answers this check with 200
+	# only for a registered supplier, so made-up names never reach
+	# Let's Encrypt.
+	on_demand_tls {
+		ask http://hashu:8085/tls-ask
+	}
+}
+
 {$HASHU_DOMAIN} {$HASHU_EXTRA_DOMAINS} {
 	encode gzip
 
@@ -72,6 +82,18 @@
 	handle {
 		reverse_proxy hashu:8085
 	}
+}
+
+# Supplier mints: alice.$HASHU_DOMAIN is supplier alice's mint (registered
+# in HASHU_SUPPLIERS_FILE), served by the same hashu process, which picks
+# the mint by Host. Needs one wildcard DNS record, *.$HASHU_DOMAIN, pointing
+# here. Certificates are per name, on demand (no DNS challenge needed).
+*.{$HASHU_DOMAIN} {
+	tls {
+		on_demand
+	}
+	encode gzip
+	reverse_proxy hashu:8085
 }
 
 # MDK dashboard demo (Hashu Heater app on a mock heater), only when
