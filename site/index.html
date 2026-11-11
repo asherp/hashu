@@ -193,7 +193,7 @@ fetch('/checkout/api/info', { cache: 'no-store' })
     markSoldOut(i.available_thh === 0 || !!i.issuance_paused);
     const live = document.getElementById('live-status');
     if (live && (i.issuance_paused || i.available_thh === 0)) {
-      live.textContent = 'Demo mint on mainnet (sales ' + (i.issuance_paused ? 'paused' : 'sold out') + '). Run your own to sell your hashrate.';
+      live.textContent = 'Demo mint on mainnet (' + (i.issuance_paused ? 'sales paused' : 'sold out') + '). Run your own to sell your hashrate.';
     }
     if (!/^https?:\/\//.test(i.mint_url || '')) return;
     const base = i.mint_url.replace(/\/+$/, '') + '/';
