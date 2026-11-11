@@ -116,6 +116,9 @@ pub struct HashrateMelter {
     ledger: Arc<RedemptionLedger>,
     min_thh: u64,
     max_thh: Option<u64>,
+    /// The registered supplier whose mint this is; `None` for the
+    /// operator's own mint. Its redemptions go only to that supplier's rigs.
+    supplier: Option<String>,
 }
 
 impl HashrateMelter {
@@ -124,7 +127,24 @@ impl HashrateMelter {
             ledger,
             min_thh: DEFAULT_MIN_THH,
             max_thh: None,
+            supplier: None,
         }
+    }
+
+    /// Melter for supplier `name`'s mint: its redemptions carry the name,
+    /// so only that supplier's rigs fill them, and their ids are scoped to
+    /// it so two mints never share one redemption.
+    pub fn with_supplier(mut self, name: impl Into<String>) -> Self {
+        self.supplier = Some(name.into());
+        self
+    }
+
+    fn id_for(&self, request: &str) -> RedemptionId {
+        redemption_id_in(self.supplier.as_deref(), request)
+    }
+
+    fn open_redemption(&self, r: Redemption) -> Redemption {
+        r.with_supplier(self.supplier.clone())
     }
 
     /// Largest accepted redemption. cdk's melt limits only see the quote
@@ -188,8 +208,23 @@ impl HashrateMelter {
 /// quotes for one invoice: once one is pending or paid the other is
 /// refused, so nobody pays twice for one redemption.
 pub fn redemption_id_for(request: &str) -> RedemptionId {
+    redemption_id_in(None, request)
+}
+
+/// [`redemption_id_for`] on supplier `supplier`'s mint. Every mint in one
+/// process writes to the same ledger, so a supplier's ids hash the name in
+/// too: the same request melted on two mints is two redemptions. The
+/// operator's mint (`None`) keeps the plain hash, so its existing ids hold.
+pub fn redemption_id_in(supplier: Option<&str>, request: &str) -> RedemptionId {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(request.as_bytes());
+    let mut h = Sha256::new();
+    if let Some(s) = supplier {
+        h.update(b"hashu-supplier:");
+        h.update(s.as_bytes());
+        h.update(b"\n");
+    }
+    h.update(request.as_bytes());
+    let digest = h.finalize();
     let mut id = [0u8; 16];
     id.copy_from_slice(&digest[..16]);
     RedemptionId::from_bytes(id)
@@ -225,6 +260,15 @@ pub fn reopen_pending_quotes(
     ledger: &RedemptionLedger,
     quotes: &[cdk::mint::MeltQuote],
 ) -> Vec<RedemptionId> {
+    reopen_pending_quotes_in(None, ledger, quotes)
+}
+
+/// [`reopen_pending_quotes`] for supplier `supplier`'s mint.
+pub fn reopen_pending_quotes_in(
+    supplier: Option<&str>,
+    ledger: &RedemptionLedger,
+    quotes: &[cdk::mint::MeltQuote],
+) -> Vec<RedemptionId> {
     let hashrate = cdk::nuts::PaymentMethod::Custom(METHOD.into());
     let mut reopened = Vec::new();
     for quote in quotes {
@@ -232,7 +276,7 @@ pub fn reopen_pending_quotes(
             continue;
         }
         let request = quote.request.to_string();
-        let id = redemption_id_for(&request);
+        let id = redemption_id_in(supplier, &request);
         if ledger.get(&id).is_some() {
             continue;
         }
@@ -241,14 +285,11 @@ pub fn reopen_pending_quotes(
             continue;
         };
         let floor = req.amount_thh.saturating_sub(quote.fee_reserve().value());
-        if ledger
-            .open(
-                Redemption::new(id, req.amount_thh, req.pool_url, req.worker_name)
-                    .with_password(req.worker_password)
-                    .with_floor(floor),
-            )
-            .is_ok()
-        {
+        let r = Redemption::new(id, req.amount_thh, req.pool_url, req.worker_name)
+            .with_password(req.worker_password)
+            .with_floor(floor)
+            .with_supplier(supplier.map(str::to_string));
+        if ledger.open(r).is_ok() {
             tracing::warn!(quote = %quote.id, redemption = %id, "reopened pending redemption missing from the ledger journal");
             reopened.push(id);
         }
@@ -296,7 +337,7 @@ impl MintPayment for HashrateMelter {
         let req = self.validated(&custom.request)?;
         let floor = self.floor_for(req.amount_thh);
         Ok(PaymentQuoteResponse {
-            request_lookup_id: Some(lookup_id(&redemption_id_for(&custom.request))),
+            request_lookup_id: Some(lookup_id(&self.id_for(&custom.request))),
             amount: Amount::new(floor, unit.clone()),
             fee: Amount::new(req.amount_thh - floor, unit.clone()),
             state: MeltQuoteState::Unpaid,
@@ -322,16 +363,18 @@ impl MintPayment for HashrateMelter {
         let reserve = custom.max_fee_amount.as_ref().map_or(0, |a| a.value());
         let floor = req.amount_thh.saturating_sub(reserve);
 
-        let id = redemption_id_for(&custom.request);
+        let id = self.id_for(&custom.request);
         if self.ledger.get(&id).is_some() {
             // Already opened (cdk retrying): report where it stands.
             return self.check_outgoing_payment(&lookup_id(&id)).await;
         }
         self.ledger
             .open(
-                Redemption::new(id, req.amount_thh, req.pool_url, req.worker_name)
-                    .with_password(req.worker_password)
-                    .with_floor(floor),
+                self.open_redemption(
+                    Redemption::new(id, req.amount_thh, req.pool_url, req.worker_name)
+                        .with_password(req.worker_password)
+                        .with_floor(floor),
+                ),
             )
             .map_err(|e| Error::Custom(e.to_string()))?;
 
@@ -375,6 +418,8 @@ impl MintPayment for HashrateMelter {
         let redemption = self
             .ledger
             .get(&id)
+            // Another mint's redemption is not this mint's to report.
+            .filter(|r| r.supplier == self.supplier)
             .ok_or_else(|| Error::Custom(format!("unknown redemption {id}")))?;
 
         let status = match redemption.state {
@@ -464,6 +509,38 @@ mod tests {
         assert_eq!(again.payment_lookup_id, paid.payment_lookup_id);
         assert_eq!(again.status, MeltQuoteState::Pending);
         assert_eq!(ledger.active().len(), 1);
+    }
+
+    #[test]
+    fn supplier_mints_get_their_own_redemption_ids() {
+        let r = request(10);
+        let alice = redemption_id_in(Some("alice"), &r);
+        assert_eq!(redemption_id_in(None, &r), redemption_id_for(&r));
+        assert_ne!(alice, redemption_id_for(&r));
+        assert_ne!(alice, redemption_id_in(Some("bob"), &r));
+    }
+
+    #[tokio::test]
+    async fn supplier_melter_opens_redemptions_for_that_supplier_only() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let alice = HashrateMelter::new(ledger.clone()).with_supplier("alice");
+        let operator = HashrateMelter::new(ledger.clone());
+        let r = request(10);
+        let paid = alice
+            .make_payment(&HashrateMelter::unit(), with_reserve(r.clone(), 0))
+            .await
+            .unwrap();
+        let id = redemption_id_in(Some("alice"), &r);
+        assert_eq!(ledger.get(&id).unwrap().supplier.as_deref(), Some("alice"));
+        // The operator's mint neither sees nor reports Alice's redemption.
+        assert!(operator
+            .check_outgoing_payment(&paid.payment_lookup_id)
+            .await
+            .is_err());
+        assert!(alice
+            .check_outgoing_payment(&paid.payment_lookup_id)
+            .await
+            .is_ok());
     }
 
     #[test]

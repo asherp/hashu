@@ -23,6 +23,7 @@ pub mod oracle;
 pub mod orders;
 pub mod paid;
 pub mod proxy;
+pub mod tenants;
 mod ur;
 pub mod wallet;
 pub mod words;
