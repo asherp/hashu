@@ -60,9 +60,19 @@ pub struct Entry {
     /// Rough hashrate, free text ("2 Bitaxes", "200 TH/s").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hashrate: Option<String>,
+    /// How they'd like to be paid for sales: one of [`PAYOUTS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payout: Option<String>,
+    /// What "other" means, when `payout` is "other".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payout_other: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
+
+/// Payout preferences the form offers: stablecoins (USDC/USDT),
+/// Lightning, on-chain bitcoin, or something else (spelled out).
+pub const PAYOUTS: [&str; 4] = ["stablecoin", "lightning", "onchain", "other"];
 
 /// What the form posts.
 #[derive(Debug, Default, Deserialize)]
@@ -73,6 +83,10 @@ pub struct Submission {
     pub mint_name: String,
     #[serde(default)]
     pub hashrate: String,
+    #[serde(default)]
+    pub payout: String,
+    #[serde(default)]
+    pub payout_other: String,
     #[serde(default)]
     pub note: String,
     /// Honeypot: a field hidden from people. Bots that fill it get a
@@ -284,6 +298,23 @@ fn validate(s: Submission) -> Result<Entry, Refusal> {
             ));
         }
     }
+    let payout = clean(&s.payout, 16, "payout")?;
+    if let Some(p) = &payout {
+        if !PAYOUTS.contains(&p.as_str()) {
+            return Err(Refusal::Invalid(format!(
+                "payout: one of {}",
+                PAYOUTS.join(", ")
+            )));
+        }
+    }
+    let payout_other = if payout.as_deref() == Some("other") {
+        Some(
+            clean(&s.payout_other, MAX_HASHRATE, "payout")?
+                .ok_or_else(|| Refusal::Invalid("say how you'd like to be paid".into()))?,
+        )
+    } else {
+        None
+    };
     Ok(Entry {
         id: hex::encode(rand::random::<[u8; 8]>()),
         at: SystemTime::now()
@@ -293,6 +324,8 @@ fn validate(s: Submission) -> Result<Entry, Refusal> {
         contact,
         mint_name,
         hashrate: clean(&s.hashrate, MAX_HASHRATE, "hashrate")?,
+        payout,
+        payout_other,
         note: clean(&s.note, MAX_NOTE, "note")?,
     })
 }
@@ -382,7 +415,7 @@ fn csv_field(s: &str) -> String {
 }
 
 async fn csv(State(w): State<Arc<Waitlist>>) -> Response {
-    let mut out = String::from("id,at,contact,mint_name,hashrate,note\n");
+    let mut out = String::from("id,at,contact,mint_name,hashrate,payout,payout_other,note\n");
     for e in w.entries() {
         let row = [
             csv_field(&e.id),
@@ -390,6 +423,8 @@ async fn csv(State(w): State<Arc<Waitlist>>) -> Response {
             csv_field(&e.contact),
             csv_field(e.mint_name.as_deref().unwrap_or("")),
             csv_field(e.hashrate.as_deref().unwrap_or("")),
+            csv_field(e.payout.as_deref().unwrap_or("")),
+            csv_field(e.payout_other.as_deref().unwrap_or("")),
             csv_field(e.note.as_deref().unwrap_or("")),
         ];
         out.push_str(&row.join(","));
@@ -481,6 +516,35 @@ mod tests {
         assert!(valid_mint_name("alice-2"));
         assert!(!valid_mint_name("a"));
         assert!(!valid_mint_name("al.ice"));
+    }
+
+    #[test]
+    fn payout_preference() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = Waitlist::open(dir.path().join("w")).unwrap();
+        let with = |payout: &str, other: &str| Submission {
+            contact: format!("{payout}{other}@x.io"),
+            payout: payout.into(),
+            payout_other: other.into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            w.submit("a", with("lightning", "ignored")),
+            Ok(Outcome::Added)
+        );
+        assert!(matches!(
+            w.submit("a", with("paypal", "")),
+            Err(Refusal::Invalid(_))
+        ));
+        assert!(matches!(
+            w.submit("a", with("other", " ")),
+            Err(Refusal::Invalid(_))
+        ));
+        assert_eq!(w.submit("a", with("other", "Liquid")), Ok(Outcome::Added));
+        let e = w.entries();
+        assert_eq!(e[0].payout.as_deref(), Some("lightning"));
+        assert_eq!(e[0].payout_other, None);
+        assert_eq!(e[1].payout_other.as_deref(), Some("Liquid"));
     }
 
     #[test]

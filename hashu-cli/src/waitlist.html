@@ -85,6 +85,11 @@ textarea { resize: vertical; min-height: 72px; }
 .name-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .name-row input { flex: 1 1 140px; width: auto; }
 .name-row .suffix { color: var(--ink-3); font-size: 14px; overflow-wrap: anywhere; }
+fieldset.pay { border: 0; margin: 0; padding: 0; display: grid; gap: 8px; min-width: 0; }
+fieldset.pay legend { font-size: 14px; font-weight: 600; padding: 0; margin-bottom: 6px; }
+fieldset.pay legend small { font-weight: 400; color: var(--ink-3); }
+label.opt { display: flex; align-items: center; gap: 8px; font-weight: 400; font-size: 15px; cursor: pointer; }
+label.opt input { width: auto; margin: 0; accent-color: var(--brand); }
 .hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
 button.btn { cursor: pointer; font: inherit; font-weight: 600; font-size: 15px; }
 button.btn[disabled] { opacity: 0.6; cursor: wait; }
@@ -118,7 +123,7 @@ button.btn[disabled] { opacity: 0.6; cursor: wait; }
     <div class="layout">
       <ul class="points">
         <li><b>Your own mint, your own price</b><span>Each miner gets a separate mint and sets their own ask. Vouchers from your mint are backed by your rigs only.</span></li>
-        <li><b>Buyers pay you directly</b><span>Sales settle to your own Lightning wallet. The hosting operator never holds your sats.</span></li>
+        <li><b>Buyers pay you directly</b><span>Sales settle straight to your own wallet. The hosting operator never holds your earnings.</span></li>
         <li><b>Hashrate, not money</b><span>Vouchers are redeemed only as work delivered to the holder's pool. Between orders your rigs keep mining to your home pool.</span></li>
         <li><b>Or run it yourself</b><span>Hashu is open source. <a href="https://github.com/asherp/hashu">Self-host a mint</a> today if you'd rather not wait.</span></li>
       </ul>
@@ -134,6 +139,14 @@ button.btn[disabled] { opacity: 0.6; cursor: wait; }
         <label><span>Roughly how much hashrate <small>(optional)</small></span>
           <input name="hashrate" maxlength="80" autocomplete="off" placeholder="2 Bitaxes, 1 S21, 300 TH/s…">
         </label>
+        <fieldset class="pay">
+          <legend>How would you like to be paid? <small>(optional)</small></legend>
+          <label class="opt"><input type="radio" name="payout" value="stablecoin"> USDC / USDT</label>
+          <label class="opt"><input type="radio" name="payout" value="lightning"> Lightning</label>
+          <label class="opt"><input type="radio" name="payout" value="onchain"> On-chain bitcoin</label>
+          <label class="opt"><input type="radio" name="payout" value="other"> Something else</label>
+          <input name="payout_other" id="payout-other" maxlength="80" autocomplete="off" placeholder="Which? e.g. Liquid, eCash, bank transfer" hidden>
+        </fieldset>
         <label><span>Anything else <small>(optional)</small></span>
           <textarea name="note" maxlength="500" rows="3"></textarea>
         </label>
@@ -163,6 +176,12 @@ fetch('/checkout/api/info', { cache: 'no-store' })
   .catch(() => {});
 
 const form = document.getElementById('join');
+const other = document.getElementById('payout-other');
+form.addEventListener('change', (ev) => {
+  if (ev.target.name !== 'payout') return;
+  other.hidden = ev.target.value !== 'other';
+  if (!other.hidden) other.focus();
+});
 const msg = document.getElementById('msg');
 function say(text, ok) { msg.textContent = text; msg.className = 'msg ' + (ok ? 'ok' : 'no'); msg.hidden = false; }
 form.addEventListener('submit', async (ev) => {
@@ -170,6 +189,8 @@ form.addEventListener('submit', async (ev) => {
   const data = Object.fromEntries(new FormData(form));
   data.mint_name = (data.mint_name || '').trim().toLowerCase();
   if (!(data.contact || '').trim()) { say('Leave one way to reach you.', false); return; }
+  if (data.payout === 'other' && !(data.payout_other || '').trim()) { say("Say how you'd like to be paid.", false); other.focus(); return; }
+  if (data.payout !== 'other') delete data.payout_other;
   const btn = form.querySelector('button');
   btn.disabled = true;
   try {
@@ -178,6 +199,7 @@ form.addEventListener('submit', async (ev) => {
     if (r.ok) {
       say(j.already ? "You're already on the list. Thanks!" : "You're on the list. We'll be in touch when hosted mints open.", true);
       form.reset();
+      other.hidden = true;
     } else {
       say((j.error || 'Something went wrong') + '.', false);
     }
