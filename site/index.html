@@ -107,7 +107,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     <p class="kicker">Open source · Cashu · Stratum</p>
     <h1>Sell <span>computation</span>, not money.</h1>
     <p>Hashu turns hashrate into Chaumian hashrate vouchers. A Hashu mint issues terahash-hours (THH) as Cashu tokens backed only by the hashrate of its miners, and the only way to redeem them is as real work delivered to the holder's pool. No bitcoin is held for users and none is paid out.</p>
-    <p class="live">Live on mainnet: Lightning purchases verified, redemptions mining to Braiins Pool</p>
+    <p class="live" id="live-status">Demo mint on mainnet at mint.hashu.io. Run your own to sell your hashrate.</p>
     <div class="cta">
       <a class="btn primary mint-link" data-path="checkout/" data-buy href="https://mint.hashu.io/checkout/">Buy hashrate</a>
       <a class="btn mint-link" data-path="slides/" href="https://mint.hashu.io/slides/">Slides</a>
@@ -191,6 +191,10 @@ fetch('/checkout/api/info', { cache: 'no-store' })
   .then((i) => {
     if (!i) return;
     markSoldOut(i.available_thh === 0 || !!i.issuance_paused);
+    const live = document.getElementById('live-status');
+    if (live && (i.issuance_paused || i.available_thh === 0)) {
+      live.textContent = 'Demo mint on mainnet (sales ' + (i.issuance_paused ? 'paused' : 'sold out') + '). Run your own to sell your hashrate.';
+    }
     if (!/^https?:\/\//.test(i.mint_url || '')) return;
     const base = i.mint_url.replace(/\/+$/, '') + '/';
     document.querySelectorAll('a.mint-link').forEach((a) => { a.href = base + (a.dataset.path || ''); });
