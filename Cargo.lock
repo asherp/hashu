@@ -1399,12 +1399,13 @@ dependencies = [
 
 [[package]]
 name = "glossia"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a97bc90bad1ad6a4704704f4163edeac264572d77a7df68bac4197340c8ab956"
+checksum = "d937159f057627f81aa5ec2a8c5aa3e713a97f6724236133ee6de5f6ed390988"
 dependencies = [
  "anyhow",
  "bincode",
+ "ciborium",
  "moniker",
  "num-bigint",
  "num-traits",
