@@ -111,6 +111,8 @@ async function load() {
     const meta = [new Date(e.at * 1000).toLocaleString()];
     if (e.mint_name) meta.push('mint: ' + e.mint_name);
     if (e.hashrate) meta.push(e.hashrate);
+    const HOR = { days: 'days', weeks: 'weeks', months: 'months', year: 'a year+', ongoing: 'ongoing' };
+    if (e.horizon) meta.push('for ' + (HOR[e.horizon] || e.horizon));
     const PAY = { stablecoin: 'USDC/USDT', lightning: 'Lightning', onchain: 'on-chain' };
     if (e.payout) meta.push('paid in ' + (e.payout === 'other' ? (e.payout_other || 'other') : PAY[e.payout] || e.payout));
     row.append(el('div', 'meta', meta.join(' · ')));

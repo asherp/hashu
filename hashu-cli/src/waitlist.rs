@@ -60,6 +60,9 @@ pub struct Entry {
     /// Rough hashrate, free text ("2 Bitaxes", "200 TH/s").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hashrate: Option<String>,
+    /// How long they'd commit hashrate: one of [`HORIZONS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizon: Option<String>,
     /// How they'd like to be paid for sales: one of [`PAYOUTS`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payout: Option<String>,
@@ -72,6 +75,10 @@ pub struct Entry {
 
 /// Payout preferences the form offers: stablecoins (USDC/USDT),
 /// Lightning, on-chain bitcoin, or something else (spelled out).
+/// Commitment horizons the form offers: how long a miner would keep
+/// hashrate behind their mint's vouchers.
+pub const HORIZONS: [&str; 5] = ["days", "weeks", "months", "year", "ongoing"];
+
 pub const PAYOUTS: [&str; 4] = ["stablecoin", "lightning", "onchain", "other"];
 
 /// What the form posts.
@@ -83,6 +90,8 @@ pub struct Submission {
     pub mint_name: String,
     #[serde(default)]
     pub hashrate: String,
+    #[serde(default)]
+    pub horizon: String,
     #[serde(default)]
     pub payout: String,
     #[serde(default)]
@@ -298,6 +307,15 @@ fn validate(s: Submission) -> Result<Entry, Refusal> {
             ));
         }
     }
+    let horizon = clean(&s.horizon, 16, "horizon")?;
+    if let Some(h) = &horizon {
+        if !HORIZONS.contains(&h.as_str()) {
+            return Err(Refusal::Invalid(format!(
+                "horizon: one of {}",
+                HORIZONS.join(", ")
+            )));
+        }
+    }
     let payout = clean(&s.payout, 16, "payout")?;
     if let Some(p) = &payout {
         if !PAYOUTS.contains(&p.as_str()) {
@@ -324,6 +342,7 @@ fn validate(s: Submission) -> Result<Entry, Refusal> {
         contact,
         mint_name,
         hashrate: clean(&s.hashrate, MAX_HASHRATE, "hashrate")?,
+        horizon,
         payout,
         payout_other,
         note: clean(&s.note, MAX_NOTE, "note")?,
@@ -415,7 +434,8 @@ fn csv_field(s: &str) -> String {
 }
 
 async fn csv(State(w): State<Arc<Waitlist>>) -> Response {
-    let mut out = String::from("id,at,contact,mint_name,hashrate,payout,payout_other,note\n");
+    let mut out =
+        String::from("id,at,contact,mint_name,hashrate,horizon,payout,payout_other,note\n");
     for e in w.entries() {
         let row = [
             csv_field(&e.id),
@@ -423,6 +443,7 @@ async fn csv(State(w): State<Arc<Waitlist>>) -> Response {
             csv_field(&e.contact),
             csv_field(e.mint_name.as_deref().unwrap_or("")),
             csv_field(e.hashrate.as_deref().unwrap_or("")),
+            csv_field(e.horizon.as_deref().unwrap_or("")),
             csv_field(e.payout.as_deref().unwrap_or("")),
             csv_field(e.payout_other.as_deref().unwrap_or("")),
             csv_field(e.note.as_deref().unwrap_or("")),
@@ -545,6 +566,23 @@ mod tests {
         assert_eq!(e[0].payout.as_deref(), Some("lightning"));
         assert_eq!(e[0].payout_other, None);
         assert_eq!(e[1].payout_other.as_deref(), Some("Liquid"));
+    }
+
+    #[test]
+    fn horizon_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = Waitlist::open(dir.path().join("w")).unwrap();
+        let with = |h: &str| Submission {
+            contact: format!("{h}@x.io"),
+            horizon: h.into(),
+            ..Default::default()
+        };
+        assert_eq!(w.submit("a", with("months")), Ok(Outcome::Added));
+        assert!(matches!(
+            w.submit("a", with("forever")),
+            Err(Refusal::Invalid(_))
+        ));
+        assert_eq!(w.entries()[0].horizon.as_deref(), Some("months"));
     }
 
     #[test]

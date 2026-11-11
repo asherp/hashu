@@ -79,8 +79,8 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
 form.card { display: grid; gap: 14px; }
 label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
 label small { font-weight: 400; color: var(--ink-3); }
-input, textarea { font: inherit; font-size: 15px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; width: 100%; min-width: 0; }
-input:focus, textarea:focus { outline: 2px solid var(--brand); outline-offset: 1px; }
+input, textarea, select { font: inherit; font-size: 15px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; width: 100%; min-width: 0; }
+input:focus, textarea:focus, select:focus { outline: 2px solid var(--brand); outline-offset: 1px; }
 textarea { resize: vertical; min-height: 72px; }
 .name-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .name-row input { flex: 1 1 140px; width: auto; }
@@ -138,6 +138,17 @@ button.btn[disabled] { opacity: 0.6; cursor: wait; }
         </label>
         <label><span>Roughly how much hashrate <small>(optional)</small></span>
           <input name="hashrate" maxlength="80" autocomplete="off" placeholder="2 Bitaxes, 1 S21, 300 TH/s…">
+        </label>
+        <label><span>How long would you commit your hashrate? <small>(optional)</small></span>
+          <select name="horizon">
+            <option value="">Not sure yet</option>
+            <option value="days">A few days</option>
+            <option value="weeks">A few weeks</option>
+            <option value="months">A few months</option>
+            <option value="year">A year or more</option>
+            <option value="ongoing">Ongoing, no end date</option>
+          </select>
+          <small>Vouchers you sell are backed by your rigs, so this is how far ahead buyers could redeem them.</small>
         </label>
         <fieldset class="pay">
           <legend>How would you like to be paid? <small>(optional)</small></legend>
