@@ -683,7 +683,12 @@ $('btn-test-redeem').addEventListener('click', async () => {
 })
 $('btn-settle').addEventListener('click', async () => {
   const id = state.selected
-  if (!id || !confirm('Stop this redemption? The redeemer is charged for the THH delivered so far (at least the minimum) and gets the rest back as change.')) return
+  const r = (state.op && state.op.redemptions || []).find((x) => x.id === id)
+  const what = r && r.stop_change_thh != null
+    ? (r.stop_change_thh > 0 ? `The redeemer is charged ${r.stop_charge_thh} THH and gets ${r.stop_change_thh} THH back as change.`
+      : `The redeemer gets NOTHING back: all ${r.stop_charge_thh} THH are charged (nothing above the minimum is refundable yet). Use this only to clear a stuck redemption.`)
+    : 'The redeemer is charged for the THH delivered so far (at least the minimum) and gets the rest back as change.'
+  if (!id || !confirm(`Stop this redemption? ${what}`)) return
   const b = $('btn-settle'); b.disabled = true
   try {
     await api(`redemptions/${encodeURIComponent(id)}/settle`, { method: 'POST' })

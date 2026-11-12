@@ -567,6 +567,9 @@ async fn redeemer_stops_the_redemption_with_the_link_key() {
     let o = get_json(&order_api).await;
     assert_eq!(o["can_stop"], true, "{o}");
     assert_eq!(o["floor_thh"], 1);
+    // Nothing delivered yet: a stop now charges the 1 THH floor, returns 9.
+    assert_eq!(o["stop_charge_thh"], 1, "{o}");
+    assert_eq!(o["stop_change_thh"], 9, "{o}");
 
     // 2.5 THH delivered, then the redeemer stops.
     let share = (HASHES_PER_THH * 5 / 2) as f64 / (1u64 << 32) as f64;
@@ -660,4 +663,49 @@ async fn order_without_stop_hash_cannot_be_stopped_by_the_redeemer() {
     )
     .await;
     assert_eq!(code, 400);
+}
+
+/// A stop that would return nothing is refused (#83): here a 1 THH
+/// redemption at the 1 THH floor with nothing delivered.
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_that_returns_nothing_is_refused() {
+    use sha2::{Digest, Sha256};
+    let h = harness(1).await;
+    let checkout = serve_checkout(&h, Arc::new(OrderBook::new())).await;
+    let keyset = h
+        .mint
+        .keysets()
+        .keysets
+        .into_iter()
+        .find(|k| k.unit == thh_unit() && k.active)
+        .unwrap();
+    let blanks = PreMintSecrets::blank(keyset.id, Amount::from(1)).unwrap();
+    let secret = [9u8; 32];
+    let r = post_json(
+        &format!("{checkout}/checkout/api/redeem"),
+        serde_json::json!({
+            "token": token_of(&h).await,
+            "pool_url": "stratum+tcp://pool.example:3333",
+            "worker_name": "bob.rig1",
+            "outputs": blanks.blinded_messages(),
+            "stop_hash": hex::encode(Sha256::digest(secret)),
+        }),
+    )
+    .await;
+    let order_id = r["order_id"].as_str().unwrap().to_string();
+    let rid: hashu_core::redemption::RedemptionId =
+        r["redemption_id"].as_str().unwrap().parse().unwrap();
+    opened(&h.ledger, &rid).await;
+    let order_api = format!("{checkout}/checkout/api/order/{order_id}");
+    let o = get_json(&order_api).await;
+    assert_eq!(o["stop_change_thh"], 0, "{o}");
+
+    let (code, body) = post_status(
+        &format!("{order_api}/stop"),
+        serde_json::json!({ "stop_secret": hex::encode(secret) }),
+    )
+    .await;
+    assert_eq!(code, 409, "{body}");
+    assert!(body.to_string().contains("return nothing"), "{body}");
+    assert!(!h.ledger.get(&rid).unwrap().is_finished());
 }

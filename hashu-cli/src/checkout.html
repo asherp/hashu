@@ -660,14 +660,26 @@ const orderKey = () => { const k = new URLSearchParams(location.hash.slice(1)).g
 function showStop (r) {
   const running = r.state === 'pending' || r.state === 'active' || r.state === 'opening'
   $('p-stop-row').hidden = !(running && r.can_stop && orderKey())
-  if (!$('p-stop-row').hidden && !st.stopping) {
+  if ($('p-stop-row').hidden || st.stopping) return
+  // A stop only helps while it returns something (#83). Older servers send
+  // no preview: keep the button and the general note.
+  const charge = r.stop_charge_thh, change = r.stop_change_thh
+  const known = change != null
+  $('btn-stop').hidden = known && change === 0
+  if (!known) {
     const floor = r.floor_thh ? `, at least ${r.floor_thh} THH` : ''
     $('p-stop-note').textContent = `You pay for what was delivered so far, rounded up to whole THH${floor}. The rest comes back here as change.`
+  } else if (change > 0) {
+    $('p-stop-note').textContent = `Stopping now charges ${charge} THH and returns ${change} THH as change (delivered work rounded up to whole THH${r.floor_thh ? `, at least ${r.floor_thh} THH` : ''}).`
+  } else if (r.amount_thh <= (r.floor_thh || 0)) {
+    $('p-stop-note').textContent = `This redemption is the ${r.floor_thh} THH minimum, so it has no refundable part: stopping would charge all of it. It runs until ${r.amount_thh} THH is delivered.`
+  } else {
+    $('p-stop-note').textContent = `Stopping now would charge all ${charge} THH and return nothing, because delivered work is rounded up to whole THH. It finishes on its own shortly.`
   }
 }
 $('btn-stop').addEventListener('click', async () => {
   const key = orderKey()
-  if (!key || !confirm('Stop this redemption now? Hashrate stops going to your pool, and the undelivered THH come back as change.')) return
+  if (!key || !confirm('Stop this redemption now? Hashrate stops going to your pool. ' + ($('p-stop-note').textContent || 'The undelivered THH come back as change.'))) return
   $('btn-stop').disabled = true; st.stopping = true
   $('p-stop-note').textContent = 'Stopping…'
   try {
