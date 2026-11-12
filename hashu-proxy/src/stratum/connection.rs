@@ -81,12 +81,16 @@ pub const SWITCH_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DRAIN_FOR: Duration = Duration::from_secs(5);
 
 /// Request ids the proxy uses for its own handshake with a new pool.
-/// Far above anything a miner counts up to.
-const ID_CONFIGURE: i64 = 7_340_000_001;
-const ID_SUBSCRIBE: i64 = 7_340_000_002;
-const ID_SUGGEST: i64 = 7_340_000_003;
-const ID_AUTHORIZE: i64 = 7_340_000_004;
+/// Far above anything a miner counts up to, but within 32 bits: Braiins
+/// Pool (and any pool that reads ids as `u32`) answers a larger id with
+/// `"id": null` and refuses the request with error 19 `RequestWithNoId`,
+/// so none of its replies would match and the switch would time out.
+const ID_CONFIGURE: i64 = 734_000_001;
+const ID_SUBSCRIBE: i64 = 734_000_002;
+const ID_SUGGEST: i64 = 734_000_003;
+const ID_AUTHORIZE: i64 = 734_000_004;
 const PROXY_IDS: [i64; 4] = [ID_CONFIGURE, ID_SUBSCRIBE, ID_SUGGEST, ID_AUTHORIZE];
+const _: () = assert!(ID_AUTHORIZE <= u32::MAX as i64, "pool request ids must fit in 32 bits");
 
 /// Run a single miner ⇄ pool proxy until either side disconnects. Shares
 /// are counted and committed but not credited to any redemption.
@@ -1056,6 +1060,18 @@ impl Conn {
             Some("mining.set_difficulty") => hs.difficulty = Some(terminated(line)),
             Some("mining.notify") => hs.notify = Some(terminated(line)),
             Some(_) => {}
+            // A refusal with no id can't be matched to a request, and a
+            // pool that answers this way (Braiins: error 19,
+            // `RequestWithNoId`) sends no job afterwards, so fail now
+            // rather than waiting out the timeout.
+            None if v.get("id").is_none_or(Value::is_null)
+                && v.get("error").is_some_and(|e| !e.is_null()) =>
+            {
+                return Progress::Failed(format!(
+                    "pool refused a handshake request: {}",
+                    v["error"]
+                ));
+            }
             None => match v.get("id").and_then(Value::as_i64) {
                 Some(ID_CONFIGURE) => hs.configured = Some(granted_version_mask(&v)),
                 Some(ID_SUBSCRIBE) => {
