@@ -7,6 +7,7 @@ pub mod attestation;
 pub mod capacity;
 pub mod heat;
 pub mod lightning;
+pub mod lnaddress;
 pub mod manifest;
 pub mod melt;
 pub mod oracle;

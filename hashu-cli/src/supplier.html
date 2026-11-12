@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hashu supplier mint</title>
+<style>
+:root { --bg:#f6f6f4; --surface:#fff; --ink:#1b1b1a; --ink-2:#55534f; --line:rgba(27,27,26,.12); --brand:#e8850c; --bad:#c2403a; --good:#2f8a57; }
+@media (prefers-color-scheme: dark) { :root { --bg:#111110; --surface:#1a1a19; --ink:#f1efea; --ink-2:#b5b2ab; --line:rgba(241,239,234,.14); --brand:#f7931a; --bad:#e06c6c; --good:#5cc28a; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
+.wrap { max-width:640px; margin:0 auto; padding:32px 16px 64px; }
+h1 { font-size:30px; margin:0 0 4px; letter-spacing:-.01em; }
+.sub { color:var(--ink-2); margin:0 0 20px; word-break:break-all; }
+.card { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
+.stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:12px; }
+.stat b { display:block; font-size:22px; font-variant-numeric:tabular-nums; }
+.stat span { color:var(--ink-2); font-size:13px; }
+.pill { display:inline-block; font-size:13px; font-weight:600; padding:2px 10px; border-radius:99px; }
+.pill.on { color:var(--good); background:rgba(47,138,87,.14); }
+.pill.off { color:var(--ink-2); background:var(--line); }
+label { display:block; font-weight:600; font-size:14px; margin:14px 0 4px; }
+.hint { color:var(--ink-2); font-size:13px; font-weight:400; }
+input { width:100%; font:inherit; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
+button { margin-top:16px; font:inherit; font-weight:600; padding:10px 18px; border-radius:10px; border:1px solid var(--brand); background:var(--brand); color:#111; cursor:pointer; }
+.msg { margin-top:12px; }
+.msg.bad { color:var(--bad); }
+.msg.good { color:var(--good); }
+details summary { cursor:pointer; font-weight:600; }
+[hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <h1 id="name">Supplier mint</h1>
+  <p class="sub">Cashu mint <span id="url"></span> · <span class="pill off" id="state">loading</span></p>
+
+  <div class="card">
+    <div class="stats">
+      <div class="stat"><b id="ask">–</b><span>sats per THH</span></div>
+      <div class="stat"><b id="avail">–</b><span>THH for sale</span></div>
+      <div class="stat"><b id="rate">–</b><span>TH/s online</span></div>
+      <div class="stat"><b id="horizon">–</b><span>hour horizon</span></div>
+    </div>
+    <p class="hint" style="margin-bottom:0">Buy with any Cashu wallet: add this mint's URL and mint THH over Lightning. You pay the supplier's own wallet.</p>
+  </div>
+
+  <div class="card">
+    <details id="settings-box">
+      <summary>Supplier settings</summary>
+      <label for="secret">Worker secret <span class="hint">from sign-up</span></label>
+      <input id="secret" type="password" autocomplete="current-password">
+      <button id="unlock">Open settings</button>
+      <form id="settings" hidden>
+        <label for="s-ask">Ask <span class="hint">sats per THH</span></label>
+        <input id="s-ask" type="number" min="1" step="1">
+        <label for="s-horizon">Horizon <span class="hint">hours; THH for sale = your rigs' hashrate × horizon − THH owed</span></label>
+        <input id="s-horizon" type="number" min="1" step="1">
+        <label for="s-ln">Lightning address <span class="hint">needs payment verification (LUD-21)</span></label>
+        <input id="s-ln" autocomplete="off">
+        <button>Save</button>
+      </form>
+      <div class="msg" id="msg" hidden></div>
+    </details>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n, d = 0) => Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
+function say(text, ok) { const m = $('msg'); m.textContent = text; m.className = 'msg ' + (ok ? 'good' : 'bad'); m.hidden = false; }
+
+async function status() {
+  try {
+    const s = await (await fetch('/api/supplier')).json();
+    $('name').textContent = s.name;
+    $('url').textContent = s.mint_url;
+    document.title = s.name + ' · Hashu supplier mint';
+    $('ask').textContent = s.ask_sats_per_thh ?? '–';
+    $('avail').textContent = fmt(s.capacity.available_thh);
+    $('rate').textContent = fmt(s.capacity.hashrate_ths, 2);
+    $('horizon').textContent = fmt(s.capacity.horizon_hours, 1);
+    $('state').textContent = s.selling ? 'selling' : (s.capacity.hashrate_ths > 0 ? 'not selling' : 'no rigs online');
+    $('state').className = 'pill ' + (s.selling ? 'on' : 'off');
+  } catch (e) { /* keep the last values */ }
+}
+status();
+setInterval(status, 10000);
+
+let secret = '';
+try { secret = sessionStorage.getItem('hashu-secret') || ''; } catch (e) {}
+$('secret').value = secret;
+
+async function api(method, body) {
+  const r = await fetch('/api/settings', {
+    method,
+    headers: { 'x-hashu-secret': $('secret').value.trim(), 'content-type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(text || r.statusText);
+  return JSON.parse(text);
+}
+
+$('unlock').addEventListener('click', async () => {
+  $('msg').hidden = true;
+  try {
+    const s = await api('GET');
+    try { sessionStorage.setItem('hashu-secret', $('secret').value.trim()); } catch (e) {}
+    $('s-ask').value = s.ask_sats_per_thh ?? '';
+    $('s-horizon').value = s.horizon_hours;
+    $('s-ln').value = s.lightning_address ?? '';
+    $('settings').hidden = false;
+  } catch (e) { say(e.message, false); }
+});
+
+$('settings').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await api('POST', {
+      ask_sats_per_thh: $('s-ask').value ? Number($('s-ask').value) : null,
+      horizon_hours: Number($('s-horizon').value),
+      lightning_address: $('s-ln').value.trim() || null,
+    });
+    say('Saved.', true);
+    status();
+  } catch (e) { say(e.message, false); }
+});
+</script>
+</body>
+</html>

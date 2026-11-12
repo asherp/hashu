@@ -60,6 +60,19 @@ pub enum Check {
     Unregistered,
 }
 
+/// Why [`SupplierRegistry::register`] refused a name.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RegisterError {
+    #[error("sign-up is closed on this mint (no supplier registry file)")]
+    Closed,
+    #[error("names are 3 to 32 lowercase letters, digits and inner hyphens")]
+    InvalidName,
+    #[error("that name is taken")]
+    Taken,
+    #[error("could not save the registry: {0}")]
+    Io(String),
+}
+
 /// The registered suppliers. Empty when no file is configured.
 #[derive(Debug, Default)]
 pub struct SupplierRegistry {
@@ -145,6 +158,53 @@ impl SupplierRegistry {
             }
             _ => Check::WrongSecret(name.to_string()),
         }
+    }
+
+    /// Add supplier `name` with the SHA-256 (hex) of its secret to the
+    /// registry file. Fails when no file is configured, the name is invalid
+    /// or already taken. Other content in the file is kept.
+    pub fn register(&self, name: &str, secret_sha256: &str) -> Result<(), RegisterError> {
+        let Some(path) = &self.path else {
+            return Err(RegisterError::Closed);
+        };
+        if !valid_name(name) {
+            return Err(RegisterError::InvalidName);
+        }
+        self.refresh();
+        let mut st = self.lock();
+        if st.entries.contains_key(name) {
+            return Err(RegisterError::Taken);
+        }
+        let io = |e: std::io::Error| RegisterError::Io(e.to_string());
+        let mut doc: serde_json::Value = match std::fs::read(path) {
+            Ok(b) => serde_json::from_slice(&b).map_err(|e| RegisterError::Io(e.to_string()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+            Err(e) => return Err(io(e)),
+        };
+        let obj = doc
+            .as_object_mut()
+            .ok_or_else(|| RegisterError::Io("registry file is not a JSON object".into()))?;
+        let suppliers = obj
+            .entry("suppliers")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or_else(|| RegisterError::Io("\"suppliers\" is not a JSON object".into()))?;
+        suppliers.insert(
+            name.to_string(),
+            serde_json::json!({ "secret_sha256": secret_sha256 }),
+        );
+        let tmp = path.with_extension("tmp");
+        let body = serde_json::to_vec_pretty(&doc).map_err(|e| RegisterError::Io(e.to_string()))?;
+        std::fs::write(&tmp, body).map_err(io)?;
+        std::fs::rename(&tmp, path).map_err(io)?;
+        st.entries.insert(
+            name.to_string(),
+            Entry {
+                secret_sha256: secret_sha256.to_string(),
+            },
+        );
+        st.loaded_mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        Ok(())
     }
 
     fn refresh(&self) {
@@ -236,6 +296,30 @@ mod tests {
         );
         assert_eq!(r.check("bob.rig1", Some("s3cret")), Check::Unregistered);
         assert_eq!(r.check("alicex.rig1", Some("s3cret")), Check::Unregistered);
+    }
+
+    #[test]
+    fn register_adds_a_name_to_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("suppliers.json");
+        std::fs::write(&path, r#"{"note":"kept","suppliers":{}}"#).unwrap();
+        let r = SupplierRegistry::from_file(&path);
+        r.register("alice", &secret_hash("s3cret")).unwrap();
+        assert_eq!(
+            r.check("alice.rig1", Some("s3cret")),
+            Check::Verified("alice".into())
+        );
+        assert_eq!(r.register("alice", "00"), Err(RegisterError::Taken));
+        assert_eq!(r.register("Bad", "00"), Err(RegisterError::InvalidName));
+        // On disk, other fields kept; a fresh reader sees alice.
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["note"], "kept");
+        assert!(SupplierRegistry::from_file(&path).contains("alice"));
+        assert_eq!(
+            SupplierRegistry::empty().register("bob", "00"),
+            Err(RegisterError::Closed)
+        );
     }
 
     #[test]

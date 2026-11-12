@@ -515,6 +515,16 @@ impl Obligations {
 }
 
 pub async fn obligations(mint: &Mint, ledger: &RedemptionLedger) -> anyhow::Result<Obligations> {
+    obligations_for(mint, ledger, None).await
+}
+
+/// [`obligations`] of supplier `supplier`'s mint (`None`: the operator's),
+/// counting only that mint's redemptions in the shared ledger.
+pub async fn obligations_for(
+    mint: &Mint,
+    ledger: &RedemptionLedger,
+    supplier: Option<&str>,
+) -> anyhow::Result<Obligations> {
     // keyset_amounts counts every signature and every spent proof, swaps
     // included; swaps add equally to both, so the difference is the THH
     // ecash still in holders' hands.
@@ -576,8 +586,12 @@ pub async fn obligations(mint: &Mint, ledger: &RedemptionLedger) -> anyhow::Resu
 
     let mut open_count = 0;
     let mut open_remaining_thh = 0.0;
-    // Suppliers' own mints owe their redemptions, not this one.
-    for r in ledger.all().into_iter().filter(|r| r.supplier.is_none()) {
+    // Each mint owes only its own redemptions.
+    for r in ledger
+        .all()
+        .into_iter()
+        .filter(|r| r.supplier.as_deref() == supplier)
+    {
         if !r.state.is_finished() {
             let filled = r.accumulated_hashes as f64 / HASHES_PER_THH as f64;
             open_remaining_thh += (r.amount_thh as f64 - filled).max(0.0);

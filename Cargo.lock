@@ -1512,6 +1512,7 @@ dependencies = [
  "clap",
  "crc32fast",
  "dialoguer",
+ "futures",
  "glossia",
  "hashu-core",
  "hashu-mint",
