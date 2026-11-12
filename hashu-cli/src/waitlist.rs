@@ -1,9 +1,9 @@
 //! Hosted-mint waitlist for miners (`--waitlist`, off by default).
 //!
 //! Hosted per-miner mints (`<name>.<mint domain>`) are not open for sign-up
-//! yet. Until they are, `GET /join/` on the mint's public HTTP port shows a
+//! yet. Until they are, `GET /waitlist/` on the mint's public HTTP port shows a
 //! splash page where a miner leaves one way to reach them, and
-//! `POST /join/api` appends it to `<data>/waitlist.jsonl`. The operator reads
+//! `POST /waitlist/api` appends it to `<data>/waitlist.jsonl`. The operator reads
 //! (and deletes) entries behind the operator password, at
 //! `/operator/waitlist`.
 //!
@@ -36,7 +36,7 @@ const OPERATOR_PAGE: &str = include_str!("waitlist-operator.html");
 pub const MAX_CONTACT: usize = 200;
 pub const MAX_HASHRATE: usize = 80;
 pub const MAX_NOTE: usize = 500;
-/// Largest request body accepted by `POST /join/api`.
+/// Largest request body accepted by `POST /waitlist/api`.
 const MAX_BODY: usize = 4 * 1024;
 /// Entries kept at most; past this the form says the list is full.
 pub const MAX_ENTRIES: usize = 5_000;
@@ -57,9 +57,19 @@ pub struct Entry {
     /// Wished-for mint name, as in `<name>.<mint domain>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mint_name: Option<String>,
-    /// Rough hashrate, free text ("2 Bitaxes", "200 TH/s").
+    /// Their rigs, free text ("2 Bitaxes", "1 S21").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hashrate: Option<String>,
+    /// Hashrate they'd put behind the mint, in TH/s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hashrate_ths: Option<f64>,
+    /// How long they'd commit it: a key of [`HORIZONS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizon: Option<String>,
+    /// THH they could put up for sale: `hashrate_ths` × the horizon's
+    /// hours, when both are given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thh_for_sale: Option<f64>,
     /// How they'd like to be paid for sales: one of [`PAYOUTS`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payout: Option<String>,
@@ -69,6 +79,22 @@ pub struct Entry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
+
+/// Commitment horizons the form offers, with their length in hours. The
+/// miner's hashrate times the horizon is the THH their mint could sell.
+pub const HORIZONS: [(&str, u32); 8] = [
+    ("hour", 1),
+    ("6-hours", 6),
+    ("day", 24),
+    ("week", 7 * 24),
+    ("month", 30 * 24),
+    ("quarter", 90 * 24),
+    ("half-year", 182 * 24),
+    ("year", 365 * 24),
+];
+
+/// Largest hashrate accepted, in TH/s (1 EH/s).
+pub const MAX_THS: f64 = 1_000_000.0;
 
 /// Payout preferences the form offers: stablecoins (USDC/USDT),
 /// Lightning, on-chain bitcoin, or something else (spelled out).
@@ -83,6 +109,11 @@ pub struct Submission {
     pub mint_name: String,
     #[serde(default)]
     pub hashrate: String,
+    /// TH/s, as typed (a number).
+    #[serde(default)]
+    pub hashrate_ths: String,
+    #[serde(default)]
+    pub horizon: String,
     #[serde(default)]
     pub payout: String,
     #[serde(default)]
@@ -298,6 +329,35 @@ fn validate(s: Submission) -> Result<Entry, Refusal> {
             ));
         }
     }
+    let horizon = clean(&s.horizon, 16, "horizon")?;
+    let hours = match &horizon {
+        None => None,
+        Some(h) => match HORIZONS.iter().find(|(k, _)| k == h) {
+            Some((_, hours)) => Some(*hours),
+            None => {
+                let keys: Vec<&str> = HORIZONS.iter().map(|(k, _)| *k).collect();
+                return Err(Refusal::Invalid(format!(
+                    "horizon: one of {}",
+                    keys.join(", ")
+                )));
+            }
+        },
+    };
+    let hashrate_ths = match s.hashrate_ths.trim() {
+        "" => None,
+        t => match t.parse::<f64>() {
+            Ok(v) if v.is_finite() && v > 0.0 && v <= MAX_THS => Some(v),
+            _ => {
+                return Err(Refusal::Invalid(format!(
+                    "hashrate: a number of TH/s above 0 and at most {MAX_THS}"
+                )))
+            }
+        },
+    };
+    // Rounded to 0.01 THH; small rigs (a Bitaxe is ~1 TH/s) still show.
+    let thh_for_sale = hashrate_ths
+        .zip(hours)
+        .map(|(ths, h)| (ths * h as f64 * 100.0).round() / 100.0);
     let payout = clean(&s.payout, 16, "payout")?;
     if let Some(p) = &payout {
         if !PAYOUTS.contains(&p.as_str()) {
@@ -324,6 +384,9 @@ fn validate(s: Submission) -> Result<Entry, Refusal> {
         contact,
         mint_name,
         hashrate: clean(&s.hashrate, MAX_HASHRATE, "hashrate")?,
+        hashrate_ths,
+        horizon,
+        thh_for_sale,
         payout,
         payout_other,
         note: clean(&s.note, MAX_NOTE, "note")?,
@@ -380,16 +443,16 @@ async fn submit(State(w): State<Arc<Waitlist>>, headers: HeaderMap, body: Bytes)
     }
 }
 
-/// Public routes on the mint's HTTP port: `/join/` and `POST /join/api`.
+/// Public routes on the mint's HTTP port: `/waitlist/` and `POST /waitlist/api`.
 pub fn router(w: Arc<Waitlist>) -> Router {
     Router::new()
         .route(
-            "/join",
-            get(|| async { axum::response::Redirect::permanent("/join/") }),
+            "/waitlist",
+            get(|| async { axum::response::Redirect::permanent("/waitlist/") }),
         )
-        .route("/join/", get(|| async { Html(PAGE) }))
+        .route("/waitlist/", get(|| async { Html(PAGE) }))
         .route(
-            "/join/api",
+            "/waitlist/api",
             post(submit).get(|| async { Json(json!({ "open": true })) }),
         )
         .layer(DefaultBodyLimit::max(MAX_BODY))
@@ -415,7 +478,8 @@ fn csv_field(s: &str) -> String {
 }
 
 async fn csv(State(w): State<Arc<Waitlist>>) -> Response {
-    let mut out = String::from("id,at,contact,mint_name,hashrate,payout,payout_other,note\n");
+    let mut out =
+        String::from("id,at,contact,mint_name,hashrate,hashrate_ths,horizon,thh_for_sale,payout,payout_other,note\n");
     for e in w.entries() {
         let row = [
             csv_field(&e.id),
@@ -423,6 +487,9 @@ async fn csv(State(w): State<Arc<Waitlist>>) -> Response {
             csv_field(&e.contact),
             csv_field(e.mint_name.as_deref().unwrap_or("")),
             csv_field(e.hashrate.as_deref().unwrap_or("")),
+            e.hashrate_ths.map(|v| v.to_string()).unwrap_or_default(),
+            csv_field(e.horizon.as_deref().unwrap_or("")),
+            e.thh_for_sale.map(|v| v.to_string()).unwrap_or_default(),
             csv_field(e.payout.as_deref().unwrap_or("")),
             csv_field(e.payout_other.as_deref().unwrap_or("")),
             csv_field(e.note.as_deref().unwrap_or("")),
@@ -545,6 +612,42 @@ mod tests {
         assert_eq!(e[0].payout.as_deref(), Some("lightning"));
         assert_eq!(e[0].payout_other, None);
         assert_eq!(e[1].payout_other.as_deref(), Some("Liquid"));
+    }
+
+    #[test]
+    fn horizon_sets_thh_for_sale() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = Waitlist::open(dir.path().join("w")).unwrap();
+        let with = |ths: &str, h: &str| Submission {
+            contact: format!("{ths}{h}@x.io"),
+            hashrate_ths: ths.into(),
+            horizon: h.into(),
+            ..Default::default()
+        };
+        // A Bitaxe (1.2 TH/s) for a month: 1.2 × 720 = 864 THH.
+        assert_eq!(w.submit("a", with("1.2", "month")), Ok(Outcome::Added));
+        // Horizon alone: nothing to multiply.
+        assert_eq!(w.submit("a", with("", "year")), Ok(Outcome::Added));
+        assert!(matches!(
+            w.submit("a", with("1", "forever")),
+            Err(Refusal::Invalid(_))
+        ));
+        assert!(matches!(
+            w.submit("a", with("-3", "week")),
+            Err(Refusal::Invalid(_))
+        ));
+        assert!(matches!(
+            w.submit("a", with("lots", "week")),
+            Err(Refusal::Invalid(_))
+        ));
+        // As short as one hour: 100 TH/s × 1 h = 100 THH.
+        assert_eq!(w.submit("b", with("100", "hour")), Ok(Outcome::Added));
+        let e = w.entries();
+        assert_eq!(e[2].thh_for_sale, Some(100.0));
+        assert_eq!(e[0].hashrate_ths, Some(1.2));
+        assert_eq!(e[0].thh_for_sale, Some(864.0));
+        assert_eq!(e[1].horizon.as_deref(), Some("year"));
+        assert_eq!(e[1].thh_for_sale, None);
     }
 
     #[test]
