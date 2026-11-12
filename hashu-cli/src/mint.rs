@@ -155,9 +155,9 @@ pub struct RunArgs {
     /// Smallest redemption, in THH.
     #[arg(long, default_value_t = hashu_mint::melt::DEFAULT_MIN_THH)]
     pub min_redeem_thh: u64,
-    /// Serve the hosted-mint waitlist for miners at `/join/` and store
+    /// Serve the hosted-mint waitlist for miners at `/waitlist/` and store
     /// sign-ups in `<data-dir>/waitlist.jsonl` (operator view at
-    /// `/waitlist` on the control API). Off: `/join/` is a 404.
+    /// `/waitlist` on the control API). Off: `/waitlist/` is a 404.
     #[arg(long, env = "HASHU_WAITLIST", default_value_t = false)]
     pub waitlist: bool,
 

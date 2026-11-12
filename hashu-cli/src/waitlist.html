@@ -243,7 +243,7 @@ form.addEventListener('submit', async (ev) => {
   const btn = form.querySelector('button');
   btn.disabled = true;
   try {
-    const r = await fetch('/join/api', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) });
+    const r = await fetch('/waitlist/api', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) });
     const j = await r.json().catch(() => ({}));
     if (r.ok) {
       say(j.already ? "You're already on the list. Thanks!" : "You're on the list. We'll be in touch when hosted mints open.", true);

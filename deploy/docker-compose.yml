@@ -78,7 +78,7 @@ services:
       # /data/suppliers.json. Each gets a mint at <name>.$HASHU_DOMAIN
       # (wildcard DNS record) filled only by its own rigs. Unset: none.
       HASHU_SUPPLIERS_FILE: ${HASHU_SUPPLIERS_FILE:-}
-      # Hosted-mint waitlist for miners at /join/ (sign-ups in
+      # Hosted-mint waitlist for miners at /waitlist/ (sign-ups in
       # /data/waitlist.jsonl, listed at /operator/waitlist). Off unless set.
       HASHU_WAITLIST: ${HASHU_WAITLIST:-false}
       # Fallback price while the live (MRR) source has no fresh sample.

@@ -1,9 +1,9 @@
 //! Hosted-mint waitlist for miners (`--waitlist`, off by default).
 //!
 //! Hosted per-miner mints (`<name>.<mint domain>`) are not open for sign-up
-//! yet. Until they are, `GET /join/` on the mint's public HTTP port shows a
+//! yet. Until they are, `GET /waitlist/` on the mint's public HTTP port shows a
 //! splash page where a miner leaves one way to reach them, and
-//! `POST /join/api` appends it to `<data>/waitlist.jsonl`. The operator reads
+//! `POST /waitlist/api` appends it to `<data>/waitlist.jsonl`. The operator reads
 //! (and deletes) entries behind the operator password, at
 //! `/operator/waitlist`.
 //!
@@ -36,7 +36,7 @@ const OPERATOR_PAGE: &str = include_str!("waitlist-operator.html");
 pub const MAX_CONTACT: usize = 200;
 pub const MAX_HASHRATE: usize = 80;
 pub const MAX_NOTE: usize = 500;
-/// Largest request body accepted by `POST /join/api`.
+/// Largest request body accepted by `POST /waitlist/api`.
 const MAX_BODY: usize = 4 * 1024;
 /// Entries kept at most; past this the form says the list is full.
 pub const MAX_ENTRIES: usize = 5_000;
@@ -443,16 +443,16 @@ async fn submit(State(w): State<Arc<Waitlist>>, headers: HeaderMap, body: Bytes)
     }
 }
 
-/// Public routes on the mint's HTTP port: `/join/` and `POST /join/api`.
+/// Public routes on the mint's HTTP port: `/waitlist/` and `POST /waitlist/api`.
 pub fn router(w: Arc<Waitlist>) -> Router {
     Router::new()
         .route(
-            "/join",
-            get(|| async { axum::response::Redirect::permanent("/join/") }),
+            "/waitlist",
+            get(|| async { axum::response::Redirect::permanent("/waitlist/") }),
         )
-        .route("/join/", get(|| async { Html(PAGE) }))
+        .route("/waitlist/", get(|| async { Html(PAGE) }))
         .route(
-            "/join/api",
+            "/waitlist/api",
             post(submit).get(|| async { Json(json!({ "open": true })) }),
         )
         .layer(DefaultBodyLimit::max(MAX_BODY))

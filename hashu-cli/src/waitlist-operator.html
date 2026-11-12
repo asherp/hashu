@@ -88,7 +88,7 @@ h1 { font-size: 24px; margin: 8px 0 4px; }
       <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#f7931a"/><path d="M10 7v18M22 7v18M10 16h12" stroke="#111" stroke-width="3.4" stroke-linecap="round"/></svg>
       Operator
     </a>
-    <div class="links"><a href="./">Dashboard</a><a href="/join/">Public sign-up page</a></div>
+    <div class="links"><a href="./">Dashboard</a><a href="/waitlist/">Public sign-up page</a></div>
   </nav>
   <h1>Hosted-mint waitlist</h1>
   <p class="sub" id="count">Loading…</p>
@@ -104,7 +104,7 @@ async function load() {
   const j = await r.json();
   document.getElementById('count').textContent = j.count + ' miner' + (j.count === 1 ? '' : 's') + ' waiting (newest first, at most ' + j.max + ').';
   list.replaceChildren();
-  if (!j.entries.length) { list.append(el('p', 'empty', 'Nobody yet. Share /join/.')); return; }
+  if (!j.entries.length) { list.append(el('p', 'empty', 'Nobody yet. Share /waitlist/.')); return; }
   for (const e of j.entries) {
     const row = el('div', 'row');
     row.append(el('div', 'c', e.contact));
