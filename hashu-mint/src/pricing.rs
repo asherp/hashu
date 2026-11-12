@@ -41,7 +41,8 @@ pub enum PricingError {
     /// The operator has paused issuance.
     #[error("issuance is paused by the mint operator")]
     Paused,
-    /// More THH than the mint's rented hashrate can still deliver.
+    /// More THH than the mint's hashrate (rented, or a supplier's rigs) can
+    /// still deliver.
     #[error("{}", sold_out_message(*requested, *available))]
     SoldOut { requested: u64, available: u64 },
 }
@@ -50,9 +51,7 @@ fn sold_out_message(requested: u64, available: u64) -> String {
     if available == 0 {
         "sold out: the mint has no hashrate available to sell right now".to_string()
     } else {
-        format!(
-            "only {available} THH available from the mint's rented hashrate (asked for {requested})"
-        )
+        format!("only {available} THH available from the mint's hashrate (asked for {requested})")
     }
 }
 

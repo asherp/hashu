@@ -857,9 +857,17 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         None
     };
 
-    // Registered suppliers' mints, on <name>.<this mint's host>.
+    // The proxy router, built here because supplier mints sell against
+    // their rigs' hashrate.
     let registry = args.home.registry();
-    let tenants = supplier_mints(&args, &registry, &ledger, fake_lightning, &sats_controlled);
+    let router = Arc::new(
+        Router::new(upstream.clone(), ledger.clone())
+            .with_switch_mode(args.switch_mode)
+            .with_home_pools(args.home.config()?)
+            .with_suppliers(registry.clone()),
+    );
+    // Registered suppliers' mints, on <name>.<this mint's host>.
+    let tenants = supplier_mints(&args, &registry, &ledger, fake_lightning, &router);
     if let Some(t) = &tenants {
         t.start_all().await;
     }
@@ -869,16 +877,19 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         .context("build mint HTTP router")?
         .merge(checkout::router(checkout.clone()))
         .merge(landing::router());
-    if let Some(w) = &waitlist {
-        app = app.merge(waitlist::router(w.clone()));
+    match (&waitlist, &tenants) {
+        // Sign-up is open: it takes /join/ over from the waitlist splash.
+        // The operator's waitlist view keeps the entries collected so far.
+        (Some(_), Some(_)) => tracing::info!(
+            "supplier sign-up is on, so /join/ serves sign-up instead of the waitlist"
+        ),
+        (Some(w), None) => app = app.merge(waitlist::router(w.clone())),
+        _ => {}
     }
     if let Some(t) = &tenants {
-        app =
-            app.merge(tenants::ask_router(t.clone()))
-                .layer(axum::middleware::from_fn_with_state(
-                    t.clone(),
-                    tenants::dispatch,
-                ));
+        app = app.merge(tenants::operator_router(t.clone())).layer(
+            axum::middleware::from_fn_with_state(t.clone(), tenants::dispatch),
+        );
     }
     let http = tokio::net::TcpListener::bind(args.listen)
         .await
@@ -886,12 +897,6 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let http_task = tokio::spawn(async move { axum::serve(http, app).await });
 
     // ---- proxy --------------------------------------------------------
-    let router = Arc::new(
-        Router::new(upstream.clone(), ledger.clone())
-            .with_switch_mode(args.switch_mode)
-            .with_home_pools(args.home.config()?)
-            .with_suppliers(registry),
-    );
     let crediter = Arc::new(ShareCrediter::with_audit(ledger.clone(), audit.clone()));
     let credit = CreditContext::new(crediter, router.clone());
 
@@ -1006,7 +1011,7 @@ fn supplier_mints(
     registry: &Arc<hashu_proxy::suppliers::SupplierRegistry>,
     ledger: &Arc<RedemptionLedger>,
     fake_lightning: bool,
-    sats: &Arc<ControlledPricer>,
+    router: &Arc<Router>,
 ) -> Option<Arc<Tenants>> {
     if !registry.path_configured() {
         return None;
@@ -1024,17 +1029,21 @@ fn supplier_mints(
         return None;
     };
     tracing::info!(host = %format!("*.{base}"), "serving supplier mints");
-    Some(Arc::new(Tenants::new(
+    let r = router.clone();
+    Some(Tenants::new(
         TenantConfig {
             base,
             dir: args.data_dir.join("mints"),
             ledger: ledger.clone(),
             min_redeem_thh: args.min_redeem_thh,
             max_thh: args.max_thh,
-            fake_lightning: fake_lightning.then(|| sats.clone() as Arc<dyn ThhPricer>),
+            fake_lightning,
+            hashrate: Arc::new(move |name: &str| r.supplier_hashrate(name)),
+            stratum_port: args.stratum_bind.port(),
+            probe: tenants::lnurl_probe(),
         },
         registry.clone(),
-    )))
+    ))
 }
 
 #[cfg(test)]

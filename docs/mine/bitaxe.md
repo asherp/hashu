@@ -73,7 +73,7 @@ delivered to redemptions since the proxy started).
 On `mint.hashu.io`, which is reserved for Hashu's own hashrate, set
 `HASHU_OPERATOR_WORKER`: a Bitaxe then mines to its home pool through the
 proxy and is not borrowed until it has its own mint
-(`<name>.mint.hashu.io`, coming next).
+(`<name>.mint.hashu.io`, see below).
 
 With home pools on, a new connection waits up to 2 s for the miner's
 `mining.authorize` before the proxy dials a pool. ESP-Miner sends
@@ -88,8 +88,7 @@ number a payout would be based on.
 ## Registered suppliers (your own mint)
 
 A registered supplier `alice` has their own mint at
-`alice.<mint host>` (e.g. `alice.mint.hashu.io`, sign-up coming in a
-later release), with its own keys, served by the same process as the
+`alice.<mint host>` (e.g. `alice.mint.hashu.io`), with its own keys, served by the same process as the
 operator's mint. Alice proves each rig belongs to her with a secret:
 
 | AxeOS field | Value |
@@ -104,14 +103,39 @@ invoice spreads over all of Alice's free rigs. `pw=` is never sent to any
 pool. A registered name with a wrong or missing secret is refused, and so
 is a supplier rig with no home pool.
 
-Melting THH from `alice.mint.hashu.io` (method `hashrate`) opens a
-redemption that only Alice's rigs fill. Her mint does not sell yet:
-buyers paying Alice's own wallet comes next (until then it sells only on a
-proxy run with `--lightning fake`, for testing; the operator's phoenixd
-wallet is never used for a supplier's mint).
+### Sign up
 
-Operators list suppliers in a JSON file (`HASHU_SUPPLIERS_FILE`), re-read
-when it changes; only the SHA-256 of each secret is stored:
+Open `https://mint.hashu.io/join/`, pick a name, and enter your Lightning
+address, your ask (sats per THH) and your horizon. The page checks the
+address can be invoiced and supports payment verification (LUD-21
+`verify`; not every provider has it, and the page says so if yours
+doesn't), then shows your
+worker secret once and the AxeOS settings above. Your mint is live at
+`https://<name>.mint.hashu.io` immediately.
+
+### Selling
+
+- Buyers mint THH from your mint over Lightning with any Cashu wallet.
+  Each sale is an invoice from **your** wallet (LNURL-pay), and your mint
+  issues THH once your wallet's `verify` URL reports it paid. Hashu never
+  holds the payment.
+- What's for sale: `measured hashrate of your verified rigs × horizon −
+  THH your mint already owes` (in circulation plus open redemptions). The
+  horizon is yours to choose, 1 hour or more (default 24). With no rigs
+  online your mint is sold out.
+- Melting THH on your mint (method `hashrate`) opens a redemption only your
+  rigs fill.
+- Your mint's page (`/`) shows ask, THH for sale and TH/s online; open
+  **Supplier settings** with your worker secret to change ask, horizon or
+  Lightning address (`GET`/`POST /api/settings`, header `X-Hashu-Secret`).
+
+Sign-up is limited to 10 new names per hour per proxy. A buy and redeem
+page on supplier mints and NWC as a second payment option come next.
+
+Suppliers are kept in a JSON file (`HASHU_SUPPLIERS_FILE`), written by
+sign-up and re-read when it changes (operators can also edit it by hand);
+only the SHA-256 of each secret is stored. Without the setting, sign-up is
+closed:
 
 ```json
 { "suppliers": { "alice": { "secret_sha256": "<sha256 hex of the secret>" } } }

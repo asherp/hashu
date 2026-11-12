@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sell your hashrate · Hashu</title>
+<style>
+:root { --bg:#f6f6f4; --surface:#fff; --ink:#1b1b1a; --ink-2:#55534f; --line:rgba(27,27,26,.12); --brand:#e8850c; --bad:#c2403a; --good:#2f8a57; }
+@media (prefers-color-scheme: dark) { :root { --bg:#111110; --surface:#1a1a19; --ink:#f1efea; --ink-2:#b5b2ab; --line:rgba(241,239,234,.14); --brand:#f7931a; --bad:#e06c6c; --good:#5cc28a; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
+.wrap { max-width:640px; margin:0 auto; padding:32px 16px 64px; }
+h1 { font-size:30px; margin:0 0 8px; letter-spacing:-.01em; }
+p.lead { color:var(--ink-2); margin:0 0 24px; }
+form, .card { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:20px; }
+label { display:block; font-weight:600; font-size:14px; margin:14px 0 4px; }
+label:first-child { margin-top:0; }
+.hint { color:var(--ink-2); font-size:13px; font-weight:400; }
+input { width:100%; font:inherit; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
+.suffix { display:flex; align-items:center; gap:8px; }
+.suffix span { color:var(--ink-2); white-space:nowrap; }
+button { margin-top:20px; font:inherit; font-weight:600; padding:12px 20px; border-radius:10px; border:1px solid var(--brand); background:var(--brand); color:#111; cursor:pointer; }
+button:disabled { opacity:.6; cursor:wait; }
+.err { color:var(--bad); margin-top:12px; }
+table { width:100%; border-collapse:collapse; margin:12px 0; }
+td { padding:8px 0; border-bottom:1px solid var(--line); vertical-align:top; }
+td:first-child { color:var(--ink-2); width:38%; padding-right:12px; }
+code { font:14px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
+.warn { border-left:3px solid var(--brand); padding:8px 12px; margin:12px 0; background:rgba(232,133,12,.08); }
+[hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <h1>Sell your hashrate</h1>
+  <p class="lead">Get your own mint. Buyers pay your Lightning wallet directly, and orders from your mint are filled only by your rigs.</p>
+
+  <form id="join">
+    <label for="name">Mint name <span class="hint">3 to 32 lowercase letters, digits or hyphens</span></label>
+    <div class="suffix"><input id="name" required pattern="[a-z0-9][a-z0-9-]{1,30}[a-z0-9]" autocomplete="off"><span id="base"></span></div>
+
+    <label for="ln">Lightning address <span class="hint">your wallet must support payment verification (LUD-21)</span></label>
+    <input id="ln" required placeholder="you@wallet.example" autocomplete="off">
+
+    <label for="ask">Ask <span class="hint">sats per THH</span></label>
+    <input id="ask" type="number" min="1" step="1" required>
+
+    <label for="horizon">Horizon <span class="hint">hours ahead you sell: THH for sale = your rigs' hashrate × horizon</span></label>
+    <input id="horizon" type="number" min="1" step="1" value="24" required>
+
+    <button id="go">Create my mint</button>
+    <div class="err" id="err" hidden></div>
+  </form>
+
+  <div class="card" id="done" hidden>
+    <h2 style="margin-top:0">Your mint is live</h2>
+    <div class="warn">Save your worker secret now. It is shown once and only its hash is stored.</div>
+    <table>
+      <tr><td>Mint</td><td><a id="mint"></a></td></tr>
+      <tr><td>Worker secret</td><td><code id="secret"></code></td></tr>
+    </table>
+    <h3>AxeOS settings for each rig</h3>
+    <table>
+      <tr><td>Stratum URL</td><td><code id="s-url"></code></td></tr>
+      <tr><td>Port</td><td><code id="s-port"></code></td></tr>
+      <tr><td>User</td><td><code id="s-user"></code> <span class="hint">one name per rig, e.g. rig1</span></td></tr>
+      <tr><td>Password</td><td><code id="s-pass"></code> <span class="hint">add <code>,pool=host:port</code> for your own pool while idle</span></td></tr>
+    </table>
+    <p>Your mint sells as soon as your rigs are online. Change your ask, horizon or address on your mint's page.</p>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+$('base').textContent = '.' + location.hostname;
+$('join').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('err').hidden = true;
+  $('go').disabled = true;
+  try {
+    const r = await fetch('/api/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: $('name').value.trim().toLowerCase(),
+        lightning_address: $('ln').value.trim(),
+        ask_sats_per_thh: Number($('ask').value),
+        horizon_hours: Number($('horizon').value),
+      }),
+    });
+    const text = await r.text();
+    if (!r.ok) throw new Error(text || r.statusText);
+    const j = JSON.parse(text);
+    $('mint').textContent = j.mint_url;
+    $('mint').href = j.mint_url;
+    $('secret').textContent = j.secret;
+    $('s-url').textContent = j.stratum.url;
+    $('s-port').textContent = j.stratum.port;
+    $('s-user').textContent = j.stratum.user;
+    $('s-pass').textContent = j.stratum.password;
+    $('join').hidden = true;
+    $('done').hidden = false;
+  } catch (err) {
+    $('err').textContent = err.message;
+    $('err').hidden = false;
+  } finally {
+    $('go').disabled = false;
+  }
+});
+</script>
+</body>
+</html>
