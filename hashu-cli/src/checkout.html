@@ -342,7 +342,10 @@ async function loadInfo () {
     $('avail').hidden = av == null
     if (av != null) {
       const ends = st.info.capacity_ends_ms ? `, mining for another ${Math.max(0, (st.info.capacity_ends_ms - Date.now()) / 3.6e6).toFixed(1)} h` : ''
-      $('avail').textContent = av > 0 ? `${av.toLocaleString()} THH available now (${(st.info.rented_ths || 0).toFixed(1)} TH/s rented${ends}).` : 'Sold out: the mint has no hashrate available to sell right now. Purchases reopen when new hashrate is rented; this page updates on its own.'
+      const min = st.info.min_buy_thh || 1
+      $('avail').textContent = av > 0 ? `${av.toLocaleString()} THH available now (${(st.info.rented_ths || 0).toFixed(1)} TH/s rented${ends}).`
+        : st.info.below_min ? `Sold out: ${fmtThh(st.info.headroom_thh, 2)} THH of headroom left, below the ${min} THH minimum purchase. Capacity counts the mint's declared hashrate rentals × hours left, not live hashrate. Purchases reopen when more is rented; this page updates on its own.`
+        : 'Sold out: the mint has no hashrate available to sell right now. Purchases reopen when new hashrate is rented; this page updates on its own.'
     }
     $('avail').classList.toggle('soldout', av === 0)
     const total = st.info.capacity_thh
@@ -657,14 +660,32 @@ const orderKey = () => { const k = new URLSearchParams(location.hash.slice(1)).g
 function showStop (r) {
   const running = r.state === 'pending' || r.state === 'active' || r.state === 'opening'
   $('p-stop-row').hidden = !(running && r.can_stop && orderKey())
-  if (!$('p-stop-row').hidden && !st.stopping) {
+  if ($('p-stop-row').hidden || st.stopping) return
+  // A stop only helps while it returns something (#83). Older servers send
+  // no preview: keep the button and the general note.
+  const charge = r.stop_charge_thh, change = r.stop_change_thh
+  const known = change != null
+  const floor = r.floor_thh || 0
+  const belowFloor = (r.filled_thh || 0) < floor
+  $('btn-stop').hidden = (known && change === 0) || belowFloor
+  if (belowFloor && r.amount_thh <= floor) {
+    $('p-stop-note').textContent = `This redemption is the ${floor} THH minimum, so it has no refundable part. It runs until ${r.amount_thh} THH is delivered; if delivery fails, contact the mint operator.`
+  } else if (belowFloor) {
+    $('p-stop-note').textContent = `You can stop for change once ${floor} THH is delivered (${fmtThh(r.filled_thh)} so far). Stopping then charges the delivered THH rounded up and returns the rest. If delivery doesn't start, contact the mint operator.`
+  } else if (!known) {
     const floor = r.floor_thh ? `, at least ${r.floor_thh} THH` : ''
     $('p-stop-note').textContent = `You pay for what was delivered so far, rounded up to whole THH${floor}. The rest comes back here as change.`
+  } else if (change > 0) {
+    $('p-stop-note').textContent = `Stopping now charges ${charge} THH and returns ${change} THH as change (delivered work rounded up to whole THH${r.floor_thh ? `, at least ${r.floor_thh} THH` : ''}).`
+  } else if (r.amount_thh <= (r.floor_thh || 0)) {
+    $('p-stop-note').textContent = `This redemption is the ${r.floor_thh} THH minimum, so it has no refundable part: stopping would charge all of it. It runs until ${r.amount_thh} THH is delivered.`
+  } else {
+    $('p-stop-note').textContent = `Stopping now would charge all ${charge} THH and return nothing, because delivered work is rounded up to whole THH. It finishes on its own shortly.`
   }
 }
 $('btn-stop').addEventListener('click', async () => {
   const key = orderKey()
-  if (!key || !confirm('Stop this redemption now? Hashrate stops going to your pool, and the undelivered THH come back as change.')) return
+  if (!key || !confirm('Stop this redemption now? Hashrate stops going to your pool. ' + ($('p-stop-note').textContent || 'The undelivered THH come back as change.'))) return
   $('btn-stop').disabled = true; st.stopping = true
   $('p-stop-note').textContent = 'Stopping…'
   try {

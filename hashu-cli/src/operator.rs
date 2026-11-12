@@ -653,6 +653,8 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
                 "amount_thh": r.amount_thh,
                 "filled_thh": filled,
                 "remaining_thh": remaining,
+                "stop_charge_thh": r.settle_preview().map(|(c, _)| c),
+                "stop_change_thh": r.settle_preview().map(|(_, m)| m),
                 "progress": if r.target_hashes == 0 { 1.0 } else {
                     (r.accumulated_hashes as f64 / r.target_hashes as f64).min(1.0)
                 },

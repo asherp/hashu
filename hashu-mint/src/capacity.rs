@@ -20,6 +20,11 @@
 //! With no rentals configured nothing can be sold: a mint must not take
 //! payment for hashrate it has no machines to deliver. The operator can
 //! turn the limit off explicitly (`limit: false`) to sell uncapped.
+//!
+//! `capacity_thh` is *declared* capacity (rentals × hours left), not the
+//! hashrate the proxy measures right now. And because THH amounts are whole
+//! numbers, headroom below [`MIN_PURCHASE_THH`] cannot be sold: a 1 TH/s
+//! rental with 55 minutes left is 0.92 THH of capacity and 0 available.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -28,6 +33,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::pricing::PricingError;
+
+/// Smallest purchase: Cashu amounts are integers in the `THH` unit, so a
+/// buyer gets at least 1 THH and fractional headroom is unsellable.
+pub const MIN_PURCHASE_THH: u64 = 1;
 
 const MS_PER_HOUR: f64 = 3_600_000.0;
 
@@ -103,6 +112,9 @@ pub struct CapacitySnapshot {
     pub headroom_thh: f64,
     /// Whole THH a buyer can still get; `None` while the limit is off.
     pub available_thh: Option<u64>,
+    /// Capped, with some headroom but less than [`MIN_PURCHASE_THH`]: the
+    /// mint reads sold out only because THH is sold in whole units.
+    pub below_min: bool,
     pub mrr_enabled: bool,
     pub mrr_synced_ms: Option<u64>,
     pub mrr_error: Option<String>,
@@ -231,6 +243,7 @@ impl CapacityBook {
             owed_updated_ms: g.owed_ms,
             headroom_thh,
             available_thh: limit.then(|| headroom_thh.max(0.0).floor() as u64),
+            below_min: limit && headroom_thh > 0.0 && headroom_thh < MIN_PURCHASE_THH as f64,
             mrr_enabled: g.mrr_enabled,
             mrr_synced_ms: g.p.mrr_synced_ms,
             mrr_error: g.mrr_error.clone(),
@@ -296,6 +309,25 @@ mod tests {
             ths,
             end_ms,
         }
+    }
+
+    #[test]
+    fn headroom_under_one_thh_is_below_min() {
+        // A 1 TH/s rental with ~56 minutes left: 0.93 THH declared, 0 to sell.
+        let b = CapacityBook::new();
+        b.set_manual(vec![rental(1.0, 3_344_400)]);
+        let s = b.snapshot(0);
+        assert!((s.headroom_thh - 0.929).abs() < 1e-9);
+        assert_eq!(s.available_thh, Some(0));
+        assert!(s.below_min);
+        // Nothing rented, or a whole THH or more, is not "below the minimum".
+        assert!(!CapacityBook::new().snapshot(0).below_min);
+        b.set_manual(vec![rental(1.0, 2 * H)]);
+        assert!(!b.snapshot(0).below_min);
+        // Uncapped never reads sold out.
+        b.set_manual(vec![rental(1.0, 3_344_400)]);
+        b.set_limit(Some(false));
+        assert!(!b.snapshot(0).below_min);
     }
 
     #[test]

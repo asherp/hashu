@@ -206,7 +206,9 @@ async function load() {
     const soldOut = i.available_thh === 0;
     $('s-sales').innerHTML = i.issuance_paused ? '<span class="pill no">paused</span>'
       : soldOut ? '<span class="pill no">sold out</span>' : '<span class="pill ok">open</span>';
-    if (soldOut) $('s-avail').innerHTML = `0 <small>THH · no hashrate available${i.capacity_thh > 0 ? ` (all ${fmt(i.capacity_thh)} allocated)` : ''}</small>`;
+    if (soldOut) $('s-avail').innerHTML = i.below_min
+      ? `0 <small>THH · ${fmt(i.headroom_thh, 2)} THH headroom, below the ${fmt(i.min_buy_thh || 1)} THH minimum</small>`
+      : `0 <small>THH · no hashrate available${i.capacity_thh > 0 ? ` (all ${fmt(i.capacity_thh)} allocated)` : ''}</small>`;
     markSoldOut(soldOut || !!i.issuance_paused);
     if (i.mint_url && /^https?:\/\//.test(i.mint_url)) { mintUrl = i.mint_url.replace(/\/+$/, ''); showUrl(); }
   } catch (e) {

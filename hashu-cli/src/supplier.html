@@ -38,7 +38,7 @@ details summary { cursor:pointer; font-weight:600; }
   <div class="card">
     <div class="stats">
       <div class="stat"><b id="ask">–</b><span>sats per THH</span></div>
-      <div class="stat"><b id="avail">–</b><span>THH for sale</span></div>
+      <div class="stat"><b id="avail">–</b><span id="avail-sub">THH for sale</span></div>
       <div class="stat"><b id="rate">–</b><span>TH/s online</span></div>
       <div class="stat"><b id="horizon">–</b><span>hour horizon</span></div>
     </div>
@@ -77,6 +77,9 @@ async function status() {
     document.title = s.name + ' · Hashu supplier mint';
     $('ask').textContent = s.ask_sats_per_thh ?? '–';
     $('avail').textContent = fmt(s.capacity.available_thh);
+    $('avail-sub').textContent = s.capacity.below_min
+      ? `THH for sale (${fmt(s.capacity.capacity_thh - s.capacity.owed_thh, 2)} THH headroom, below the 1 THH minimum)`
+      : 'THH for sale';
     $('rate').textContent = fmt(s.capacity.hashrate_ths, 2);
     $('horizon').textContent = fmt(s.capacity.horizon_hours, 1);
     $('state').textContent = s.selling ? 'selling' : (s.capacity.hashrate_ths > 0 ? 'not selling' : 'no rigs online');

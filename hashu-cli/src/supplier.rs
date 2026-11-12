@@ -119,6 +119,8 @@ pub struct SupplierCapacity {
     pub capacity_thh: f64,
     pub owed_thh: f64,
     pub available_thh: u64,
+    /// Some headroom, but under the 1 THH minimum purchase.
+    pub below_min: bool,
 }
 
 impl SupplierPricer {
@@ -145,7 +147,8 @@ impl SupplierPricer {
         let hashrate_ths = ((self.hashrate)(&self.name) / 1e12).max(0.0);
         let capacity_thh = hashrate_ths * horizon_hours;
         let owed_thh = *self.owed.lock().unwrap_or_else(|e| e.into_inner());
-        let available = (capacity_thh - owed_thh).floor();
+        let headroom = capacity_thh - owed_thh;
+        let available = headroom.floor();
         SupplierCapacity {
             hashrate_ths,
             horizon_hours,
@@ -156,6 +159,7 @@ impl SupplierPricer {
             } else {
                 0
             },
+            below_min: headroom > 0.0 && headroom < hashu_mint::capacity::MIN_PURCHASE_THH as f64,
         }
     }
 }
@@ -232,6 +236,16 @@ mod tests {
         );
         // Owing more than the rigs cover is sold out, not negative.
         assert_eq!(pricer(1.0, Some(1), 1.0, 9.0).capacity().available_thh, 0);
+        assert!(!pricer(1.0, Some(1), 1.0, 9.0).capacity().below_min);
+    }
+
+    #[test]
+    fn bitaxe_one_hour_is_below_the_minimum() {
+        // 0.6 TH/s for a 1 h horizon = 0.6 THH: nothing for sale, but say why.
+        let c = pricer(0.6, Some(40), 1.0, 0.0).capacity();
+        assert_eq!(c.available_thh, 0);
+        assert!(c.below_min);
+        assert!(!pricer(0.6, Some(40), 2.0, 0.0).capacity().below_min);
     }
 
     #[test]

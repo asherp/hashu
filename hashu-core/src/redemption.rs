@@ -227,6 +227,19 @@ impl Redemption {
         self.amount_thh - self.spent_thh()
     }
 
+    /// `(charged, returned)` if the redemption were settled now: delivered
+    /// work rounded up, never below the floor. `None` once it has finished.
+    /// A stop is only worth offering while `returned > 0`; below that (for
+    /// example nothing delivered on a redemption of exactly its floor) it
+    /// would burn the whole amount.
+    pub fn settle_preview(&self) -> Option<(u64, u64)> {
+        if self.is_finished() {
+            return None;
+        }
+        let charged = self.delivered_thh().clamp(self.floor_thh, self.amount_thh);
+        Some((charged, self.amount_thh - charged))
+    }
+
     /// Stop the redemption where it stands. Returns false if it had
     /// already finished.
     fn settle(&mut self) -> bool {
@@ -865,5 +878,22 @@ mod tests {
             ledger.get(&id(3)).map(|r| r.state),
             Some(RedemptionState::Completed)
         );
+    }
+
+    #[test]
+    fn settle_preview_says_what_a_stop_returns() {
+        // 1 THH at a 1 THH floor: a stop can never return anything.
+        let r = Redemption::new(id(1), 1, "p".into(), "w".into()).with_floor(1);
+        assert_eq!(r.settle_preview(), Some((1, 0)));
+        // 10 THH, floor 1, 0.5 delivered: charged the floor, 9 back.
+        let mut r = Redemption::new(id(2), 10, "p".into(), "w".into()).with_floor(1);
+        r.credit_hashes(HASHES_PER_THH / 2);
+        assert_eq!(r.settle_preview(), Some((1, 9)));
+        // 9.2 delivered rounds up to all 10: nothing back.
+        r.credit_hashes(HASHES_PER_THH * 87 / 10);
+        assert_eq!(r.settle_preview(), Some((10, 0)));
+        // Finished: no preview.
+        r.settle();
+        assert_eq!(r.settle_preview(), None);
     }
 }

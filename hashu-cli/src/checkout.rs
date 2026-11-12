@@ -29,6 +29,8 @@
 //!   the redemption has ended, where its change stands (see [`crate::orders`]).
 //! - `POST /checkout/api/order/{order_id}/stop` `{ stop_secret }`: the
 //!   redeemer stops the redemption early and gets the rest back as change.
+//!   Refused (409) before `floor_thh` is delivered (only the operator can
+//!   stop it then) and while a stop would return nothing.
 //!   Redeem requests carry `stop_hash` (SHA-256 of the secret) for this;
 //!   the page derives the secret from the key in the order link's `#`.
 
@@ -50,6 +52,7 @@ use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, State as ProofSpent
 use cdk::wallet::{KeysetFilter, Wallet};
 use cdk::Amount;
 use hashu_core::redemption::{RedemptionId, RedemptionLedger, HASHES_PER_THH};
+use hashu_mint::capacity::MIN_PURCHASE_THH;
 use hashu_mint::melt::{redemption_id_for, METHOD as HASHRATE};
 use hashu_mint::tether::{METHOD as USDT, USDC_METHOD as USDC};
 use hashu_proxy::meter::HashrateMeter;
@@ -408,6 +411,12 @@ async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
         // THH the rented hashrate can still deliver beyond what is owed;
         // null when the mint does not cap sales.
         "available_thh": cap.available_thh,
+        // Unrounded capacity − owed (0 when oversold), and the smallest
+        // purchase. With 0 < headroom < min the mint is sold out only
+        // because THH is sold in whole units.
+        "headroom_thh": cap.headroom_thh.max(0.0),
+        "min_buy_thh": MIN_PURCHASE_THH,
+        "below_min": cap.below_min,
         // allocated + available = total capacity (rented TH/s × hours
         // left); allocated is THH already sold or still being delivered.
         "capacity_thh": cap.capacity_thh,
@@ -453,11 +462,11 @@ async fn buy(State(s): State<Arc<CheckoutState>>, body: Bytes) -> Response {
     };
     let Some(amount) = v["amount_thh"]
         .as_u64()
-        .filter(|a| *a >= 1 && *a <= s.max_thh)
+        .filter(|a| *a >= MIN_PURCHASE_THH && *a <= s.max_thh)
     else {
         return err(
             StatusCode::BAD_REQUEST,
-            format!("amount_thh must be 1 to {}", s.max_thh),
+            format!("amount_thh must be {MIN_PURCHASE_THH} to {}", s.max_thh),
         );
     };
     let method = v["method"].as_str().unwrap_or("bolt11").to_string();
@@ -1269,6 +1278,27 @@ async fn stop_order(
     {
         return err(StatusCode::FORBIDDEN, "wrong stop key for this order");
     }
+    // A stop that returns nothing only burns the rest of the token (#83):
+    // nothing delivered yet on a redemption of its floor, or the remainder
+    // already rounds up to the full amount. The operator's settle can still
+    // clear such a redemption.
+    if let Some(r) = s.ledger.get(&o.redemption_id) {
+        // Below the floor a stop charges the whole floor for less work, so
+        // only the operator may end the redemption there (e.g. a delivery
+        // that never started).
+        if !r.is_finished() && r.accumulated_hashes < u128::from(r.floor_thh) * HASHES_PER_THH {
+            return err(
+                StatusCode::CONFLICT,
+                format!("the redeemer can stop this redemption once {} THH is delivered; before that only the mint operator can stop it", r.floor_thh),
+            );
+        }
+        if let Some((charged, 0)) = r.settle_preview() {
+            return err(
+                StatusCode::CONFLICT,
+                format!("stopping now would charge all {charged} THH and return nothing, so this redemption cannot be stopped for change"),
+            );
+        }
+    }
     match s.ledger.settle(&o.redemption_id) {
         Ok(out) => {
             if out.newly_settled {
@@ -1348,6 +1378,9 @@ fn redemption_json(s: &CheckoutState, rid: &RedemptionId) -> Option<Value> {
             "amount_thh": r.amount_thh,
             "floor_thh": r.floor_thh,
             "filled_thh": filled,
+            // What a stop right now would charge and return; null once finished.
+            "stop_charge_thh": r.settle_preview().map(|(c, _)| c),
+            "stop_change_thh": r.settle_preview().map(|(_, m)| m),
             "progress": if r.target_hashes == 0 { 1.0 } else { (r.accumulated_hashes as f64 / r.target_hashes as f64).min(1.0) },
             "state": r.state.as_str(),
             "spent_thh": r.is_finished().then(|| r.spent_thh()),
