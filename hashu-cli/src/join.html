@@ -42,8 +42,8 @@ code { font:14px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-a
     <label for="ln">Lightning address <span class="hint">your wallet must support payment verification (LUD-21)</span></label>
     <input id="ln" required placeholder="you@wallet.example" autocomplete="off">
 
-    <label for="ask">Ask <span class="hint">sats per THH</span></label>
-    <input id="ask" type="number" min="1" step="1" required>
+    <label for="ask">Ask <span class="hint">sats per THH, to the millisat (0.001)</span></label>
+    <input id="ask" type="number" min="0.001" step="0.001" required>
 
     <label for="horizon">Horizon <span class="hint">hours ahead you sell: THH for sale = your rigs' hashrate × horizon</span></label>
     <input id="horizon" type="number" min="1" step="1" value="24" required>
@@ -83,7 +83,7 @@ $('join').addEventListener('submit', async (e) => {
       body: JSON.stringify({
         name: $('name').value.trim().toLowerCase(),
         lightning_address: $('ln').value.trim(),
-        ask_sats_per_thh: Number($('ask').value),
+        ask_msat_per_thh: Math.round(Number($('ask').value) * 1000),
         horizon_hours: Number($('horizon').value),
       }),
     });

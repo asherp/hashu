@@ -2,7 +2,8 @@
 //!
 //! Each supplier sets, in `<data-dir>/mints/<name>/settings.json`:
 //!
-//! - `ask_sats_per_thh`: their price;
+//! - `ask_msat_per_thh`: their price, in millisats per THH (Lightning's
+//!   resolution, so a market near 2 sats/THH can still be matched finely);
 //! - `horizon_hours`: how far ahead they sell (Asher, 2026-11-11). THH for
 //!   sale = measured hashrate of their verified rigs × horizon − THH their
 //!   mint already owes;
@@ -32,7 +33,7 @@ fn default_horizon() -> f64 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SupplierSettings {
     #[serde(default)]
-    pub ask_sats_per_thh: Option<u64>,
+    pub ask_msat_per_thh: Option<u64>,
     #[serde(default = "default_horizon")]
     pub horizon_hours: f64,
     #[serde(default)]
@@ -42,7 +43,7 @@ pub struct SupplierSettings {
 impl Default for SupplierSettings {
     fn default() -> Self {
         Self {
-            ask_sats_per_thh: None,
+            ask_msat_per_thh: None,
             horizon_hours: DEFAULT_HORIZON_HOURS,
             lightning_address: None,
         }
@@ -53,8 +54,8 @@ impl SupplierSettings {
     /// Check the values (not whether the address works: see
     /// [`hashu_mint::lnaddress::probe`]). Normalizes the address.
     pub fn validated(mut self) -> Result<Self, String> {
-        if self.ask_sats_per_thh == Some(0) {
-            return Err("ask must be at least 1 sat per THH".into());
+        if self.ask_msat_per_thh == Some(0) {
+            return Err("ask must be at least 1 msat per THH".into());
         }
         if !self.horizon_hours.is_finite() || self.horizon_hours < MIN_HORIZON_HOURS {
             return Err(format!("horizon must be at least {MIN_HORIZON_HOURS} hour"));
@@ -173,7 +174,7 @@ impl ThhPricer for SupplierPricer {
             .settings
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .ask_sats_per_thh
+            .ask_msat_per_thh
             .ok_or(PricingError::NoPrice)?;
         let available = self.capacity().available_thh;
         if amount_thh > available {
@@ -195,7 +196,7 @@ mod tests {
         SupplierPricer::new(
             "alice",
             Arc::new(RwLock::new(SupplierSettings {
-                ask_sats_per_thh: ask,
+                ask_msat_per_thh: ask,
                 horizon_hours: horizon,
                 lightning_address: None,
             })),
@@ -222,6 +223,12 @@ mod tests {
             pricer(1.2, Some(50), 72.0, 5.0).capacity().available_thh,
             81
         );
+    }
+
+    #[test]
+    fn asks_have_millisat_resolution() {
+        // 2.5 sats per THH: 3 THH cost 7.5 sats, invoiced as 7,500 msat.
+        assert_eq!(pricer(1.0, Some(2_500), 24.0, 0.0).price(3), Ok(7_500));
     }
 
     #[test]
@@ -256,7 +263,7 @@ mod tests {
             SupplierSettings::default()
         );
         let s = SupplierSettings {
-            ask_sats_per_thh: Some(45),
+            ask_msat_per_thh: Some(45),
             horizon_hours: 12.0,
             lightning_address: Some(" Alice@Wallet.Example ".into()),
         }
@@ -272,7 +279,7 @@ mod tests {
         assert!(one_hour.validated().is_ok());
         for bad in [
             SupplierSettings {
-                ask_sats_per_thh: Some(0),
+                ask_msat_per_thh: Some(0),
                 ..Default::default()
             },
             SupplierSettings {
