@@ -82,7 +82,10 @@ pub struct Entry {
 
 /// Commitment horizons the form offers, with their length in hours. The
 /// miner's hashrate times the horizon is the THH their mint could sell.
-pub const HORIZONS: [(&str, u32); 5] = [
+pub const HORIZONS: [(&str, u32); 8] = [
+    ("hour", 1),
+    ("6-hours", 6),
+    ("day", 24),
     ("week", 7 * 24),
     ("month", 30 * 24),
     ("quarter", 90 * 24),
@@ -637,7 +640,10 @@ mod tests {
             w.submit("a", with("lots", "week")),
             Err(Refusal::Invalid(_))
         ));
+        // As short as one hour: 100 TH/s × 1 h = 100 THH.
+        assert_eq!(w.submit("b", with("100", "hour")), Ok(Outcome::Added));
         let e = w.entries();
+        assert_eq!(e[2].thh_for_sale, Some(100.0));
         assert_eq!(e[0].hashrate_ths, Some(1.2));
         assert_eq!(e[0].thh_for_sale, Some(864.0));
         assert_eq!(e[1].horizon.as_deref(), Some("year"));
