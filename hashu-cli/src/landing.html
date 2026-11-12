@@ -84,7 +84,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       <a href="/checkout/" data-buy>Buy hashrate</a>
       <a href="/slides/">Slides</a>
       <a href="https://github.com/asherp/hashu">GitHub</a>
-      <a id="nav-join" href="/join/" hidden>Hosted mints</a>
+      <a id="nav-waitlist" href="/waitlist/" hidden>Hosted mints</a>
       <a id="nav-contact" href="#contact" hidden>Contact</a>
     </div>
   </nav>
@@ -217,8 +217,8 @@ load();
 setInterval(load, 30000);
 
 // Hosted-mint waitlist link, only when this mint runs with --waitlist.
-fetch('/join/api', { cache: 'no-store' })
-  .then((r) => { if (r.ok) document.getElementById('nav-join').hidden = false; })
+fetch('/waitlist/api', { cache: 'no-store' })
+  .then((r) => { if (r.ok) document.getElementById('nav-waitlist').hidden = false; })
   .catch(() => {});
 
 // Operator contact from the mint's NUT-06 info (HASHU_MINT_CONTACT).

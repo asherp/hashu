@@ -88,7 +88,7 @@ h1 { font-size: 24px; margin: 8px 0 4px; }
       <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#f7931a"/><path d="M10 7v18M22 7v18M10 16h12" stroke="#111" stroke-width="3.4" stroke-linecap="round"/></svg>
       Operator
     </a>
-    <div class="links"><a href="./">Dashboard</a><a href="/join/">Public sign-up page</a></div>
+    <div class="links"><a href="./">Dashboard</a><a href="/waitlist/">Public sign-up page</a></div>
   </nav>
   <h1>Hosted-mint waitlist</h1>
   <p class="sub" id="count">Loading…</p>
@@ -104,13 +104,17 @@ async function load() {
   const j = await r.json();
   document.getElementById('count').textContent = j.count + ' miner' + (j.count === 1 ? '' : 's') + ' waiting (newest first, at most ' + j.max + ').';
   list.replaceChildren();
-  if (!j.entries.length) { list.append(el('p', 'empty', 'Nobody yet. Share /join/.')); return; }
+  if (!j.entries.length) { list.append(el('p', 'empty', 'Nobody yet. Share /waitlist/.')); return; }
   for (const e of j.entries) {
     const row = el('div', 'row');
     row.append(el('div', 'c', e.contact));
     const meta = [new Date(e.at * 1000).toLocaleString()];
     if (e.mint_name) meta.push('mint: ' + e.mint_name);
     if (e.hashrate) meta.push(e.hashrate);
+    const HOR = { hour: '1 hour', '6-hours': '6 hours', day: '1 day', week: '1 week', month: '1 month', quarter: '3 months', 'half-year': '6 months', year: '1 year' };
+    if (e.hashrate_ths) meta.push(e.hashrate_ths + ' TH/s');
+    if (e.horizon) meta.push('for ' + (HOR[e.horizon] || e.horizon));
+    if (e.thh_for_sale != null) meta.push('≈ ' + Math.round(e.thh_for_sale).toLocaleString() + ' THH for sale');
     const PAY = { stablecoin: 'USDC/USDT', lightning: 'Lightning', onchain: 'on-chain' };
     if (e.payout) meta.push('paid in ' + (e.payout === 'other' ? (e.payout_other || 'other') : PAY[e.payout] || e.payout));
     row.append(el('div', 'meta', meta.join(' · ')));
