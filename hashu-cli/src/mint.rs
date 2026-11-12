@@ -877,14 +877,8 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         .context("build mint HTTP router")?
         .merge(checkout::router(checkout.clone()))
         .merge(landing::router());
-    match (&waitlist, &tenants) {
-        // Sign-up is open: it takes /join/ over from the waitlist splash.
-        // The operator's waitlist view keeps the entries collected so far.
-        (Some(_), Some(_)) => tracing::info!(
-            "supplier sign-up is on, so /join/ serves sign-up instead of the waitlist"
-        ),
-        (Some(w), None) => app = app.merge(waitlist::router(w.clone())),
-        _ => {}
+    if let Some(w) = &waitlist {
+        app = app.merge(waitlist::router(w.clone()));
     }
     if let Some(t) = &tenants {
         app = app.merge(tenants::operator_router(t.clone())).layer(
