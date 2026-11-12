@@ -665,8 +665,14 @@ function showStop (r) {
   // no preview: keep the button and the general note.
   const charge = r.stop_charge_thh, change = r.stop_change_thh
   const known = change != null
-  $('btn-stop').hidden = known && change === 0
-  if (!known) {
+  const floor = r.floor_thh || 0
+  const belowFloor = (r.filled_thh || 0) < floor
+  $('btn-stop').hidden = (known && change === 0) || belowFloor
+  if (belowFloor && r.amount_thh <= floor) {
+    $('p-stop-note').textContent = `This redemption is the ${floor} THH minimum, so it has no refundable part. It runs until ${r.amount_thh} THH is delivered; if delivery fails, contact the mint operator.`
+  } else if (belowFloor) {
+    $('p-stop-note').textContent = `You can stop for change once ${floor} THH is delivered (${fmtThh(r.filled_thh)} so far). Stopping then charges the delivered THH rounded up and returns the rest. If delivery doesn't start, contact the mint operator.`
+  } else if (!known) {
     const floor = r.floor_thh ? `, at least ${r.floor_thh} THH` : ''
     $('p-stop-note').textContent = `You pay for what was delivered so far, rounded up to whole THH${floor}. The rest comes back here as change.`
   } else if (change > 0) {

@@ -571,10 +571,20 @@ async fn redeemer_stops_the_redemption_with_the_link_key() {
     assert_eq!(o["stop_charge_thh"], 1, "{o}");
     assert_eq!(o["stop_change_thh"], 9, "{o}");
 
-    // 2.5 THH delivered, then the redeemer stops.
-    let share = (HASHES_PER_THH * 5 / 2) as f64 / (1u64 << 32) as f64;
-    h.ledger.credit_share(&rid, share).unwrap();
+    // 0.5 THH delivered: below the 1 THH floor only the operator can stop.
     let stop = format!("{order_api}/stop");
+    let half = (HASHES_PER_THH / 2) as f64 / (1u64 << 32) as f64;
+    h.ledger.credit_share(&rid, half).unwrap();
+    let (code, body) = post_status(
+        &stop,
+        serde_json::json!({ "stop_secret": hex::encode(secret) }),
+    )
+    .await;
+    assert_eq!(code, 409, "{body}");
+    assert!(!h.ledger.get(&rid).unwrap().is_finished());
+
+    // 2.5 THH delivered, then the redeemer stops.
+    h.ledger.credit_share(&rid, half * 4.0).unwrap();
     let (code, _) = post_status(
         &stop,
         serde_json::json!({ "stop_secret": hex::encode([8u8; 32]) }),
@@ -665,10 +675,10 @@ async fn order_without_stop_hash_cannot_be_stopped_by_the_redeemer() {
     assert_eq!(code, 400);
 }
 
-/// A stop that would return nothing is refused (#83): here a 1 THH
-/// redemption at the 1 THH floor with nothing delivered.
+/// The redeemer can't stop before the floor is delivered (#83): here a
+/// 1 THH redemption at the 1 THH floor with nothing delivered.
 #[tokio::test(flavor = "multi_thread")]
-async fn stop_that_returns_nothing_is_refused() {
+async fn redeemer_cannot_stop_before_the_floor() {
     use sha2::{Digest, Sha256};
     let h = harness(1).await;
     let checkout = serve_checkout(&h, Arc::new(OrderBook::new())).await;
@@ -706,6 +716,6 @@ async fn stop_that_returns_nothing_is_refused() {
     )
     .await;
     assert_eq!(code, 409, "{body}");
-    assert!(body.to_string().contains("return nothing"), "{body}");
+    assert!(body.to_string().contains("operator"), "{body}");
     assert!(!h.ledger.get(&rid).unwrap().is_finished());
 }

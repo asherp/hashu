@@ -29,7 +29,8 @@
 //!   the redemption has ended, where its change stands (see [`crate::orders`]).
 //! - `POST /checkout/api/order/{order_id}/stop` `{ stop_secret }`: the
 //!   redeemer stops the redemption early and gets the rest back as change.
-//!   Refused (409) while a stop would return nothing (`stop_change_thh` 0).
+//!   Refused (409) before `floor_thh` is delivered (only the operator can
+//!   stop it then) and while a stop would return nothing.
 //!   Redeem requests carry `stop_hash` (SHA-256 of the secret) for this;
 //!   the page derives the secret from the key in the order link's `#`.
 
@@ -1281,15 +1282,22 @@ async fn stop_order(
     // nothing delivered yet on a redemption of its floor, or the remainder
     // already rounds up to the full amount. The operator's settle can still
     // clear such a redemption.
-    if let Some((charged, 0)) = s
-        .ledger
-        .get(&o.redemption_id)
-        .and_then(|r| r.settle_preview())
-    {
-        return err(
-            StatusCode::CONFLICT,
-            format!("stopping now would charge all {charged} THH and return nothing, so this redemption cannot be stopped for change"),
-        );
+    if let Some(r) = s.ledger.get(&o.redemption_id) {
+        // Below the floor a stop charges the whole floor for less work, so
+        // only the operator may end the redemption there (e.g. a delivery
+        // that never started).
+        if !r.is_finished() && r.accumulated_hashes < u128::from(r.floor_thh) * HASHES_PER_THH {
+            return err(
+                StatusCode::CONFLICT,
+                format!("the redeemer can stop this redemption once {} THH is delivered; before that only the mint operator can stop it", r.floor_thh),
+            );
+        }
+        if let Some((charged, 0)) = r.settle_preview() {
+            return err(
+                StatusCode::CONFLICT,
+                format!("stopping now would charge all {charged} THH and return nothing, so this redemption cannot be stopped for change"),
+            );
+        }
     }
     match s.ledger.settle(&o.redemption_id) {
         Ok(out) => {
