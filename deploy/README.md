@@ -443,7 +443,13 @@ rentals will still deliver: `rented TH/s × hours left − THH owed` (vouchers
 held by users, paid-but-unminted quotes and the rest of open
 redemptions). Once a capacity source is set, mint quotes beyond that are
 refused on every rail, the checkout shows "N THH available" and the
-landing page shows the same number. Two ways to set it:
+landing page shows the same number. This is *declared* capacity, from the
+rentals you enter or sync, not the hashrate the proxy measures live. THH is
+sold in whole units (1 THH minimum), so headroom under 1 THH cannot be
+sold: a 1 TH/s rental with 55 minutes left is 0.92 THH of capacity and 0
+available. The checkout, landing page and operator GUI then say so ("0.92
+THH headroom, below the 1 THH minimum") instead of a bare 0. For a
+Bitaxe-class rig 1 THH is roughly 100 minutes of hashing. Two ways to set it:
 
 - **Automatic, from MRR.** Put `MRR_API_KEY` / `MRR_API_SECRET` (the same
   key `btc-rent.py` uses) in `.env`. The mint reads `GET /rental?type=active`

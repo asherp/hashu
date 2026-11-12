@@ -50,6 +50,7 @@ use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, State as ProofSpent
 use cdk::wallet::{KeysetFilter, Wallet};
 use cdk::Amount;
 use hashu_core::redemption::{RedemptionId, RedemptionLedger, HASHES_PER_THH};
+use hashu_mint::capacity::MIN_PURCHASE_THH;
 use hashu_mint::melt::{redemption_id_for, METHOD as HASHRATE};
 use hashu_mint::tether::{METHOD as USDT, USDC_METHOD as USDC};
 use hashu_proxy::meter::HashrateMeter;
@@ -408,6 +409,12 @@ async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
         // THH the rented hashrate can still deliver beyond what is owed;
         // null when the mint does not cap sales.
         "available_thh": cap.available_thh,
+        // Unrounded capacity − owed (0 when oversold), and the smallest
+        // purchase. With 0 < headroom < min the mint is sold out only
+        // because THH is sold in whole units.
+        "headroom_thh": cap.headroom_thh.max(0.0),
+        "min_buy_thh": MIN_PURCHASE_THH,
+        "below_min": cap.below_min,
         // allocated + available = total capacity (rented TH/s × hours
         // left); allocated is THH already sold or still being delivered.
         "capacity_thh": cap.capacity_thh,
@@ -453,11 +460,11 @@ async fn buy(State(s): State<Arc<CheckoutState>>, body: Bytes) -> Response {
     };
     let Some(amount) = v["amount_thh"]
         .as_u64()
-        .filter(|a| *a >= 1 && *a <= s.max_thh)
+        .filter(|a| *a >= MIN_PURCHASE_THH && *a <= s.max_thh)
     else {
         return err(
             StatusCode::BAD_REQUEST,
-            format!("amount_thh must be 1 to {}", s.max_thh),
+            format!("amount_thh must be {MIN_PURCHASE_THH} to {}", s.max_thh),
         );
     };
     let method = v["method"].as_str().unwrap_or("bolt11").to_string();

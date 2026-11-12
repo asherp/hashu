@@ -342,7 +342,10 @@ async function loadInfo () {
     $('avail').hidden = av == null
     if (av != null) {
       const ends = st.info.capacity_ends_ms ? `, mining for another ${Math.max(0, (st.info.capacity_ends_ms - Date.now()) / 3.6e6).toFixed(1)} h` : ''
-      $('avail').textContent = av > 0 ? `${av.toLocaleString()} THH available now (${(st.info.rented_ths || 0).toFixed(1)} TH/s rented${ends}).` : 'Sold out: the mint has no hashrate available to sell right now. Purchases reopen when new hashrate is rented; this page updates on its own.'
+      const min = st.info.min_buy_thh || 1
+      $('avail').textContent = av > 0 ? `${av.toLocaleString()} THH available now (${(st.info.rented_ths || 0).toFixed(1)} TH/s rented${ends}).`
+        : st.info.below_min ? `Sold out: ${fmtThh(st.info.headroom_thh, 2)} THH of headroom left, below the ${min} THH minimum purchase. Capacity counts the mint's declared hashrate rentals × hours left, not live hashrate. Purchases reopen when more is rented; this page updates on its own.`
+        : 'Sold out: the mint has no hashrate available to sell right now. Purchases reopen when new hashrate is rented; this page updates on its own.'
     }
     $('avail').classList.toggle('soldout', av === 0)
     const total = st.info.capacity_thh
