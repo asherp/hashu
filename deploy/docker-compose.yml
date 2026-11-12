@@ -44,6 +44,19 @@ services:
       - phoenixd_data:/phoenix/.phoenix
     # No `ports:` on purpose. Only hashu reaches it, over the compose network.
     networks: [backend]
+    # phoenixd opens its HTTP API only after it reaches ACINQ's Lightning peer
+    # and an Electrum server, and hashu exits if /getinfo is refused, so hashu
+    # waits for this. The image has no curl/wget: bash's /dev/tcp sends a bare
+    # GET and any HTTP status line passes (unauthenticated it is a 401, which
+    # still proves the API is serving).
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9740 && printf 'GET /getinfo HTTP/1.0\\r\\n\\r\\n' >&3 && head -c 12 <&3 | grep -q '^HTTP/1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      # Peer + Electrum connect usually takes seconds; allow slow networks.
+      start_period: 180s
+      start_interval: 2s
     restart: unless-stopped
 
   hashu:
@@ -51,7 +64,9 @@ services:
       context: ..
       dockerfile: Dockerfile
     image: ${HASHU_REGISTRY:-ghcr.io/asherp}/hashu:${HASHU_IMAGE_TAG:-latest}
-    depends_on: [phoenixd]
+    depends_on:
+      phoenixd:
+        condition: service_healthy
     environment:
       RUST_LOG: ${RUST_LOG:-info}
       HASHU_DATA_DIR: /data

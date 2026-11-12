@@ -165,10 +165,11 @@ and Caddy `certificate obtained successfully` for your domain.
 
 phoenixd only opens its HTTP API once it has connected to ACINQ's
 Lightning peer and an Electrum server (needs outbound 9735 and 50002).
-Until then `hashu` exits with `phoenixd: error sending request for url
-(http://phoenixd:9740/getinfo)` and Docker restarts it; that settles
-within a few seconds of phoenixd logging `connected to lightning peer`.
-If it doesn't, check the box's outbound firewall.
+Compose holds `hashu` back until phoenixd's healthcheck sees the API
+answer (`docker compose ps` shows phoenixd `health: starting`, then
+`healthy`). If phoenixd is still unhealthy after about four minutes,
+`up -d` fails with `dependency failed to start`; check the box's
+outbound firewall.
 
 ## 4. Back up the wallet seed (do this now)
 
