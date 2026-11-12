@@ -570,11 +570,21 @@ pub async fn tls_ask(State(tenants): State<Arc<Tenants>>, Query(q): Query<AskQue
 }
 
 /// Routes the operator's mint serves for suppliers: `/tls-ask` and sign-up
-/// (`/join`, `POST /api/join`).
+/// (`/join/`, `POST /api/join`). It replaces the waitlist splash at
+/// `/join/` (`--waitlist`) when both are on.
 pub fn operator_router(tenants: Arc<Tenants>) -> axum::Router {
     axum::Router::new()
         .route("/tls-ask", get(tls_ask))
-        .route("/join", get(|| async { Html(JOIN_PAGE) }))
+        .route(
+            "/join",
+            get(|| async { axum::response::Redirect::permanent("/join/") }),
+        )
+        .route("/join/", get(|| async { Html(JOIN_PAGE) }))
+        // The landing page shows its "Hosted mints" link when this answers.
+        .route(
+            "/join/api",
+            get(|| async { Json(json!({ "open": true, "signup": true })) }),
+        )
         .route("/api/join", axum::routing::post(post_join))
         .with_state(tenants)
 }
@@ -786,6 +796,8 @@ mod tests {
         assert_eq!(st["selling"], false);
         let (s, _) = send(&app, "GET", bob, "/", None, None).await;
         assert_eq!(s, StatusCode::OK);
+        let (s, body) = send(&app, "GET", op, "/join/", None, None).await;
+        assert!(s == StatusCode::OK && body.contains("Sell your hashrate"));
 
         let (s, _) = send(&app, "GET", bob, "/api/settings", None, None).await;
         assert_eq!(s, StatusCode::UNAUTHORIZED);
