@@ -85,6 +85,13 @@ async fn fake_pool(cfg: PoolCfg, seen: mpsc::UnboundedSender<Seen>) -> String {
                     let id = v["id"].clone();
                     let method = v["method"].as_str().unwrap_or_default();
                     let mut out = Vec::new();
+                    // Like Braiins Pool: an id that doesn't fit in 32 bits
+                    // is treated as no id, and the request is refused.
+                    if id.as_u64().is_some_and(|i| i > u64::from(u32::MAX)) {
+                        let l = json!({"id": null, "result": null, "error": [19, "RequestWithNoId", null]});
+                        w.write_all(format!("{l}\n").as_bytes()).await.unwrap();
+                        continue;
+                    }
                     match method {
                         "mining.configure" => out.push(match cfg.mask {
                             Some(m) => json!({"id": id, "result": {"version-rolling": true, "version-rolling.mask": m}, "error": null}),
