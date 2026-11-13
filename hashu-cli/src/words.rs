@@ -1,4 +1,4 @@
-//! THH vouchers as plain English, with [Glossia](https://github.com/asherp/glossia).
+//! TiH vouchers as plain English, with [Glossia](https://github.com/asherp/glossia).
 //!
 //! A `cashuB` token becomes a paragraph of ordinary sentences that decodes
 //! back to the same voucher: Glossia hides BIP39 words, in order, among
@@ -13,7 +13,7 @@
 //! written) before Glossia sees it, which roughly halves the words. A token
 //! the envelope can't hold exactly (a locked secret, a witness, an amount
 //! that isn't a power of two) is carried as raw CBOR, so nothing but DLEQ
-//! is ever lost. Any Cashu V4 token works, not only THH ones.
+//! is ever lost. Any Cashu V4 token works, not only TiH ones.
 
 use std::str::FromStr;
 
@@ -162,8 +162,8 @@ mod tests {
     fn hashu_voucher_round_trips_through_words() {
         let tok = token(
             "https://mint.hashu.io",
-            "thh",
-            Some("Hashu THH"),
+            "tih",
+            Some("Hashu TiH"),
             &[2, 8],
             false,
         );
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn compact_shrinks_the_payload() {
-        let tok = token("https://mint.hashu.io", "thh", None, &[2, 8], false);
+        let tok = token("https://mint.hashu.io", "tih", None, &[2, 8], false);
         let compact = to_words(&tok).unwrap().split_whitespace().count();
         // The same token as raw CBOR (envelope tag 0x00).
         let mut raw = vec![0u8];
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn dleq_is_dropped_but_the_proofs_survive() {
-        let tok = token("https://mint.hashu.io", "thh", None, &[16], true);
+        let tok = token("https://mint.hashu.io", "tih", None, &[16], true);
         let back = from_words(&to_words(&tok).unwrap()).unwrap().token;
         assert_eq!(back, without_dleq(&tok));
         assert!(back.len() < tok.len());
@@ -215,13 +215,13 @@ mod tests {
 
     #[test]
     fn locked_or_odd_tokens_fall_back_to_raw() {
-        let tok = token("https://mint.hashu.io", "thh", None, &[3], false);
+        let tok = token("https://mint.hashu.io", "tih", None, &[3], false);
         assert_eq!(from_words(&to_words(&tok).unwrap()).unwrap().token, tok);
     }
 
     #[test]
     fn mistyped_words_are_repaired() {
-        let tok = token("https://mint.hashu.io", "thh", None, &[2, 8], false);
+        let tok = token("https://mint.hashu.io", "tih", None, &[2, 8], false);
         let words = to_words(&tok).unwrap();
         let bip39: std::collections::HashSet<String> =
             glossia::load_payload_words_for_wordlist(LANGUAGE, WORDLIST)
@@ -252,9 +252,9 @@ mod tests {
     fn mint_key_rides_beside_the_token() {
         let key: MintKey = std::array::from_fn(|i| i as u8 + 1);
         for tok in [
-            token("https://mint.hashu.io", "thh", None, &[2, 8], false),
+            token("https://mint.hashu.io", "tih", None, &[2, 8], false),
             // An odd amount: carried as raw CBOR with the key.
-            token("https://mint.hashu.io", "thh", None, &[3], false),
+            token("https://mint.hashu.io", "tih", None, &[3], false),
         ] {
             let words = to_words_with_mint_key(&tok, Some(&key)).unwrap();
             let back = from_words(&words).unwrap();
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn surrounding_chat_is_ignored() {
-        let tok = token("https://mint.hashu.io", "thh", None, &[2, 8], false);
+        let tok = token("https://mint.hashu.io", "tih", None, &[2, 8], false);
         let words = to_words(&tok).unwrap();
         let msg = format!("Hey, this is about the hashrate I promised you:\n\n{words}\n\nThanks again, see you soon!");
         assert_eq!(from_words(&msg).unwrap().token, tok);

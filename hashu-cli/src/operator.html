@@ -106,12 +106,12 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 
   <section class="tiles" aria-label="Summary">
     <div class="tile"><label>Hashrate now</label><b id="t-rate">—</b><small id="t-rate-sub">through the proxy</small></div>
-    <div class="tile"><label>THH available</label><b id="t-avail">—</b><small id="t-avail-sub">no rentals: sold out</small></div>
-    <div class="tile"><label>THH owed</label><b id="t-owed">—</b><small>vouchers out + open redemptions</small></div>
+    <div class="tile"><label>TiH available</label><b id="t-avail">—</b><small id="t-avail-sub">no rentals: sold out</small></div>
+    <div class="tile"><label>TiH owed</label><b id="t-owed">—</b><small>vouchers out + open redemptions</small></div>
     <div class="tile"><label>Redemption remaining</label><b id="t-open">—</b><small id="t-open-sub">no open redemption</small></div>
-    <div class="tile"><label>THH sold</label><b id="t-sold">—</b><small id="t-sold-sub">—</small></div>
+    <div class="tile"><label>TiH sold</label><b id="t-sold">—</b><small id="t-sold-sub">—</small></div>
     <div class="tile"><label>Heat produced</label><b id="t-heat">—</b><small id="t-heat-sub">estimate</small></div>
-    <div class="tile"><label>Price</label><b id="t-price">—</b><small id="t-price-sub">sats per THH</small></div>
+    <div class="tile"><label>Price</label><b id="t-price">—</b><small id="t-price-sub">msat per PiH</small></div>
   </section>
 
   <div class="pair">
@@ -132,12 +132,12 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
   <section class="card" aria-labelledby="h-red">
     <div class="card-head">
       <h2 id="h-red">Hashrate delivered to the redemption</h2>
-      <div class="row"><button class="act" id="btn-settle" hidden title="Stop this redemption and return the undelivered THH to the redeemer as change">Settle, return change</button><span class="pill rail" id="red-state">—</span></div>
+      <div class="row"><button class="act" id="btn-settle" hidden title="Stop this redemption and return the undelivered TiH to the redeemer as change">Settle, return change</button><span class="pill rail" id="red-state">—</span></div>
     </div>
-    <div class="row sub" id="red-meta">No redemption yet. A holder redeems by melting THH with the <span class="mono">hashrate</span> method.</div>
+    <div class="row sub" id="red-meta">No redemption yet. A holder redeems by melting TiH with the <span class="mono">hashrate</span> method.</div>
     <div class="bar"><div id="red-bar" style="width:0%"></div></div>
     <div class="chart" id="c-red"></div>
-    <p class="note">Hashrate integrated since the redemption opened: the THH the redeemer's pool has received (1 THH = 3.6 × 10<sup>15</sup> hashes). The dashed line is the amount redeemed.</p>
+    <p class="note">Hashrate integrated since the redemption opened: the TiH the redeemer's pool has received (1 TiH = 2<sup>40</sup> hashes = 256 difficulty-1 shares). The dashed line is the amount redeemed.</p>
   </section>
 
   </div>
@@ -146,7 +146,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
     <h2 id="h-list">Redemptions</h2>
     <div class="scroll" style="max-height:360px;overflow-y:auto">
       <table>
-        <thead><tr><th>Opened</th><th>Pool / worker</th><th>THH</th><th style="width:28%">Progress</th><th>State</th></tr></thead>
+        <thead><tr><th>Opened</th><th>Pool / worker</th><th>TiH</th><th style="width:28%">Progress</th><th>State</th></tr></thead>
         <tbody id="red-rows"><tr><td colspan="5" class="sub">None yet.</td></tr></tbody>
       </table>
     </div>
@@ -178,7 +178,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
         <p class="note">Manual rentals entered earlier. They still count until they end; remove them here.</p>
         <div class="scroll">
           <table>
-            <thead><tr><th>Manual rental</th><th>TH/s</th><th>Left</th><th>THH</th><th></th></tr></thead>
+            <thead><tr><th>Manual rental</th><th>TH/s</th><th>Left</th><th>TiH</th><th></th></tr></thead>
             <tbody id="manual-rows"></tbody>
           </table>
         </div>
@@ -209,7 +209,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
       <dl class="kv" id="mrr"></dl>
       <div class="scroll" id="mrr-table">
         <table>
-          <thead><tr><th>Rental</th><th>TH/s</th><th>Left</th><th>THH</th></tr></thead>
+          <thead><tr><th>Rental</th><th>TH/s</th><th>Left</th><th>TiH</th></tr></thead>
           <tbody id="mrr-rows"></tbody>
         </table>
       </div>
@@ -238,15 +238,15 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
         <input type="number" id="heat-j" step="0.5" min="1" max="500"> <span>J/TH</span>
         <button class="act" id="btn-heat">Apply</button>
       </div>
-      <p class="note">Miners turn almost all their power into heat, so heat ≈ work × J/TH; 1 THH is 3,600 TH, so 1 THH at <i>E</i> J/TH is <i>E</i> ÷ 1000 kWh. J/TH comes from each rental's rig name: a model (S21+, S21XP Hydro, S19j Pro…), else a make (Whatsminer, Antminer/ANT, Avalon) at a typical current machine, else the default above; weighted by TH/s.</p>
+      <p class="note">Miners turn almost all their power into heat, so heat ≈ work × J/TH; 1 TiH is 2<sup>40</sup> hashes ≈ 1.1 TH, so 1 TiH at <i>E</i> J/TH is about <i>E</i> × 1.1 J, and an hour of 1 TH/s (≈ 3,274 TiH) is <i>E</i> ÷ 1000 kWh. J/TH comes from each rental's rig name: a model (S21+, S21XP Hydro, S19j Pro…), else a make (Whatsminer, Antminer/ANT, Avalon) at a typical current machine, else the default above; weighted by TH/s.</p>
     </section>
 
     <section class="card" aria-labelledby="h-test">
       <h2 id="h-test">Test redemption</h2>
-      <p class="note">Mint THH without a payment to rehearse a redemption. They are real vouchers: they count as owed until redeemed.</p>
+      <p class="note">Mint TiH without a payment to rehearse a redemption. They are real vouchers: they count as owed until redeemed.</p>
       <div class="row">
-        <input type="number" id="test-amt" min="1" max="1000" step="1" value="1"> <span>THH</span>
-        <button class="act" id="btn-test-mint">Mint test THH</button>
+        <input type="number" id="test-amt" min="1" max="4194304" step="1" value="4096"> <span>TiH</span>
+        <button class="act" id="btn-test-mint">Mint test TiH</button>
       </div>
       <div id="test-qr" hidden style="align-self:center;background:#fff;padding:8px;border-radius:10px;line-height:0;width:max-content;margin:0 auto"></div>
       <p class="note" id="test-qr-note" style="text-align:center;margin:0"></p>
@@ -274,7 +274,10 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 'use strict'
 // All URLs are relative, so the page also works behind a path prefix.
 const $ = (id) => document.getElementById(id)
-const HASHES_PER_THH = 3.6e15
+// Vouchers count TiH (2^40 hashes); prices are per PiH (1,024 TiH). #90.
+const HASHES_PER_TIH = 2 ** 40
+const TIH_PER_PIH = 1024
+const TIH_PER_THH = 3.6e15 / HASHES_PER_TIH
 const state = { op: null, samples: [], lastT: 0, selected: null, track: null, avg: 60, span: 900, markupDirty: false, heatDirty: false }
 const fmtKwh = (k) => {
   if (!Number.isFinite(k)) return '—'
@@ -290,9 +293,9 @@ const fmtRate = (hs) => {
   while (hs >= 1000 && i < u.length - 1) { hs /= 1000; i++ }
   return `${hs >= 100 ? hs.toFixed(0) : hs >= 10 ? hs.toFixed(1) : hs.toFixed(2)} ${u[i]}`
 }
-const fmtThh = (x, d) => {
+const fmtTih = (x, d) => {
   if (!Number.isFinite(x)) return '—'
-  if (d === undefined) d = x === 0 ? 0 : x < 10 ? 3 : x < 1000 ? 2 : 0
+  if (d === undefined) d = x === 0 ? 0 : Math.abs(x) < 10 ? 2 : Math.abs(x) < 100 ? 1 : 0
   return x.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })
 }
 const fmtDur = (s) => {
@@ -435,31 +438,31 @@ function drawRedemption () {
     return
   }
   const end = t.completed_ms || (state.op ? state.op.now_ms : Date.now())
-  const pts = t.points.map((p) => [p[0], p[1] / HASHES_PER_THH])
+  const pts = t.points.map((p) => [p[0], p[1] / HASHES_PER_TIH])
   if (!t.completed_ms && pts.length) pts.push([end, pts[pts.length - 1][1]])
   // Projected finish at the rate of the last minute.
   const rate = trackRate(t)
   const done = pts.length ? pts[pts.length - 1][1] : 0
-  const projection = !t.completed_ms && rate > 0 && done < t.amount_thh
-    ? etaProjection(end, done, t.amount_thh, rate)
+  const projection = !t.completed_ms && rate > 0 && done < t.amount_tih
+    ? etaProjection(end, done, t.amount_tih, rate)
     : null
   drawChart($('c-red'), {
     points: pts, xMin: t.opened_ms, xMax: Math.max(end, t.opened_ms + 60000), projection,
-    target: t.amount_thh, targetLabel: `target ${fmtThh(t.amount_thh, 0)} THH`,
+    target: t.amount_tih, targetLabel: `target ${fmtTih(t.amount_tih, 0)} TiH`,
     empty: 'Waiting for shares…',
-    yFmt: (v) => `${fmtThh(v, v < 10 ? 2 : 0)} THH`,
+    yFmt: (v) => `${fmtTih(v, v < 10 ? 2 : 0)} TiH`,
     xFmt: (ms) => `+${fmtDur((ms - t.opened_ms) / 1000)}`,
-    tip: (p) => `<b>${fmtThh(p[1])} THH</b> of ${fmtThh(t.amount_thh, 0)} · +${fmtDur((p[0] - t.opened_ms) / 1000)}`
+    tip: (p) => `<b>${fmtTih(p[1])} TiH</b> of ${fmtTih(t.amount_tih, 0)} · +${fmtDur((p[0] - t.opened_ms) / 1000)}`
   })
 }
 
-// Where the THH curve reaches the target at `rate` H/s: a point and a label
+// Where the TiH curve reaches the target at `rate` H/s: a point and a label
 // like "ETA 14:32 · ~5m left".
-function etaProjection (nowMs, doneThh, targetThh, rate) {
-  const secs = ((targetThh - doneThh) * HASHES_PER_THH) / rate
+function etaProjection (nowMs, doneTih, targetTih, rate) {
+  const secs = ((targetTih - doneTih) * HASHES_PER_TIH) / rate
   const t = nowMs + secs * 1000
   const clock = new Date(t).toLocaleTimeString([], secs > 86400 ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' } : { hour: '2-digit', minute: '2-digit' })
-  return { t, v: targetThh, label: `ETA ${clock} · ~${fmtDur(secs)} left` }
+  return { t, v: targetTih, label: `ETA ${clock} · ~${fmtDur(secs)} left` }
 }
 
 // Rate into one redemption over its last minute of points.
@@ -478,26 +481,29 @@ function render () {
   if (!op) return
   const o = op.obligations, mint = op.mint, px = op.proxy, ctl = mint.controls
   $('sub').textContent = `${mint.name} · mint ${mint.url || mint.listen} · up ${fmtDur((op.now_ms - op.started_ms) / 1000)}`
-  $('badges').innerHTML = `<span class="pill ${ctl.issuance_paused ? 'off' : 'on'}">${ctl.issuance_paused ? 'Issuance paused' : 'Issuing THH'}</span>` +
+  $('badges').innerHTML = `<span class="pill ${ctl.issuance_paused ? 'off' : 'on'}">${ctl.issuance_paused ? 'Issuance paused' : 'Issuing TiH'}</span>` +
     (mint.rails.length ? mint.rails : ['no payment rail']).map((r) => `<span class="pill rail">${esc(r)}</span>`).join('')+
     (op.waitlist != null ? `<a class="pill rail" style="text-decoration:none" href="waitlist">Waitlist: ${op.waitlist}</a>` : '')
 
   const rate = rateSeries(state.samples.slice(-Math.ceil(state.avg) - 2), state.avg)
   $('t-rate').textContent = fmtRate(rate.length ? rate[rate.length - 1][1] : px.hashrate_hs)
   $('t-rate-sub').textContent = `${state.avg === 60 ? '1' : '5'}-min average · ${px.metrics.shares_accepted} shares`
-  $('t-owed').textContent = fmtThh(o.total_thh_owed)
-  $('t-open').textContent = fmtThh(o.open_redemption_remaining_thh)
-  $('t-open-sub').textContent = o.open_redemptions ? `THH across ${o.open_redemptions} open redemption${o.open_redemptions > 1 ? 's' : ''}` : 'no open redemption'
-  $('t-sold').textContent = fmtThh(o.thh_sold, 0)
+  $('t-owed').textContent = fmtTih(o.total_tih_owed)
+  $('t-open').textContent = fmtTih(o.open_redemption_remaining_tih)
+  $('t-open-sub').textContent = o.open_redemptions ? `TiH across ${o.open_redemptions} open redemption${o.open_redemptions > 1 ? 's' : ''}` : 'no open redemption'
+  $('t-sold').textContent = fmtTih(o.tih_sold, 0)
   $('t-sold-sub').textContent = Object.entries(o.sold_by_rail).map(([k, v]) => `${k} ${v}`).join(' · ') || 'none yet'
   const p = mint.price
-  $('t-price').textContent = p.sats_per_thh != null ? `${p.sats_per_thh.toLocaleString()}` : '—'
-  $('t-price-sub').textContent = p.usdt_per_thh != null ? `sats per THH · ${p.usdt_per_thh.toFixed(4)} USD (USDT/USDC)` : 'sats per THH'
+  const perThh = p.msat_per_pih != null ? p.msat_per_pih * TIH_PER_THH / TIH_PER_PIH / 1000 : null
+  $('t-price').textContent = p.msat_per_pih != null ? `${p.msat_per_pih.toLocaleString()}` : '—'
+  $('t-price-sub').textContent = ['msat per PiH',
+    perThh != null ? `≈ ${perThh.toFixed(2)} sats/TH-hour · ${fmtTih(p.sats_per_th_day, 1)} sats/TH/day` : '',
+    p.usdt_per_pih != null ? `${p.usdt_per_pih.toFixed(6)} USD per PiH (USDT/USDC)` : ''].filter(Boolean).join(' · ')
 
   const btn = $('btn-pause')
   btn.textContent = ctl.issuance_paused ? 'Resume issuance' : 'Pause issuance'
   btn.className = ctl.issuance_paused ? 'act primary' : 'act danger'
-  $('pause-note').textContent = ctl.issuance_paused ? 'New mint quotes are refused.' : 'Selling THH on every rail.'
+  $('pause-note').textContent = ctl.issuance_paused ? 'New mint quotes are refused.' : 'Selling TiH on every rail.'
   if (!state.markupDirty && document.activeElement !== $('markup')) $('markup').value = ctl.markup_bps / 100
 
 // Capacity split: allocated (sold, or still being delivered) + available
@@ -506,42 +512,42 @@ function render () {
     const t = Math.max(total, allocated, 0)
     const pa = t > 0 ? Math.min(100, allocated / t * 100) : 0
     const pv = t > 0 ? Math.min(100 - pa, available / t * 100) : 0
-    return `<div class="capbar" role="img" aria-label="${fmtN(allocated)} THH allocated, ${fmtN(available)} THH available of ${fmtN(total)} THH total"><span class="alloc" style="width:${pa}%"></span><span class="avail" style="width:${pv}%"></span></div>` +
-      `<div class="caplegend"><span><i style="background:var(--target)"></i>Allocated ${fmtN(allocated)} THH</span><span><i style="background:var(--brand)"></i>Available ${fmtN(available)} THH</span><span>Total ${fmtN(total)} THH</span></div>`
+    return `<div class="capbar" role="img" aria-label="${fmtN(allocated)} TiH allocated, ${fmtN(available)} TiH available of ${fmtN(total)} TiH total"><span class="alloc" style="width:${pa}%"></span><span class="avail" style="width:${pv}%"></span></div>` +
+      `<div class="caplegend"><span><i style="background:var(--target)"></i>Allocated ${fmtN(allocated)} TiH</span><span><i style="background:var(--brand)"></i>Available ${fmtN(available)} TiH</span><span>Total ${fmtN(total)} TiH</span></div>`
   }
   const kv = (rows) => rows.map(([k, v, cls]) => `<dt class="${cls || ''}">${k}</dt><dd class="${cls || ''}">${v}</dd>`).join('')
   $('obl').innerHTML = kv([
-    ['THH vouchers held by users', fmtThh(o.thh_in_circulation, 0)],
-    ['Paid, not yet minted', fmtThh(o.paid_not_minted_thh, 0)],
-    ['Open redemptions, still to deliver', fmtThh(o.open_redemption_remaining_thh)],
-    ['Total THH owed', fmtThh(o.total_thh_owed), 'total'],
+    ['TiH vouchers held by users', fmtTih(o.tih_in_circulation, 0)],
+    ['Paid, not yet minted', fmtTih(o.paid_not_minted_tih, 0)],
+    ['Open redemptions, still to deliver', fmtTih(o.open_redemption_remaining_tih)],
+    ['Total TiH owed', fmtTih(o.total_tih_owed), 'total'],
     ['Unpaid mint quotes', o.unpaid_quotes],
-    ['Test THH minted without payment (all time)', fmtThh(o.test_minted_thh || 0, 0)]
+    ['Test TiH minted without payment (all time)', fmtTih(o.test_minted_tih || 0, 0)]
   ])
   const cap = op.capacity
   const lv = cap && cap.live
   if (cap) {
-    $('t-avail').textContent = cap.available_thh != null ? fmtThh(cap.available_thh, 0) : '∞'
+    $('t-avail').textContent = cap.available_tih != null ? fmtTih(cap.available_tih, 0) : '∞'
     $('t-avail-sub').textContent = !cap.limit ? 'sales not capped'
-      : cap.below_min ? `${fmtThh(cap.headroom_thh, 2)} THH headroom, below the 1 THH minimum`
-      : [cap.rented_ths > 0 ? `${fmtThh(cap.rented_ths, 1)} TH/s rented${cap.ends_ms ? ` · ends in ${fmtDur((cap.ends_ms - op.now_ms) / 1000)}` : ''}` : '',
-          lv && lv.on ? `${fmtThh(lv.extra_ths, 2)} TH/s live × ${fmtThh(lv.horizon_hours, 0)} h` : ''].filter(Boolean).join(' · ') || 'no rentals or live hashrate: sold out'
-    $('cap-bar').innerHTML = capBar(cap.capacity_thh, cap.owed_thh, Math.max(cap.headroom_thh, 0), (n) => fmtThh(n, 1))
+      : cap.below_min ? `${fmtTih(cap.headroom_tih, 0)} TiH headroom, below the 4,096 TiH minimum`
+      : [cap.rented_ths > 0 ? `${fmtTih(cap.rented_ths, 1)} TH/s rented${cap.ends_ms ? ` · ends in ${fmtDur((cap.ends_ms - op.now_ms) / 1000)}` : ''}` : '',
+          lv && lv.on ? `${fmtTih(lv.extra_ths, 2)} TH/s live × ${fmtTih(lv.horizon_hours, 0)} h` : ''].filter(Boolean).join(' · ') || 'no rentals or live hashrate: sold out'
+    $('cap-bar').innerHTML = capBar(cap.capacity_tih, cap.owed_tih, Math.max(cap.headroom_tih, 0), (n) => fmtTih(n, 0))
     $('cap').innerHTML = kv([
-      ['Rented now', `${fmtThh(cap.rented_ths, 2)} TH/s`],
-      ['Live hashrate counted', lv && lv.on ? `${fmtThh(lv.thh)} THH` : 'off'],
-      ['Total capacity', fmtThh(cap.capacity_thh)],
-      ['Allocated (sold, or still being delivered)', fmtThh(cap.owed_thh)],
-      [cap.headroom_thh < 0 ? 'Oversold by' : 'Available to buy', cap.limit ? fmtThh(Math.abs(cap.headroom_thh)) + (cap.below_min ? ' (below the 1 THH minimum purchase: sold out)' : '') : `${fmtThh(Math.max(cap.headroom_thh, 0))} (not enforced)`, 'total'],
+      ['Rented now', `${fmtTih(cap.rented_ths, 2)} TH/s`],
+      ['Live hashrate counted', lv && lv.on ? `${fmtTih(lv.tih)} TiH` : 'off'],
+      ['Total capacity', fmtTih(cap.capacity_tih)],
+      ['Allocated (sold, or still being delivered)', fmtTih(cap.owed_tih)],
+      [cap.headroom_tih < 0 ? 'Oversold by' : 'Available to buy', cap.limit ? fmtTih(Math.abs(cap.headroom_tih)) + (cap.below_min ? ' (below the 4,096 TiH minimum purchase: sold out)' : '') : `${fmtTih(Math.max(cap.headroom_tih, 0))} (not enforced)`, 'total'],
     ])
     const mode = cap.limit_explicit ? (cap.limit ? 'on' : 'off') : 'auto'
     for (const b of $('cap-limit').querySelectorAll('button')) b.classList.toggle('on', b.dataset.v === mode)
     const rentalRow = (r, del) => `
       <tr style="cursor:default${r.hours_left <= 0 ? ';opacity:0.5' : ''}">
         <td>${esc(r.label || r.id || 'rental')}${r.source === 'mrr' ? `<br><span class="sub">MRR ${esc(r.id)}</span>` : ''}</td>
-        <td>${fmtThh(r.ths, 2)}</td>
+        <td>${fmtTih(r.ths, 2)}</td>
         <td>${r.hours_left > 0 ? fmtDur(r.hours_left * 3600) : 'ended'}</td>
-        <td>${fmtThh(r.thh_left)}</td>
+        <td>${fmtTih(r.tih_left)}</td>
         ${del != null ? `<td><button class="x" data-del="${del}" title="Remove">✕</button></td>` : ''}
       </tr>`
     // Manual rentals: no longer added from the GUI, shown only to clear.
@@ -553,11 +559,11 @@ function render () {
     if (lv) {
       $('live-pill').textContent = !lv.available ? 'no proxy' : lv.on ? 'counting' : 'off'
       $('live').innerHTML = kv([
-        ["This mint's rigs, measured now", `${fmtThh(lv.measured_ths, 2)} TH/s`],
-        ['Already declared by rentals', `${fmtThh(lv.rented_ths, 2)} TH/s`],
-        ['Counted', `${fmtThh(lv.extra_ths, 2)} TH/s`],
-        ['Horizon', lv.horizon_hours != null ? `${fmtThh(lv.horizon_hours, 1)} h` : 'not set'],
-        ['Adds to capacity', lv.on ? `${fmtThh(lv.thh)} THH` : '0 THH (off)', 'total']
+        ["This mint's rigs, measured now", `${fmtTih(lv.measured_ths, 2)} TH/s`],
+        ['Already declared by rentals', `${fmtTih(lv.rented_ths, 2)} TH/s`],
+        ['Counted', `${fmtTih(lv.extra_ths, 2)} TH/s`],
+        ['Horizon', lv.horizon_hours != null ? `${fmtTih(lv.horizon_hours, 1)} h` : 'not set'],
+        ['Adds to capacity', lv.on ? `${fmtTih(lv.tih)} TiH` : '0 TiH (off)', 'total']
       ])
       if (!state.liveDirty && document.activeElement !== $('live-hours')) $('live-hours').value = lv.horizon_hours != null ? lv.horizon_hours : ''
       $('btn-live').textContent = lv.on ? 'Update horizon' : 'Count live hashrate'
@@ -573,7 +579,7 @@ function render () {
       ['API key', `<span class="mono">${esc(acct.key_hint || '')}</span> <span class="sub">${acct.source === 'gui' ? 'set here' : 'from MRR_API_KEY'}</span>`],
       ['Rentals counted', acct.rental_ids && acct.rental_ids.length ? esc(acct.rental_ids.join(', ')) : 'all active'],
       ['Last sync', cap.mrr_error ? `<span style="color:var(--bad)">${esc(cap.mrr_error)}</span>` : cap.mrr_synced_ms ? `${fmtDur((op.now_ms - cap.mrr_synced_ms) / 1000)} ago` : 'waiting…'],
-      ['Running rentals', `${mrr.filter((r) => r.hours_left > 0).length} · ${fmtThh(mrr.filter((r) => r.hours_left > 0).reduce((a, r) => a + r.ths, 0), 2)} TH/s`]
+      ['Running rentals', `${mrr.filter((r) => r.hours_left > 0).length} · ${fmtTih(mrr.filter((r) => r.hours_left > 0).reduce((a, r) => a + r.ths, 0), 2)} TH/s`]
     ]) : ''
     $('mrr-table').hidden = !cap.mrr_enabled
     $('mrr-rows').innerHTML = mrr.length ? mrr.map((r) => rentalRow(r)).join('')
@@ -590,16 +596,16 @@ function render () {
   if (h) {
     const e = h.efficiency, ps = h.proxy_since_start, rd = h.redeemed
     $('t-heat').textContent = fmtKwh(ps.kwh)
-    $('t-heat-sub').textContent = `${fmtBtu(ps.btu)} since start · ${fmtThh(h.now_kw, 2)} kW now`
+    $('t-heat-sub').textContent = `${fmtBtu(ps.btu)} since start · ${fmtTih(h.now_kw, 2)} kW now`
     $('heat-src').textContent = { rigs: 'J/TH from rig models', mixed: 'J/TH partly from rig models', default: 'J/TH default' }[e.source] || 'estimate'
     $('heat').innerHTML = kv([
-      ['Efficiency used', `${fmtThh(e.j_per_th, 1)} J/TH`],
-      ['Heat per THH', `${fmtThh(h.kwh_per_thh, 4)} kWh`],
-      ['Heat output now', `${fmtThh(h.now_kw, 2)} kW · ${fmtBtu(h.now_btu_per_h)}/h`],
-      ['Rented rigs at full rate', `${fmtThh(h.rented_kw, 2)} kW`],
-      [`All work since start (${fmtThh(ps.thh)} THH)`, `${fmtKwh(ps.kwh)} · ${fmtBtu(ps.btu)}`, 'total'],
-      [`Delivered to redeemers (${fmtThh(rd.thh)} THH)`, `${fmtKwh(rd.kwh)} · ${fmtBtu(rd.btu)}`],
-      ...e.rigs.map((r) => [`<span class="sub">${esc(r.label || r.id || 'rental')} · ${fmtThh(r.ths, 1)} TH/s</span>`, `<span class="sub">${r.model ? esc(r.model) : 'default'} · ${fmtThh(r.j_per_th, 1)} J/TH</span>`])
+      ['Efficiency used', `${fmtTih(e.j_per_th, 1)} J/TH`],
+      ['Heat per PiH (1,024 TiH)', `${fmtTih(h.kwh_per_tih * TIH_PER_PIH, 4)} kWh`],
+      ['Heat output now', `${fmtTih(h.now_kw, 2)} kW · ${fmtBtu(h.now_btu_per_h)}/h`],
+      ['Rented rigs at full rate', `${fmtTih(h.rented_kw, 2)} kW`],
+      [`All work since start (${fmtTih(ps.tih)} TiH)`, `${fmtKwh(ps.kwh)} · ${fmtBtu(ps.btu)}`, 'total'],
+      [`Delivered to redeemers (${fmtTih(rd.tih)} TiH)`, `${fmtKwh(rd.kwh)} · ${fmtBtu(rd.btu)}`],
+      ...e.rigs.map((r) => [`<span class="sub">${esc(r.label || r.id || 'rental')} · ${fmtTih(r.ths, 1)} TH/s</span>`, `<span class="sub">${r.model ? esc(r.model) : 'default'} · ${fmtTih(r.j_per_th, 1)} J/TH</span>`])
     ])
     if (!state.heatDirty && document.activeElement !== $('heat-j')) $('heat-j').value = e.default_j_per_th
   }
@@ -617,16 +623,16 @@ function render () {
     <tr data-id="${esc(r.id)}" class="${r.id === state.selected ? 'sel' : ''}">
       <td>${r.opened_ms ? fmtTime(r.opened_ms) : '—'}<br><span class="mono sub">${esc(shortId(r.id))}</span></td>
       <td><span class="mono">${esc(hostOf(r.pool_url))}</span><br><span class="sub">${esc(r.worker_name)}</span></td>
-      <td>${fmtThh(r.filled_thh)} / ${r.amount_thh}</td>
+      <td>${fmtTih(r.filled_tih)} / ${r.amount_tih}</td>
       <td><div class="bar"><div style="width:${(r.progress * 100).toFixed(1)}%"></div></div></td>
       <td><span class="pill ${r.state === 'completed' ? 'on' : 'rail'}">${r.state}</span></td>
-    </tr>`).join('') : '<tr><td colspan="5" class="sub">None yet. Holders redeem by melting THH with the hashrate method.</td></tr>'
+    </tr>`).join('') : '<tr><td colspan="5" class="sub">None yet. Holders redeem by melting TiH with the hashrate method.</td></tr>'
 
   const sel = op.redemptions.find((r) => r.id === state.selected)
   if (sel) {
     const tr = trackRate(state.track)
-    const eta = sel.state === 'completed' ? 'done' : sel.state === 'settled' ? `settled: charged ${sel.spent_thh} THH, ${sel.change_thh} THH returned as change` : tr > 0 ? `ETA ${fmtDur((sel.remaining_thh * HASHES_PER_THH) / tr)}` : 'waiting for shares'
-    $('red-meta').innerHTML = `<span class="mono">${esc(shortId(sel.id))}</span> → <span class="mono">${esc(hostOf(sel.pool_url))}</span> as <b>${esc(sel.worker_name)}</b> · <b>${fmtThh(sel.filled_thh)}</b> of ${sel.amount_thh} THH (${(sel.progress * 100).toFixed(1)}%) · ${fmtRate(tr)} · ${eta}`
+    const eta = sel.state === 'completed' ? 'done' : sel.state === 'settled' ? `settled: charged ${sel.spent_tih} TiH, ${sel.change_tih} TiH returned as change` : tr > 0 ? `ETA ${fmtDur((sel.remaining_tih * HASHES_PER_TIH) / tr)}` : 'waiting for shares'
+    $('red-meta').innerHTML = `<span class="mono">${esc(shortId(sel.id))}</span> → <span class="mono">${esc(hostOf(sel.pool_url))}</span> as <b>${esc(sel.worker_name)}</b> · <b>${fmtTih(sel.filled_tih)}</b> of ${sel.amount_tih} TiH (${(sel.progress * 100).toFixed(1)}%) · ${fmtRate(tr)} · ${eta}`
     $('red-bar').style.width = `${(sel.progress * 100).toFixed(1)}%`
     $('red-state').textContent = sel.state
     $('red-state').className = `pill ${sel.state === 'completed' ? 'on' : 'rail'}`
@@ -742,10 +748,10 @@ try { $('test-pool').value = localStorage.getItem('hashu.testPool') || ''; $('te
 $('btn-test-mint').addEventListener('click', async () => {
   const b = $('btn-test-mint'); b.disabled = true
   try {
-    const r = await postJson('api/test-mint', { amount_thh: Math.floor(Number($('test-amt').value)) })
+    const r = await postJson('api/test-mint', { amount_tih: Math.floor(Number($('test-amt').value)) })
     $('test-token').value = r.token
     playQr($('test-qr'), $('test-qr-note'), r.token_qr)
-    $('test-note').textContent = `Minted ${r.amount_thh} test THH.`
+    $('test-note').textContent = `Minted ${r.amount_tih} test TiH.`
     alertMsg('')
   } catch (e) { alertMsg(e.message) } finally { b.disabled = false; poll() }
 })
@@ -754,7 +760,7 @@ $('btn-test-redeem').addEventListener('click', async () => {
   try {
     try { localStorage.setItem('hashu.testPool', $('test-pool').value); localStorage.setItem('hashu.testWorker', $('test-worker').value) } catch {}
     const r = await postJson('api/test-redeem', { token: $('test-token').value, pool_url: $('test-pool').value, worker_name: $('test-worker').value, worker_password: $('test-password').value })
-    $('test-note').innerHTML = `Redemption ${esc(r.redemption_id.slice(0, 8))} open for ${r.amount_thh} THH.` + (r.order_path ? ` Its <a href="..${esc(r.order_path)}" target="_blank" rel="noopener">order page</a> shows the change if you settle it.` : '')
+    $('test-note').innerHTML = `Redemption ${esc(r.redemption_id.slice(0, 8))} open for ${r.amount_tih} TiH.` + (r.order_path ? ` Its <a href="..${esc(r.order_path)}" target="_blank" rel="noopener">order page</a> shows the change if you settle it.` : '')
     $('test-token').value = ''
     playQr($('test-qr'), $('test-qr-note'), [])
     state.selected = r.redemption_id; state.pinned = true
@@ -764,10 +770,10 @@ $('btn-test-redeem').addEventListener('click', async () => {
 $('btn-settle').addEventListener('click', async () => {
   const id = state.selected
   const r = (state.op && state.op.redemptions || []).find((x) => x.id === id)
-  const what = r && r.stop_change_thh != null
-    ? (r.stop_change_thh > 0 ? `The redeemer is charged ${r.stop_charge_thh} THH and gets ${r.stop_change_thh} THH back as change.`
-      : `The redeemer gets NOTHING back: all ${r.stop_charge_thh} THH are charged (nothing above the minimum is refundable yet). Use this only to clear a stuck redemption.`)
-    : 'The redeemer is charged for the THH delivered so far (at least the minimum) and gets the rest back as change.'
+  const what = r && r.stop_change_tih != null
+    ? (r.stop_change_tih > 0 ? `The redeemer is charged ${r.stop_charge_tih} TiH and gets ${r.stop_change_tih} TiH back as change.`
+      : `The redeemer gets NOTHING back: all ${r.stop_charge_tih} TiH are charged (nothing above the minimum is refundable yet). Use this only to clear a stuck redemption.`)
+    : 'The redeemer is charged for the TiH delivered so far (at least the minimum) and gets the rest back as change.'
   if (!id || !confirm(`Stop this redemption? ${what}`)) return
   const b = $('btn-settle'); b.disabled = true
   try {

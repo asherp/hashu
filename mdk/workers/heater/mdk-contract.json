@@ -5,7 +5,7 @@
     "deviceFamily": "miner",
     "brand": "HomeHeater",
     "modelsSupported": ["HEATER_40T", "BITAXE"],
-    "overview": "A home-mining space heater (or a Bitaxe) that speaks the AxeOS HTTP API. Its heat warms a room; its hashrate is sold as THH through a Hashu mint. setupPools moves the hashrate between the owner's home pool and the Hashu proxy while a redemption is being filled."
+    "overview": "A home-mining space heater (or a Bitaxe) that speaks the AxeOS HTTP API. Its heat warms a room; its hashrate is sold as TiH through a Hashu mint. setupPools moves the hashrate between the owner's home pool and the Hashu proxy while a redemption is being filled."
   },
   "capabilities": {
     "telemetry": [

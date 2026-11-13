@@ -3,7 +3,7 @@
 //! Holds the operator's nostr profile, instance URL, oracle name, relay set,
 //! and the append-only history of mint keyset IDs (with retire timestamps).
 //! Kind 0 events are replaceable, so this file is the source of truth for
-//! historical keyset attribution — without it, a wallet holding a `THH`
+//! historical keyset attribution — without it, a wallet holding a `TiH`
 //! token issued under a since-rotated keyset would lose its proof of
 //! attestation on every rotation.
 

@@ -1,7 +1,7 @@
 # Hashu on MDK: a heater that sells its hashrate
 
 A home miner is a heater that earns bitcoin. With Hashu it can also **sell**
-its hashrate: buyers pay Lightning or Tether for `THH` (terahash-hours, Chaumian
+its hashrate: buyers pay Lightning or Tether for `TiH` (tebihash, 2^40 hashes; Chaumian
 hashrate vouchers on Cashu, blind-signed so the mint can't link a purchase to a redemption), and
 redeem it by pointing hashrate at their own pool.
 
@@ -17,7 +17,7 @@ stack that does the switching:
                                                               otherwise ──▶ home pool
 ```
 
-1. Someone redeems THH; the Hashu proxy opens a redemption.
+1. Someone redeems TiH; the Hashu proxy opens a redemption.
 2. The **Hashu Heater app** sees it on the proxy's control API and sends
    `setupPools` through the MDK Kernel: the heater moves from the home pool
    to the Hashu proxy.
@@ -48,7 +48,7 @@ cd mdk && ./scripts/demo.sh
 Open http://localhost:3030, sign in as `demo@hashu.io` / `hashu-demo-2026`,
 and open **Hashu Heater**. Then:
 
-1. Press **Redeem** (1 THH). The heater switches to the Hashu proxy, its
+1. Press **Redeem** (3,274 TiH, about 1 TH-hour). The heater switches to the Hashu proxy, its
    shares go to the redeemer pool, and after about 90 s at 40 TH/s it is back on the home pool.
 2. Move the target temperature. The heater sleeps above it and heats below it.
 3. **Failure case**: `kill $(cat .mdk/demo-logs/proxy.pid)`. The app reports

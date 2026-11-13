@@ -11,7 +11,7 @@ export type Pool = { url: string; user: string; pass?: string }
 
 export type Economics = {
   joulesPerTh: number | null
-  kwhPerThh: number | null
+  kwhPerTih: number | null
   satsPerKwh: number
   billOffsetPct: number
   satsPerHour: number
@@ -39,8 +39,8 @@ export type Redemption = {
   id: string
   pool_url: string
   worker_name: string
-  amount_thh: number
-  filled_thh: number
+  amount_tih: number
+  filled_tih: number
   progress: number
   state: 'pending' | 'active' | 'completed'
 }
@@ -58,10 +58,10 @@ export type HashuState = {
   }
   pools: { home: Pool; hashu: Pool; redeem: Pool }
   thermostat: { enabled: boolean; setpointC: number; hysteresisC: number; maxRoomC: number }
-  prices: { satsPerThh: number; electricitySatsPerKwh: number }
+  prices: { msatPerPih: number; electricitySatsPerKwh: number }
   devices: Heater[]
   fleet: { powerW: number; hashrateThs: number; economics: Economics }
-  totals: { heatKwh: number; thhProduced: number; thhSold: number; satsEarned: number; since: number }
+  totals: { heatKwh: number; tihProduced: number; tihSold: number; satsEarned: number; since: number }
   events: Array<{ at: number; kind: string; text: string; deviceId?: string }>
   allowDemoRedeem: boolean
 }

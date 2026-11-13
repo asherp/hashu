@@ -66,10 +66,11 @@ pub struct Entry {
     /// How long they'd commit it: a key of [`HORIZONS`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub horizon: Option<String>,
-    /// THH they could put up for sale: `hashrate_ths` × the horizon's
-    /// hours, when both are given.
+    /// TiH they could put up for sale: `hashrate_ths` × the horizon's
+    /// hours, in TiH, when both are given. Recomputed on load, so entries
+    /// from before #90 (`thh_for_sale`) read in TiH too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thh_for_sale: Option<f64>,
+    pub tih_for_sale: Option<f64>,
     /// How they'd like to be paid for sales: one of [`PAYOUTS`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payout: Option<String>,
@@ -81,7 +82,7 @@ pub struct Entry {
 }
 
 /// Commitment horizons the form offers, with their length in hours. The
-/// miner's hashrate times the horizon is the THH their mint could sell.
+/// miner's hashrate times the horizon is the TiH their mint could sell.
 pub const HORIZONS: [(&str, u32); 8] = [
     ("hour", 1),
     ("6-hours", 6),
@@ -92,6 +93,12 @@ pub const HORIZONS: [(&str, u32); 8] = [
     ("half-year", 182 * 24),
     ("year", 365 * 24),
 ];
+
+/// Whole TiH that `ths` TH/s over `horizon` would produce.
+fn tih_for_sale(ths: Option<f64>, horizon: Option<&str>) -> Option<f64> {
+    let hours = HORIZONS.iter().find(|(k, _)| Some(*k) == horizon)?.1;
+    ths.map(|t| hashu_core::denom::tih_from_ths_hours(t, hours as f64).round())
+}
 
 /// Largest hashrate accepted, in TH/s (1 EH/s).
 pub const MAX_THS: f64 = 1_000_000.0;
@@ -208,7 +215,10 @@ impl Waitlist {
                         continue;
                     }
                     match serde_json::from_str::<Entry>(&line) {
-                        Ok(e) => entries.push(e),
+                        Ok(mut e) => {
+                            e.tih_for_sale = tih_for_sale(e.hashrate_ths, e.horizon.as_deref());
+                            entries.push(e)
+                        }
                         Err(e) => tracing::warn!(error = %e, "skipping bad waitlist line"),
                     }
                 }
@@ -330,19 +340,15 @@ fn validate(s: Submission) -> Result<Entry, Refusal> {
         }
     }
     let horizon = clean(&s.horizon, 16, "horizon")?;
-    let hours = match &horizon {
-        None => None,
-        Some(h) => match HORIZONS.iter().find(|(k, _)| k == h) {
-            Some((_, hours)) => Some(*hours),
-            None => {
-                let keys: Vec<&str> = HORIZONS.iter().map(|(k, _)| *k).collect();
-                return Err(Refusal::Invalid(format!(
-                    "horizon: one of {}",
-                    keys.join(", ")
-                )));
-            }
-        },
-    };
+    if let Some(h) = &horizon {
+        if !HORIZONS.iter().any(|(k, _)| k == h) {
+            let keys: Vec<&str> = HORIZONS.iter().map(|(k, _)| *k).collect();
+            return Err(Refusal::Invalid(format!(
+                "horizon: one of {}",
+                keys.join(", ")
+            )));
+        }
+    }
     let hashrate_ths = match s.hashrate_ths.trim() {
         "" => None,
         t => match t.parse::<f64>() {
@@ -354,10 +360,7 @@ fn validate(s: Submission) -> Result<Entry, Refusal> {
             }
         },
     };
-    // Rounded to 0.01 THH; small rigs (a Bitaxe is ~1 TH/s) still show.
-    let thh_for_sale = hashrate_ths
-        .zip(hours)
-        .map(|(ths, h)| (ths * h as f64 * 100.0).round() / 100.0);
+    let tih_for_sale = tih_for_sale(hashrate_ths, horizon.as_deref());
     let payout = clean(&s.payout, 16, "payout")?;
     if let Some(p) = &payout {
         if !PAYOUTS.contains(&p.as_str()) {
@@ -386,7 +389,7 @@ fn validate(s: Submission) -> Result<Entry, Refusal> {
         hashrate: clean(&s.hashrate, MAX_HASHRATE, "hashrate")?,
         hashrate_ths,
         horizon,
-        thh_for_sale,
+        tih_for_sale,
         payout,
         payout_other,
         note: clean(&s.note, MAX_NOTE, "note")?,
@@ -479,7 +482,7 @@ fn csv_field(s: &str) -> String {
 
 async fn csv(State(w): State<Arc<Waitlist>>) -> Response {
     let mut out =
-        String::from("id,at,contact,mint_name,hashrate,hashrate_ths,horizon,thh_for_sale,payout,payout_other,note\n");
+        String::from("id,at,contact,mint_name,hashrate,hashrate_ths,horizon,tih_for_sale,payout,payout_other,note\n");
     for e in w.entries() {
         let row = [
             csv_field(&e.id),
@@ -489,7 +492,7 @@ async fn csv(State(w): State<Arc<Waitlist>>) -> Response {
             csv_field(e.hashrate.as_deref().unwrap_or("")),
             e.hashrate_ths.map(|v| v.to_string()).unwrap_or_default(),
             csv_field(e.horizon.as_deref().unwrap_or("")),
-            e.thh_for_sale.map(|v| v.to_string()).unwrap_or_default(),
+            e.tih_for_sale.map(|v| v.to_string()).unwrap_or_default(),
             csv_field(e.payout.as_deref().unwrap_or("")),
             csv_field(e.payout_other.as_deref().unwrap_or("")),
             csv_field(e.note.as_deref().unwrap_or("")),
@@ -615,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn horizon_sets_thh_for_sale() {
+    fn horizon_sets_tih_for_sale() {
         let dir = tempfile::tempdir().unwrap();
         let w = Waitlist::open(dir.path().join("w")).unwrap();
         let with = |ths: &str, h: &str| Submission {
@@ -624,7 +627,7 @@ mod tests {
             horizon: h.into(),
             ..Default::default()
         };
-        // A Bitaxe (1.2 TH/s) for a month: 1.2 × 720 = 864 THH.
+        // A Bitaxe (1.2 TH/s) for a month: 1.2 × 720 = 864 THH ≈ 2,828,892 TiH.
         assert_eq!(w.submit("a", with("1.2", "month")), Ok(Outcome::Added));
         // Horizon alone: nothing to multiply.
         assert_eq!(w.submit("a", with("", "year")), Ok(Outcome::Added));
@@ -640,14 +643,14 @@ mod tests {
             w.submit("a", with("lots", "week")),
             Err(Refusal::Invalid(_))
         ));
-        // As short as one hour: 100 TH/s × 1 h = 100 THH.
+        // As short as one hour: 100 TH/s × 1 h = 100 THH ≈ 327,418 TiH.
         assert_eq!(w.submit("b", with("100", "hour")), Ok(Outcome::Added));
         let e = w.entries();
-        assert_eq!(e[2].thh_for_sale, Some(100.0));
+        assert_eq!(e[2].tih_for_sale, Some(327_418.0));
         assert_eq!(e[0].hashrate_ths, Some(1.2));
-        assert_eq!(e[0].thh_for_sale, Some(864.0));
+        assert_eq!(e[0].tih_for_sale, Some(2_828_892.0));
         assert_eq!(e[1].horizon.as_deref(), Some("year"));
-        assert_eq!(e[1].thh_for_sale, None);
+        assert_eq!(e[1].tih_for_sale, None);
     }
 
     #[test]

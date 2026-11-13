@@ -36,8 +36,8 @@ pub const X_CASHU: HeaderName = HeaderName::from_static("x-cashu");
 /// What a paid request costs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Price {
-    /// Amount in THH (terahash-hours). Every scheme prices from this.
-    pub amount_thh: u64,
+    /// Amount in TiH (2^40 hashes). Every scheme prices from this.
+    pub amount_tih: u64,
     /// What the payment is for, shown to a person.
     pub description: String,
 }
@@ -93,7 +93,7 @@ pub fn payment_required(price: &Price, schemes: &[&dyn Scheme]) -> Response {
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     let body: Value = json!({
         "error": "payment required",
-        "amount_thh": price.amount_thh,
+        "amount_tih": price.amount_tih,
         "description": price.description,
         "accepts": offered,
     });
@@ -123,11 +123,11 @@ struct Nut24Request<'a> {
 }
 
 impl CashuScheme {
-    /// THH from `mint`, unlocked.
-    pub fn thh(mint: MintUrl) -> Self {
+    /// TiH from `mint`, unlocked.
+    pub fn tih(mint: MintUrl) -> Self {
         Self {
             mints: vec![mint],
-            unit: CurrencyUnit::Custom("thh".into()),
+            unit: CurrencyUnit::Custom("tih".into()),
             nut10: None,
         }
     }
@@ -136,7 +136,7 @@ impl CashuScheme {
     /// base64_urlsafe(CBOR({a, u, m}))`, with no transport (in band).
     pub fn request(&self, price: &Price) -> anyhow::Result<String> {
         let req = Nut24Request {
-            a: price.amount_thh,
+            a: price.amount_tih,
             u: &self.unit,
             m: &self.mints,
             nut10: self.nut10.as_ref(),
@@ -176,10 +176,10 @@ impl CashuScheme {
             .value()
             .map(u64::from)
             .map_err(|_| Rejection::NotCashuB)?;
-        if value < price.amount_thh {
+        if value < price.amount_tih {
             return Err(Rejection::Insufficient {
                 have: value,
-                need: price.amount_thh,
+                need: price.amount_tih,
             });
         }
         Ok(token)
@@ -230,9 +230,9 @@ impl Rejection {
         match self {
             Self::NotCashuB => "X-Cashu must hold a cashuB token".into(),
             Self::WrongMint => "token is from a mint this endpoint does not accept".into(),
-            Self::WrongUnit => "token is not in the requested unit (thh)".into(),
+            Self::WrongUnit => "token is not in the requested unit (tih)".into(),
             Self::Insufficient { have, need } => {
-                format!("token is worth {have} THH, this request needs at least {need}")
+                format!("token is worth {have} TiH, this request needs at least {need}")
             }
             Self::Locking => {
                 "this endpoint cannot verify the locking condition it asked for".into()
@@ -272,17 +272,17 @@ mod tests {
     use cdk::secret::Secret;
     use cdk::Amount;
 
-    fn thh() -> CurrencyUnit {
-        CurrencyUnit::Custom("thh".into())
+    fn tih() -> CurrencyUnit {
+        CurrencyUnit::Custom("tih".into())
     }
 
     fn scheme() -> CashuScheme {
-        CashuScheme::thh(MintUrl::from_str("https://mint.hashu.io").unwrap())
+        CashuScheme::tih(MintUrl::from_str("https://mint.hashu.io").unwrap())
     }
 
     fn price(a: u64) -> Price {
         Price {
-            amount_thh: a,
+            amount_tih: a,
             description: "test".into(),
         }
     }
@@ -308,7 +308,7 @@ mod tests {
         assert!(v.starts_with("creqA"), "{v}");
         let req = PaymentRequest::from_str(v).unwrap();
         assert_eq!(req.amount, Some(Amount::from(4)));
-        assert_eq!(req.unit, Some(thh()));
+        assert_eq!(req.unit, Some(tih()));
         assert_eq!(req.mints, scheme().mints);
         assert!(req.transports.is_empty());
         assert!(req.nut10.is_none());
@@ -318,7 +318,7 @@ mod tests {
         let map: std::collections::BTreeMap<String, ciborium::Value> =
             ciborium::from_reader(&cbor[..]).unwrap();
         assert_eq!(map.keys().collect::<Vec<_>>(), ["a", "m", "u"]);
-        assert_eq!(map["u"], ciborium::Value::Text("thh".into()));
+        assert_eq!(map["u"], ciborium::Value::Text("tih".into()));
         assert_eq!(map["a"], ciborium::Value::Integer(4.into()));
     }
 
@@ -334,7 +334,7 @@ mod tests {
             .await
             .unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["amount_thh"], 2);
+        assert_eq!(v["amount_tih"], 2);
         assert_eq!(v["accepts"][0]["scheme"], "cashu");
     }
 
@@ -354,13 +354,13 @@ mod tests {
 
     #[test]
     fn accepts_a_matching_token() {
-        let t = token("https://mint.hashu.io", thh(), &[4, 1]);
+        let t = token("https://mint.hashu.io", tih(), &[4, 1]);
         let tok = scheme().accept(&t, &price(5)).unwrap();
         assert_eq!(u64::from(tok.value().unwrap()), 5);
         // More than asked is fine (>= a); trailing slash and case don't matter.
         let t = token(
             "https://Mint.Hashu.io/",
-            CurrencyUnit::Custom("THH".into()),
+            CurrencyUnit::Custom("TiH".into()),
             &[8],
         );
         assert!(scheme().accept(&t, &price(5)).is_ok());
@@ -369,11 +369,11 @@ mod tests {
     #[test]
     fn rejects_per_nut24() {
         let s = scheme();
-        let other = token("https://other.mint", thh(), &[8]);
+        let other = token("https://other.mint", tih(), &[8]);
         assert_eq!(s.accept(&other, &price(1)), Err(Rejection::WrongMint));
         let sats = token("https://mint.hashu.io", CurrencyUnit::Sat, &[8]);
         assert_eq!(s.accept(&sats, &price(1)), Err(Rejection::WrongUnit));
-        let small = token("https://mint.hashu.io", thh(), &[2]);
+        let small = token("https://mint.hashu.io", tih(), &[2]);
         assert_eq!(
             s.accept(&small, &price(3)),
             Err(Rejection::Insufficient { have: 2, need: 3 })
@@ -389,7 +389,7 @@ mod tests {
             )),
             ..scheme()
         };
-        let ok = token("https://mint.hashu.io", thh(), &[8]);
+        let ok = token("https://mint.hashu.io", tih(), &[8]);
         assert_eq!(locked.accept(&ok, &price(1)), Err(Rejection::Locking));
         let r = Rejection::WrongMint.into_response();
         assert_eq!(r.status(), StatusCode::BAD_REQUEST);

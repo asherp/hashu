@@ -107,19 +107,19 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
 <main>
   <header>
     <h1><span>Hashu</span> · buy hashrate</h1>
-    <p class="lede">Pay for terahash-hours (THH) and get them as Chaumian hashrate vouchers (Cashu tokens). Redeem any time by pointing the mint's hashrate at your own pool. 1 THH is 1 TH/s for one hour.</p>
+    <p class="lede">Pay for hashes and get them as Chaumian hashrate vouchers (Cashu tokens), counted in TiH (tebihash, 2<sup>40</sup> hashes). Redeem any time by pointing the mint's hashrate at your own pool. 1 TH/s for one hour is about 3,274 TiH.</p>
   </header>
 
-  <div class="steps" id="steps"><span data-s="buy">1 · Choose</span><span data-s="pay">2 · Pay</span><span data-s="token">3 · Your THH</span><span data-s="redeem">4 · Redeem</span></div>
+  <div class="steps" id="steps"><span data-s="buy">1 · Choose</span><span data-s="pay">2 · Pay</span><span data-s="token">3 · Your TiH</span><span data-s="redeem">4 · Redeem</span></div>
   <div class="alert" id="alert"></div>
 
   <!-- 1. choose -->
   <section class="card" id="s-buy">
     <h2>How much hashrate?</h2>
-    <label class="f">Terahash-hours (THH)
-      <input type="number" id="amount" min="1" step="1" value="10">
+    <label class="f">Tebihashes (TiH)
+      <input type="number" id="amount" min="4096" step="1" value="32768">
     </label>
-    <div class="row chips" id="chips"><button data-v="1">1</button><button data-v="10">10</button><button data-v="100">100</button><button data-v="1000">1,000</button></div>
+    <div class="row chips" id="chips"><button data-v="4096">4,096</button><button data-v="32768">32,768</button><button data-v="262144">262,144</button><button data-v="2097152">2,097,152</button></div>
     <div class="row" id="methods-row"><span class="note">Pay with</span><div class="seg" id="methods"></div></div>
     <p class="note" id="equiv"></p>
     <p class="note" id="eta"></p>
@@ -142,7 +142,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
 
   <!-- 3. token -->
   <section class="card" id="s-token" hidden>
-    <div class="row" style="justify-content:space-between"><h2>Your THH</h2><span class="pill ok" id="token-amt"></span></div>
+    <div class="row" style="justify-content:space-between"><h2>Your TiH</h2><span class="pill ok" id="token-amt"></span></div>
     <p class="note">This Cashu token is the hashrate you bought. It is a bearer voucher: anyone holding it can redeem it. Save it in a Cashu wallet, or redeem it now.</p>
     <div class="qr" id="token-qr"></div>
     <p class="note" id="token-qr-note" style="text-align:center"></p>
@@ -162,7 +162,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
 
   <!-- 4. redeem -->
   <section class="card" id="s-redeem">
-    <h2>Redeem THH as hashrate</h2>
+    <h2>Redeem TiH as hashrate</h2>
     <div class="tok" id="r-token-card" hidden>
       <div><div class="amt" id="r-token-amt"></div><div class="sub" id="r-token-sub"></div></div>
       <button type="button" id="btn-change-token">Change token</button>
@@ -190,7 +190,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
       <input type="text" id="r-password" placeholder="x" autocomplete="off">
     </label>
     <button class="act primary" id="btn-redeem">Send me the hashrate</button>
-    <p class="note">The mint's miners switch to your pool and mine under your worker name until the THH in the token is delivered.</p>
+    <p class="note">The mint's miners switch to your pool and mine under your worker name until the TiH in the token is delivered.</p>
   </section>
 
   <!-- 5. progress -->
@@ -247,11 +247,14 @@ async function mintApi (path, body) {
   if (!r.ok) throw new Error(j.detail || j.error || `${r.status} ${r.statusText}`)
   return j
 }
-const HASHES_PER_THH = 3.6e15
+// Vouchers count TiH (2^40 hashes); prices are per PiH (1,024 TiH). #90.
+const HASHES_PER_TIH = 2 ** 40
+const TIH_PER_PIH = 1024
+const TIH_PER_THH = 3.6e15 / HASHES_PER_TIH
 const st = { info: null, method: null, checkout: null, redemption: null, pollT: null }
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
-const fmtThh = (x, d) => Number.isFinite(x) ? x.toLocaleString(undefined, { minimumFractionDigits: d ?? (x < 10 ? 3 : 2), maximumFractionDigits: d ?? (x < 10 ? 3 : 2) }) : '—'
+const fmtTih = (x, d) => { if (!Number.isFinite(x)) return '—'; d = d ?? (Math.abs(x) < 10 ? 2 : Math.abs(x) < 100 ? 1 : 0); return x.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) }
 const fmtRate = (hs) => { if (!(hs > 0)) return '0 H/s'; const u = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s']; let i = 0; while (hs >= 1000 && i < u.length - 1) { hs /= 1000; i++ } return `${hs.toFixed(hs >= 100 ? 0 : 1)} ${u[i]}` }
 const fmtDur = (s) => { if (!Number.isFinite(s) || s < 0) return '—'; s = Math.round(s); if (s < 60) return `${s}s`; if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`; return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m` }
 const STABLES = { usdt: 'USDT', usdc: 'USDC' }
@@ -283,33 +286,35 @@ async function copy (text, btn) {
 function renderPrice () {
   const i = st.info; if (!i) return
   const n = Math.max(1, Math.floor(Number($('amount').value) || 0))
-  const hours = n
-  $('equiv').textContent = `${n.toLocaleString()} THH = ${hours < 48 ? `1 TH/s for ${hours} h` : `${(n / 24).toFixed(1)} TH/s for a day`}, or ${(n * HASHES_PER_THH).toExponential(2)} hashes.`
+  const thh = n / TIH_PER_THH
+  const hours = Math.round(thh * 10) / 10
+  $('equiv').textContent = `${n.toLocaleString()} TiH ≈ ${fmtTih(thh, thh < 10 ? 2 : 1)} TH-hours: ${hours < 48 ? `1 TH/s for ${hours} h` : `${(thh / 24).toFixed(1)} TH/s for a day`}, or ${(n * HASHES_PER_TIH).toExponential(2)} hashes.`
   $('eta').textContent = etaText(n)
   const coin = STABLES[st.method]
-  if (coin && i.usdt_per_thh != null) {
-    $('price-label').textContent = `${(i.usdt_per_thh).toFixed(4)} ${coin} per THH`
-    $('price').textContent = `${(n * i.usdt_per_thh).toFixed(2)} ${coin}`
-  } else if (i.sats_per_thh != null) {
-    $('price-label').textContent = `${i.sats_per_thh.toLocaleString()} sats per THH`
-    $('price').textContent = `${(n * i.sats_per_thh).toLocaleString()} sats`
+  if (coin && i.usdt_per_pih != null) {
+    $('price-label').textContent = `${(i.usdt_per_pih).toFixed(6)} ${coin} per PiH (1,024 TiH)`
+    $('price').textContent = `${(n * i.usdt_per_pih / TIH_PER_PIH).toFixed(2)} ${coin}`
+  } else if (i.msat_per_pih != null) {
+    const perThh = i.msat_per_pih * TIH_PER_THH / TIH_PER_PIH / 1000
+    $('price-label').textContent = `${i.msat_per_pih.toLocaleString()} msat per PiH (≈ ${perThh.toFixed(2)} sats per TH-hour)`
+    $('price').textContent = `${Math.ceil(n * i.msat_per_pih / TIH_PER_PIH / 1000).toLocaleString()} sats`
   } else { $('price').textContent = '—' }
   updateBuy()
 }
 // Capacity split: allocated (sold, or still being delivered) + available
-// (left to buy) = total (rented TH/s × hours left).
+// (left to buy) = total (rented TH/s × hours left, in TiH).
 function capBar (total, allocated, available, fmtN) {
   const t = Math.max(total, allocated, 0)
   const pa = t > 0 ? Math.min(100, allocated / t * 100) : 0
   const pv = t > 0 ? Math.min(100 - pa, available / t * 100) : 0
-  return `<div class="capbar" role="img" aria-label="${fmtN(allocated)} THH allocated, ${fmtN(available)} THH available of ${fmtN(total)} THH total"><span class="alloc" style="width:${pa}%"></span><span class="avail" style="width:${pv}%"></span></div>` +
-    `<div class="caplegend"><span><i style="background:var(--target)"></i>Allocated ${fmtN(allocated)} THH</span><span><i style="background:var(--brand)"></i>Available ${fmtN(available)} THH</span><span>Total ${fmtN(total)} THH</span></div>`
+  return `<div class="capbar" role="img" aria-label="${fmtN(allocated)} TiH allocated, ${fmtN(available)} TiH available of ${fmtN(total)} TiH total"><span class="alloc" style="width:${pa}%"></span><span class="avail" style="width:${pv}%"></span></div>` +
+    `<div class="caplegend"><span><i style="background:var(--target)"></i>Allocated ${fmtN(allocated)} TiH</span><span><i style="background:var(--brand)"></i>Available ${fmtN(available)} TiH</span><span>Total ${fmtN(total)} TiH</span></div>`
 }
 // Buying needs hashrate to sell: with none left (or an amount above what
 // is left) the button stays off. The mint refuses such quotes too.
 function updateBuy () {
   const i = st.info; if (!i) return
-  const av = i.available_thh
+  const av = i.available_tih
   const n = Math.floor(Number($('amount').value) || 0)
   const soldOut = av === 0
   const over = av != null && av > 0 && n > av
@@ -318,18 +323,18 @@ function updateBuy () {
   $('amount').disabled = soldOut
   for (const b of $('chips').querySelectorAll('button')) b.disabled = soldOut || (av != null && Number(b.dataset.v) > av)
   $('over').hidden = !over
-  if (over) $('over').textContent = `Only ${av.toLocaleString()} THH available right now. Lower the amount to buy.`
+  if (over) $('over').textContent = `Only ${av.toLocaleString()} TiH available right now. Lower the amount to buy.`
 }
 // Delivery estimate: redemptions are served oldest first, so this order
-// waits for the THH still owed to open ones, then fills at the proxy's
+// waits for the TiH still owed to open ones, then fills at the proxy's
 // current hashrate (5-minute average).
 function etaText (n) {
   const d = st.info && st.info.delivery
   if (!d) return ''
   const hs = d.hashrate_hs || 0
   if (!(hs > 0)) return 'Delivery estimate: no hashrate on the mint right now, so delivery starts when its miners are back.'
-  const total = (d.queue_thh + n) * HASHES_PER_THH / hs
-  const ahead = d.queue_thh > 0.0005 ? `, after ${fmtThh(d.queue_thh)} THH still owed to ${d.open_redemptions} earlier redemption${d.open_redemptions === 1 ? '' : 's'}` : ''
+  const total = (d.queue_tih + n) * HASHES_PER_TIH / hs
+  const ahead = d.queue_tih > 0.0005 ? `, after ${fmtTih(d.queue_tih)} TiH still owed to ${d.open_redemptions} earlier redemption${d.open_redemptions === 1 ? '' : 's'}` : ''
   let t = `Delivery estimate if you redeem now: about ${fmtDur(total)} at ${fmtRate(hs)}${ahead}.`
   const i = st.info
   if (i.capacity_ends_ms && Date.now() + total * 1000 > i.capacity_ends_ms) t += ' That runs past the mint\'s current hashrate rental.'
@@ -343,20 +348,20 @@ async function loadInfo () {
     $('methods').innerHTML = ms.map((m) => `<button data-m="${esc(m)}" class="${m === st.method ? 'on' : ''}">${esc(methodName(m))}</button>`).join('')
     $('methods-row').hidden = !ms.length
     $('paused').hidden = !st.info.issuance_paused
-    const av = st.info.available_thh
+    const av = st.info.available_tih
     $('avail').hidden = av == null
     if (av != null) {
       const ends = st.info.capacity_ends_ms ? `, mining for another ${Math.max(0, (st.info.capacity_ends_ms - Date.now()) / 3.6e6).toFixed(1)} h` : ''
-      const min = st.info.min_buy_thh || 1
-      $('avail').textContent = av > 0 ? `${av.toLocaleString()} THH available now (${(st.info.rented_ths || 0).toFixed(1)} TH/s rented${ends}).`
-        : st.info.below_min ? `Sold out: ${fmtThh(st.info.headroom_thh, 2)} THH of headroom left, below the ${min} THH minimum purchase. Capacity counts the mint's declared hashrate rentals × hours left, not live hashrate. Purchases reopen when more is rented; this page updates on its own.`
+      const min = (st.info.min_buy_tih || 1).toLocaleString()
+      $('avail').textContent = av > 0 ? `${av.toLocaleString()} TiH available now (${(st.info.rented_ths || 0).toFixed(1)} TH/s rented${ends}).`
+        : st.info.below_min ? `Sold out: ${fmtTih(st.info.headroom_tih, 0)} TiH of headroom left, below the ${min} TiH minimum purchase. Capacity counts the mint's declared hashrate rentals × hours left, not live hashrate. Purchases reopen when more is rented; this page updates on its own.`
         : 'Sold out: the mint has no hashrate available to sell right now. Purchases reopen when new hashrate is rented; this page updates on its own.'
     }
     $('avail').classList.toggle('soldout', av === 0)
-    const total = st.info.capacity_thh
+    const total = st.info.capacity_tih
     $('cap-bar').hidden = av == null || total == null
-    if (av != null && total != null) $('cap-bar').innerHTML = capBar(total, st.info.allocated_thh || 0, av, (n) => Math.floor(n).toLocaleString())
-    $('amount').max = av != null ? Math.min(st.info.max_thh, av) : st.info.max_thh
+    if (av != null && total != null) $('cap-bar').innerHTML = capBar(total, st.info.allocated_tih || 0, av, (n) => Math.floor(n).toLocaleString())
+    $('amount').max = av != null ? Math.min(st.info.max_tih, av) : st.info.max_tih
     renderPrice()
   } catch (e) { alertMsg(`Cannot reach the mint: ${e.message}`) }
 }
@@ -368,7 +373,7 @@ $('btn-buy').addEventListener('click', async () => {
   const amount = Math.floor(Number($('amount').value))
   st.buying = true; updateBuy()
   try {
-    st.checkout = await post('api/buy', { amount_thh: amount, method: st.method })
+    st.checkout = await post('api/buy', { amount_tih: amount, method: st.method })
     alertMsg('')
     showPay()
     history.replaceState(null, '', `#buy=${encodeURIComponent(st.checkout.id)}`)
@@ -388,8 +393,8 @@ function showPay () {
   $('open-wallet').href = ln ? `lightning:${c.request}` : c.request
   const m = !ln && /uint256=(\d+)/.exec(c.request)
   $('pay-note').textContent = ln
-    ? `For ${c.amount_thh} THH. Scan with any Lightning wallet. This page updates when the payment arrives.`
-    : `Send exactly ${m ? (Number(m[1]) / 1e6).toFixed(6) : 'the amount in the request'} ${methodName(c.method)}${chainName(c.request)} to the address in the request; the exact amount identifies your order. ${c.amount_thh} THH.`
+    ? `For ${c.amount_tih} TiH. Scan with any Lightning wallet. This page updates when the payment arrives.`
+    : `Send exactly ${m ? (Number(m[1]) / 1e6).toFixed(6) : 'the amount in the request'} ${methodName(c.method)}${chainName(c.request)} to the address in the request; the exact amount identifies your order. ${c.amount_tih} TiH.`
   $('s-pay').scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 async function pollBuy () {
@@ -423,7 +428,7 @@ function showToken () {
   $('pay-state').textContent = 'paid'; $('pay-state').className = 'pill ok'
   $('s-token').hidden = false
   $('token').value = c.token
-  $('token-amt').textContent = `${c.amount_thh} THH`
+  $('token-amt').textContent = `${c.amount_tih.toLocaleString()} TiH`
   $('r-token').value = c.token
   checkToken()
   playQr($('token-qr'), $('token-qr-note'), c.token_qr)
@@ -466,7 +471,7 @@ $('btn-dl-words').addEventListener('click', () => {
   const c = st.checkout
   const a = document.createElement('a')
   a.href = URL.createObjectURL(new Blob([c.token_words + '\n'], { type: 'text/plain' }))
-  a.download = `hashu-${c.amount_thh}-thh-voucher.txt`
+  a.download = `hashu-${c.amount_tih}-tih-voucher.txt`
   a.click()
   setTimeout(() => URL.revokeObjectURL(a.href), 1000)
 })
@@ -550,13 +555,13 @@ async function checkToken () {
     const r = await post('api/token', { token: text })
     if (seq !== tokSeq) return
     if (!r.redeemable) {
-      tokMsg(`This token holds ${r.amount_thh} THH, but the minimum redemption is ${r.min_redeem_thh} THH.`, 'bad')
+      tokMsg(`This token holds ${r.amount_tih} TiH, but the minimum redemption is ${r.min_redeem_tih} TiH.`, 'bad')
       return
     }
-    $('r-token-amt').innerHTML = `${r.amount_thh} <small>THH ready to redeem</small>`
-    $('r-token-sub').textContent = r.spent_thh > 0
-      ? `${r.spent_thh} of the token's ${r.total_thh} THH is already spent; the rest redeems.`
-      : (etaText(r.amount_thh) || 'Checked with the mint.')
+    $('r-token-amt').innerHTML = `${r.amount_tih} <small>TiH ready to redeem</small>`
+    $('r-token-sub').textContent = r.spent_tih > 0
+      ? `${r.spent_tih} of the token's ${r.total_tih} TiH is already spent; the rest redeems.`
+      : (etaText(r.amount_tih) || 'Checked with the mint.')
     if (r.from_words) {
       $('r-token-sub').textContent += r.repaired_words
         ? ` Read from words; ${r.repaired_words} mistyped word${r.repaired_words === 1 ? ' was' : 's were'} repaired.`
@@ -564,7 +569,7 @@ async function checkToken () {
     }
     tokMsg('')
     showTokenCard(true)
-    st.tokenAmount = r.amount_thh
+    st.tokenAmount = r.amount_tih
     st.tokenOk = true
     $('btn-redeem').disabled = false
   } catch (e) {
@@ -589,8 +594,8 @@ $('btn-redeem').addEventListener('click', async () => {
     // Blank outputs for change, made here from a fresh key. The key goes
     // only into the order link's #fragment, which the server never sees.
     const C = await loadChange()
-    const ks = ((await mintApi('v1/keysets')).keysets || []).find((k) => k.active && String(k.unit).toLowerCase() === 'thh')
-    if (!ks) throw new Error('The mint has no active THH keyset.')
+    const ks = ((await mintApi('v1/keysets')).keysets || []).find((k) => k.active && String(k.unit).toLowerCase() === 'tih')
+    if (!ks) throw new Error('The mint has no active TiH keyset.')
     const key = C.newKey(), n = C.blankCount(st.tokenAmount || 2 ** 20)
     const outputs = C.blanks(key, n, ks.id)
     const r = await post('api/redeem', { token: $('r-token').value, pool_url: $('r-pool').value, worker_name: $('r-worker').value, worker_password: $('r-password').value, outputs, stop_hash: C.stopHash(key) })
@@ -634,13 +639,13 @@ function drawChart (el, pts, x0, x1, target, pj) {
   const ticks = niceTicks(Math.max(target, ...pts.map((p) => p[1])) * 1.05, 4), y1 = ticks[ticks.length - 1]
   const X = (t) => m.l + ((t - x0) / (x1 - x0)) * (W - m.l - m.r), Y = (v) => H - m.b - (v / y1) * (H - m.t - m.b)
   let s = '<g class="axis">'
-  for (const v of ticks) s += `<line class="gridline" x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${m.l - 8}" y="${Y(v) + 4}" text-anchor="end">${fmtThh(v, v < 10 ? 1 : 0)}</text>`
+  for (const v of ticks) s += `<line class="gridline" x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${m.l - 8}" y="${Y(v) + 4}" text-anchor="end">${fmtTih(v, v < 10 ? 1 : 0)}</text>`
   const nx = Math.max(2, Math.floor((W - m.l - m.r) / 100))
   for (let i = 0; i <= nx; i++) { const t = x0 + ((x1 - x0) * i) / nx; s += `<text x="${X(t)}" y="${H - 6}" text-anchor="${i === 0 ? 'start' : i === nx ? 'end' : 'middle'}">+${fmtDur((t - x0) / 1000)}</text>` }
   s += '</g>'
   const line = pts.map((p, i) => `${i ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join('')
   s += `<path class="area" d="${line}L${X(pts[pts.length - 1][0])},${Y(0)}L${X(pts[0][0])},${Y(0)}Z"/>`
-  s += `<line class="target" x1="${m.l}" x2="${W - m.r}" y1="${Y(target)}" y2="${Y(target)}"/><text class="target-label" x="${pj ? m.l + 6 : W - m.r}" y="${Y(target) - 6}" text-anchor="${pj ? 'start' : 'end'}">${target} THH</text>`
+  s += `<line class="target" x1="${m.l}" x2="${W - m.r}" y1="${Y(target)}" y2="${Y(target)}"/><text class="target-label" x="${pj ? m.l + 6 : W - m.r}" y="${Y(target) - 6}" text-anchor="${pj ? 'start' : 'end'}">${target} TiH</text>`
   const lp = pts[pts.length - 1]
   if (pj && pj.t > lp[0]) {
     const tEnd = far ? x1 : pj.t, vEnd = lp[1] + (pj.v - lp[1]) * (tEnd - lp[0]) / (pj.t - lp[0]), ex = X(tEnd), ey = Y(vEnd)
@@ -656,7 +661,7 @@ function drawChart (el, pts, x0, x1, target, pj) {
     const r = svg.getBoundingClientRect(), t = x0 + ((((ev.clientX - r.left) / r.width) * W - m.l) / (W - m.l - m.r)) * (x1 - x0)
     let b = pts[0]; for (const p of pts) if (Math.abs(p[0] - t) < Math.abs(b[0] - t)) b = p
     g.style.display = ''; cross.setAttribute('x1', X(b[0])); cross.setAttribute('x2', X(b[0])); dot.setAttribute('cx', X(b[0])); dot.setAttribute('cy', Y(b[1]))
-    tip.innerHTML = `<b>${fmtThh(b[1])} THH</b> · +${fmtDur((b[0] - x0) / 1000)}`; tip.style.display = 'block'
+    tip.innerHTML = `<b>${fmtTih(b[1])} TiH</b> · +${fmtDur((b[0] - x0) / 1000)}`; tip.style.display = 'block'
     tip.style.left = `${(X(b[0]) / W) * r.width}px`; tip.style.top = `${(Y(b[1]) / H) * r.height}px`
   }
 }
@@ -668,25 +673,25 @@ async function pollRedemption () {
     if (r.state === 'opening') { $('p-state').textContent = 'opening'; $('p-filled').textContent = 'Opening your redemption…'; st.pollT = setTimeout(pollRedemption, 1000); return }
     $('p-state').textContent = r.state === 'completed' ? 'delivered' : r.state
     $('p-state').className = `pill ${r.state === 'completed' || r.state === 'settled' ? 'ok' : 'wait'}`
-    $('p-filled').textContent = `${fmtThh(r.filled_thh)} of ${r.amount_thh} THH`
+    $('p-filled').textContent = `${fmtTih(r.filled_tih)} of ${r.amount_tih} TiH`
     $('p-bar').style.width = `${(r.progress * 100).toFixed(1)}%`
     $('p-meta').innerHTML = `To <span class="mono">${esc(r.pool_url)}</span> as <b>${esc(r.worker_name)}</b>. Each share your pool accepts from this worker counts its difficulty × 2<sup>32</sup> hashes.`
     const t = r.track
     if (t) {
       const end = t.completed_ms || r.now_ms
-      const pts = t.points.map((p) => [p[0], p[1] / HASHES_PER_THH]); if (!t.completed_ms) pts.push([end, pts[pts.length - 1][1]])
+      const pts = t.points.map((p) => [p[0], p[1] / HASHES_PER_TIH]); if (!t.completed_ms) pts.push([end, pts[pts.length - 1][1]])
       let base = t.points[0]; for (const p of t.points) if (p[0] <= end - 60000) base = p
       const last = t.points[t.points.length - 1]
       const rate = end > base[0] ? (last[1] - base[1]) * 1000 / (end - base[0]) : 0
-      const remaining = (r.amount_thh - r.filled_thh) * HASHES_PER_THH
+      const remaining = (r.amount_tih - r.filled_tih) * HASHES_PER_TIH
       $('p-rate').textContent = r.state === 'settled' ? `stopped after ${fmtDur(((t.completed_ms || end) - t.opened_ms) / 1000)}` : r.state === 'completed' ? `done in ${fmtDur((t.completed_ms - t.opened_ms) / 1000)}` : `${fmtRate(rate)}${rate > 0 ? ` · about ${fmtDur(remaining / rate)} left` : ''}`
       let pj = null
       if (r.state !== 'completed' && r.state !== 'settled' && rate > 0 && remaining > 0) {
         const secs = remaining / rate, eta = end + secs * 1000
         const clock = new Date(eta).toLocaleTimeString([], secs > 86400 ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' } : { hour: '2-digit', minute: '2-digit' })
-        pj = { t: eta, v: r.amount_thh, label: `ETA ${clock} · ~${fmtDur(secs)} left` }
+        pj = { t: eta, v: r.amount_tih, label: `ETA ${clock} · ~${fmtDur(secs)} left` }
       }
-      drawChart($('c-red'), pts, t.opened_ms, Math.max(end, t.opened_ms + 60000), r.amount_thh, pj)
+      drawChart($('c-red'), pts, t.opened_ms, Math.max(end, t.opened_ms + 60000), r.amount_tih, pj)
     }
     if (ORDER) showStop(r)
     if (ORDER) { if (showChange(r)) return } else if (r.state === 'completed' || r.state === 'settled') return
@@ -703,29 +708,29 @@ function showStop (r) {
   if ($('p-stop-row').hidden || st.stopping) return
   // A stop only helps while it returns something (#83). Older servers send
   // no preview: keep the button and the general note.
-  const charge = r.stop_charge_thh, change = r.stop_change_thh
+  const charge = r.stop_charge_tih, change = r.stop_change_tih
   const known = change != null
-  const floor = r.floor_thh || 0
-  const belowFloor = (r.filled_thh || 0) < floor
+  const floor = r.floor_tih || 0
+  const belowFloor = (r.filled_tih || 0) < floor
   $('btn-stop').hidden = (known && change === 0) || belowFloor
-  if (belowFloor && r.amount_thh <= floor) {
-    $('p-stop-note').textContent = `This redemption is the ${floor} THH minimum, so it has no refundable part. It runs until ${r.amount_thh} THH is delivered; if delivery fails, contact the mint operator.`
+  if (belowFloor && r.amount_tih <= floor) {
+    $('p-stop-note').textContent = `This redemption is the ${floor} TiH minimum, so it has no refundable part. It runs until ${r.amount_tih} TiH is delivered; if delivery fails, contact the mint operator.`
   } else if (belowFloor) {
-    $('p-stop-note').textContent = `You can stop for change once ${floor} THH is delivered (${fmtThh(r.filled_thh)} so far). Stopping then charges the delivered THH rounded up and returns the rest. If delivery doesn't start, contact the mint operator.`
+    $('p-stop-note').textContent = `You can stop for change once ${floor} TiH is delivered (${fmtTih(r.filled_tih)} so far). Stopping then charges the delivered TiH rounded up and returns the rest. If delivery doesn't start, contact the mint operator.`
   } else if (!known) {
-    const floor = r.floor_thh ? `, at least ${r.floor_thh} THH` : ''
-    $('p-stop-note').textContent = `You pay for what was delivered so far, rounded up to whole THH${floor}. The rest comes back here as change.`
+    const floor = r.floor_tih ? `, at least ${r.floor_tih} TiH` : ''
+    $('p-stop-note').textContent = `You pay for what was delivered so far, rounded up to whole TiH${floor}. The rest comes back here as change.`
   } else if (change > 0) {
-    $('p-stop-note').textContent = `Stopping now charges ${charge} THH and returns ${change} THH as change (delivered work rounded up to whole THH${r.floor_thh ? `, at least ${r.floor_thh} THH` : ''}).`
-  } else if (r.amount_thh <= (r.floor_thh || 0)) {
-    $('p-stop-note').textContent = `This redemption is the ${r.floor_thh} THH minimum, so it has no refundable part: stopping would charge all of it. It runs until ${r.amount_thh} THH is delivered.`
+    $('p-stop-note').textContent = `Stopping now charges ${charge} TiH and returns ${change} TiH as change (delivered work rounded up to whole TiH${r.floor_tih ? `, at least ${r.floor_tih} TiH` : ''}).`
+  } else if (r.amount_tih <= (r.floor_tih || 0)) {
+    $('p-stop-note').textContent = `This redemption is the ${r.floor_tih} TiH minimum, so it has no refundable part: stopping would charge all of it. It runs until ${r.amount_tih} TiH is delivered.`
   } else {
-    $('p-stop-note').textContent = `Stopping now would charge all ${charge} THH and return nothing, because delivered work is rounded up to whole THH. It finishes on its own shortly.`
+    $('p-stop-note').textContent = `Stopping now would charge all ${charge} TiH and return nothing, because delivered work is rounded up to whole TiH. It finishes on its own shortly.`
   }
 }
 $('btn-stop').addEventListener('click', async () => {
   const key = orderKey()
-  if (!key || !confirm('Stop this redemption now? Hashrate stops going to your pool. ' + ($('p-stop-note').textContent || 'The undelivered THH come back as change.'))) return
+  if (!key || !confirm('Stop this redemption now? Hashrate stops going to your pool. ' + ($('p-stop-note').textContent || 'The undelivered TiH come back as change.'))) return
   $('btn-stop').disabled = true; st.stopping = true
   $('p-stop-note').textContent = 'Stopping…'
   try {
@@ -748,20 +753,20 @@ function showChange (r) {
   const pill = (t, ok) => { $('ch-state').textContent = t; $('ch-state').className = `pill ${ok ? 'ok' : 'wait'}` }
   if (c.state === 'waiting') {
     pill('signing')
-    $('ch-note').textContent = `Delivery stopped at ${fmtThh(r.filled_thh)} THH. The mint is signing your change…`
+    $('ch-note').textContent = `Delivery stopped at ${fmtTih(r.filled_tih)} TiH. The mint is signing your change…`
     return false
   }
   if (c.state === 'none') {
     pill('none', true)
-    $('ch-note').textContent = r.state === 'completed' ? `All ${r.amount_thh} THH were delivered, so there is no change.` : `Charged ${r.spent_thh} of ${r.amount_thh} THH; nothing to return.`
+    $('ch-note').textContent = r.state === 'completed' ? `All ${r.amount_tih} TiH were delivered, so there is no change.` : `Charged ${r.spent_tih} of ${r.amount_tih} TiH; nothing to return.`
     return true
   }
   if (c.state === 'unclaimable') {
     pill('none')
-    $('ch-note').textContent = `${c.thh} THH went undelivered, but this redemption was made without blank outputs, so there is no change to open. Redeem from the checkout page or your own wallet to get change back.`
+    $('ch-note').textContent = `${c.tih} TiH went undelivered, but this redemption was made without blank outputs, so there is no change to open. Redeem from the checkout page or your own wallet to get change back.`
     return true
   }
-  pill(`${c.thh} THH`, true)
+  pill(`${c.tih} TiH`, true)
   if (!st.changeShown) openChange(r).catch((e) => { st.changeShown = false; $('ch-note').textContent = `Couldn't open your change: ${e.message}. Reload to try again.` })
   st.changeShown = true
   return true
@@ -771,7 +776,7 @@ function showChange (r) {
 async function openChange (r) {
   const f = new URLSearchParams(location.hash.slice(1))
   const key = f.get('k'), n = Number(f.get('n')), ksId = f.get('i')
-  const intro = `Delivery stopped after ${fmtThh(r.filled_thh)} THH, so you were charged <b>${r.spent_thh} THH</b> and get <b>${r.change.thh} THH</b> back as fresh Chaumian hashrate vouchers.`
+  const intro = `Delivery stopped after ${fmtTih(r.filled_tih)} TiH, so you were charged <b>${r.spent_tih} TiH</b> and get <b>${r.change.tih} TiH</b> back as fresh Chaumian hashrate vouchers.`
   if (!/^[0-9a-f]{64}$/.test(key || '') || !(n > 0) || !ksId) {
     $('ch-note').innerHTML = `${intro} To open them, use the full link you got when you redeemed: the key is in the part after #, and only that link has it.`
     return
@@ -790,8 +795,8 @@ async function openChange (r) {
   const unspent = proofs.filter((p) => (states.find((s) => s.Y === p.Y) || {}).state === 'UNSPENT')
   if (!unspent.length) { $('ch-note').innerHTML = `${intro} They have already been spent: someone, likely you, claimed this change.`; return }
   const total = unspent.reduce((a, p) => a + p.amount, 0)
-  const token = C.encodeToken(r.change.mint_url, r.change.unit || 'thh', unspent.map(({ amount, id, secret, C: sig }) => ({ amount, id, secret, C: sig })), 'Hashu THH change')
-  $('ch-note').innerHTML = `${intro} ${total < r.change.thh ? `${total} THH of it is still unspent. ` : ''}Save the token now: anyone holding it can spend it. Redeem it later here or in any Cashu wallet.`
+  const token = C.encodeToken(r.change.mint_url, r.change.unit || 'tih', unspent.map(({ amount, id, secret, C: sig }) => ({ amount, id, secret, C: sig })), 'Hashu TiH change')
+  $('ch-note').innerHTML = `${intro} ${total < r.change.tih ? `${total} TiH of it is still unspent. ` : ''}Save the token now: anyone holding it can spend it. Redeem it later here or in any Cashu wallet.`
   $('ch-token-box').hidden = false
   $('ch-token').value = token
   $('ch-redeem').href = `../#token=${encodeURIComponent(token)}`
@@ -810,7 +815,7 @@ $('btn-dl-change').addEventListener('click', () => {
 const h = new URLSearchParams(location.hash.slice(1))
 if (ORDER) {
   document.querySelector('h1').innerHTML = '<span>Hashu</span> · your redemption'
-  document.querySelector('.lede').innerHTML = 'Hashrate on its way to your pool. If delivery stops early, the THH not delivered comes back here as change. <a href="../">Buy or redeem more</a>.'
+  document.querySelector('.lede').innerHTML = 'Hashrate on its way to your pool. If delivery stops early, the TiH not delivered comes back here as change. <a href="../">Buy or redeem more</a>.'
   for (const id of ['steps', 's-buy', 's-pay', 's-token', 's-redeem']) $(id).hidden = true
   pollRedemption()
 } else loadInfo().then(() => {

@@ -1,7 +1,7 @@
-//! A redemption that settles early returns the undelivered THH as change.
+//! A redemption that settles early returns the undelivered TiH as change.
 //!
 //! Runs a real cdk mint over HTTP with the `hashrate` melt and a fake
-//! Lightning rail, and a stock cdk wallet against it. The wallet buys THH,
+//! Lightning rail, and a stock cdk wallet against it. The wallet buys TiH,
 //! redeems all of it, and the ledger is credited part of the way before the
 //! redemption is settled. The wallet's own melt flow sends the blank outputs
 //! (the quote puts the refundable part in the fee reserve) and unblinds the
@@ -26,11 +26,11 @@ use hashu_cli::checkout::CheckoutState;
 use hashu_cli::operator::MintControls;
 use hashu_cli::orders::OrderBook;
 use hashu_core::hashprice::{HashpriceOracle, HashpriceSample, SampleBuffer};
-use hashu_core::redemption::{RedemptionLedger, RedemptionState, HASHES_PER_THH};
+use hashu_core::redemption::{RedemptionLedger, RedemptionState, HASHES_PER_TIH};
 use hashu_mint::lightning::{add_lightning_issuance, lightning_issuer};
 use hashu_mint::melt::{redemption_id_for, HashrateMelter, METHOD as HASHRATE};
-use hashu_mint::payment::thh_unit;
-use hashu_mint::pricing::SatsPerThhFromHashprice;
+use hashu_mint::payment::tih_unit;
+use hashu_mint::pricing::MsatPerPihFromHashprice;
 use hashu_proxy::meter::HashrateMeter;
 use hashu_proxy::ProxyMetrics;
 
@@ -54,12 +54,12 @@ struct Harness {
     _server: tokio::task::JoinHandle<()>,
 }
 
-/// Mint on an ephemeral port, and a wallet holding `thh` THH from it.
-async fn harness(thh: u64) -> Harness {
+/// Mint on an ephemeral port, and a wallet holding `tih` TiH from it.
+async fn harness(tih: u64) -> Harness {
     let ledger = Arc::new(RedemptionLedger::new());
     let mut b = MintBuilder::new(Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap()));
     b.configure_unit(
-        thh_unit(),
+        tih_unit(),
         UnitConfig {
             amounts: (0..11).map(|i| 1u64 << i).collect(),
             input_fee_ppk: 0,
@@ -67,10 +67,14 @@ async fn harness(thh: u64) -> Harness {
     )
     .unwrap();
     b.add_payment_processor(
-        thh_unit(),
+        tih_unit(),
         PaymentMethod::Custom(HASHRATE.into()),
         MintMeltLimits::new(1, 1000),
-        Arc::new(HashrateMelter::new(ledger.clone()).with_max_thh(1000)),
+        Arc::new(
+            HashrateMelter::new(ledger.clone())
+                .with_min_tih(1)
+                .with_max_tih(1000),
+        ),
     )
     .await
     .unwrap();
@@ -79,7 +83,7 @@ async fn harness(thh: u64) -> Harness {
         SystemTime::now(),
         48.0,
     ));
-    let pricer = SatsPerThhFromHashprice::new(Arc::new(FixedOracle(prices)));
+    let pricer = MsatPerPihFromHashprice::new(Arc::new(FixedOracle(prices)));
     let node = Arc::new(FakeWallet::new(
         cdk::types::FeeReserve {
             min_fee_reserve: 1.into(),
@@ -116,7 +120,7 @@ async fn harness(thh: u64) -> Harness {
 
     let wallet = Wallet::new(
         &url,
-        CurrencyUnit::Custom("thh".into()),
+        CurrencyUnit::Custom("tih".into()),
         Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap()),
         std::array::from_fn(|_| rand::random()),
         None,
@@ -125,7 +129,7 @@ async fn harness(thh: u64) -> Harness {
     let quote = wallet
         .mint_quote(
             PaymentMethod::Known(KnownMethod::Bolt11),
-            Some(Amount::from(thh)),
+            Some(Amount::from(tih)),
             None,
             None,
         )
@@ -141,7 +145,7 @@ async fn harness(thh: u64) -> Harness {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(minted.is_some(), "mint quote never paid");
-    assert_eq!(u64::from(wallet.total_balance().await.unwrap()), thh);
+    assert_eq!(u64::from(wallet.total_balance().await.unwrap()), tih);
 
     Harness {
         ledger,
@@ -156,12 +160,12 @@ async fn harness(thh: u64) -> Harness {
 /// the melt quote id and the redemption id.
 async fn redeem_all(
     h: &Harness,
-    amount_thh: u64,
+    amount_tih: u64,
 ) -> (String, hashu_core::redemption::RedemptionId) {
     let request = serde_json::json!({
         "pool_url": "stratum+tcp://pool.example:3333",
         "worker_name": "bob.rig1",
-        "amount_thh": amount_thh,
+        "amount_tih": amount_tih,
     })
     .to_string();
     let rid = redemption_id_for(&request);
@@ -172,7 +176,7 @@ async fn redeem_all(
         .unwrap();
     // The floor is the quote amount; the rest is the refundable reserve.
     assert_eq!(u64::from(quote.amount), 1);
-    assert_eq!(u64::from(quote.fee_reserve), amount_thh - 1);
+    assert_eq!(u64::from(quote.fee_reserve), amount_tih - 1);
     let prepared = h
         .wallet
         .prepare_melt(&quote.id, HashMap::new())
@@ -185,7 +189,7 @@ async fn redeem_all(
     assert_eq!(u64::from(h.wallet.total_balance().await.unwrap()), 0);
     // An async melt runs the backend in the background, so the redemption
     // can open just after the wallet's call returns.
-    assert_eq!(opened(&h.ledger, &rid).await.floor_thh, 1);
+    assert_eq!(opened(&h.ledger, &rid).await.floor_tih, 1);
     (quote.id, rid)
 }
 
@@ -224,22 +228,22 @@ async fn paid_state(h: &Harness, quote_id: &str) -> MeltQuoteState {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn settled_redemption_returns_undelivered_thh_as_change() {
+async fn settled_redemption_returns_undelivered_tih_as_change() {
     let h = harness(10).await;
     let (quote_id, rid) = redeem_all(&h, 10).await;
 
-    // 3.5 THH delivered, then the miner drops off.
-    let half_share = (HASHES_PER_THH * 7 / 2) as f64 / (1u64 << 32) as f64;
+    // 3.5 TiH delivered, then the miner drops off.
+    let half_share = (HASHES_PER_TIH * 7 / 2) as f64 / (1u64 << 32) as f64;
     h.ledger.credit_share(&rid, half_share).unwrap();
     assert_ne!(paid_state(&h, &quote_id).await, MeltQuoteState::Paid);
     assert_eq!(u64::from(h.wallet.total_balance().await.unwrap()), 0);
 
     let s = h.ledger.settle(&rid).unwrap();
-    assert_eq!((s.spent_thh, s.change_thh), (4, 6));
+    assert_eq!((s.spent_tih, s.change_tih), (4, 6));
 
     assert_eq!(paid_state(&h, &quote_id).await, MeltQuoteState::Paid);
     assert_eq!(h.ledger.get(&rid).unwrap().state, RedemptionState::Settled);
-    // The wallet unblinded the change from its own blanks: 6 fresh THH.
+    // The wallet unblinded the change from its own blanks: 6 fresh TiH.
     assert_eq!(u64::from(h.wallet.total_balance().await.unwrap()), 6);
     let proofs = h.wallet.get_unspent_proofs().await.unwrap();
     let mut amounts: Vec<u64> = proofs.iter().map(|p| u64::from(p.amount)).collect();
@@ -251,7 +255,7 @@ async fn settled_redemption_returns_undelivered_thh_as_change() {
 async fn completed_redemption_returns_no_change() {
     let h = harness(5).await;
     let (quote_id, rid) = redeem_all(&h, 5).await;
-    h.ledger.credit_share(&rid, 1e7).unwrap(); // ~4.3e16 hashes > 5 THH
+    h.ledger.credit_share(&rid, 1e7).unwrap(); // ~4.3e16 hashes > 5 TiH
     assert!(h.ledger.get(&rid).unwrap().is_complete());
     assert_eq!(paid_state(&h, &quote_id).await, MeltQuoteState::Paid);
     assert_eq!(u64::from(h.wallet.total_balance().await.unwrap()), 0);
@@ -299,7 +303,7 @@ async fn token_of(h: &Harness) -> String {
         MintUrl::from_str(&h.url).unwrap(),
         proofs,
         None,
-        CurrencyUnit::Custom("thh".into()),
+        CurrencyUnit::Custom("tih".into()),
     )
     .to_string()
 }
@@ -328,13 +332,13 @@ async fn checkout_order_change_is_unblinded_by_the_redeemer() {
     let orders_path = dir.path().join("redemption-orders.json");
     let checkout = serve_checkout(&h, Arc::new(OrderBook::persistent(&orders_path).unwrap())).await;
 
-    // The browser's blanks: 4 cover change below 16 THH.
+    // The browser's blanks: 4 cover change below 16 TiH.
     let keyset = h
         .mint
         .keysets()
         .keysets
         .into_iter()
-        .find(|k| k.unit == thh_unit() && k.active)
+        .find(|k| k.unit == tih_unit() && k.active)
         .unwrap();
     let blanks = PreMintSecrets::blank(keyset.id, Amount::from(10)).unwrap();
     assert_eq!(blanks.blinded_messages().len(), 4);
@@ -390,15 +394,15 @@ async fn checkout_order_change_is_unblinded_by_the_redeemer() {
     .unwrap();
     assert_eq!(missing.status(), 404);
 
-    // 3.5 THH delivered, then settled: 6 THH of change, signed on our blanks.
+    // 3.5 TiH delivered, then settled: 6 TiH of change, signed on our blanks.
     opened(&h.ledger, &rid).await;
-    let share = (HASHES_PER_THH * 7 / 2) as f64 / (1u64 << 32) as f64;
+    let share = (HASHES_PER_TIH * 7 / 2) as f64 / (1u64 << 32) as f64;
     h.ledger.credit_share(&rid, share).unwrap();
     h.ledger.settle(&rid).unwrap();
     let o = get_json(&order_api).await;
     assert_eq!(o["state"], "settled");
     assert_eq!(o["change"]["state"], "ready", "{o}");
-    assert_eq!(o["change"]["thh"], 6);
+    assert_eq!(o["change"]["tih"], 6);
     assert_eq!(o["change"]["mint_url"], h.url);
     // The server reports, it doesn't hold: no token, and nothing secret on disk.
     assert!(o["change"].get("token").is_none());
@@ -442,17 +446,17 @@ async fn checkout_order_change_is_unblinded_by_the_redeemer() {
     let again = get_json(&format!("{restarted}/checkout/api/order/{order_id}")).await;
     assert_eq!(again["change"]["state"], "ready");
 
-    // The change is real THH: another wallet can receive it.
+    // The change is real TiH: another wallet can receive it.
     let change = Token::new(
         MintUrl::from_str(&h.url).unwrap(),
         proofs,
         None,
-        CurrencyUnit::Custom("thh".into()),
+        CurrencyUnit::Custom("tih".into()),
     )
     .to_string();
     let other = Wallet::new(
         &h.url,
-        CurrencyUnit::Custom("thh".into()),
+        CurrencyUnit::Custom("tih".into()),
         Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap()),
         [5u8; 64],
         None,
@@ -490,7 +494,7 @@ async fn order_without_blanks_reports_unclaimable_change() {
     ))
     .await;
     assert_eq!(o["change"]["state"], "unclaimable", "{o}");
-    assert_eq!(o["change"]["thh"], 3);
+    assert_eq!(o["change"]["tih"], 3);
 }
 
 /// A redemption delivered in full has no change to hand back.
@@ -510,7 +514,7 @@ async fn order_without_change_reports_none() {
     let rid: hashu_core::redemption::RedemptionId =
         r["redemption_id"].as_str().unwrap().parse().unwrap();
     opened(&h.ledger, &rid).await;
-    h.ledger.credit_share(&rid, 1e7).unwrap(); // more than 3 THH
+    h.ledger.credit_share(&rid, 1e7).unwrap(); // more than 3 TiH
     let o = get_json(&format!(
         "{checkout}/checkout/api/order/{}",
         r["order_id"].as_str().unwrap()
@@ -533,7 +537,7 @@ async fn post_status(url: &str, body: serde_json::Value) -> (u16, serde_json::Va
 
 /// The redeemer stops a running redemption from the order page: only the
 /// stop secret (derived in the browser from the link's key) works, and the
-/// undelivered THH come back as change on the redeemer's blanks.
+/// undelivered TiH come back as change on the redeemer's blanks.
 #[tokio::test(flavor = "multi_thread")]
 async fn redeemer_stops_the_redemption_with_the_link_key() {
     use sha2::{Digest, Sha256};
@@ -544,7 +548,7 @@ async fn redeemer_stops_the_redemption_with_the_link_key() {
         .keysets()
         .keysets
         .into_iter()
-        .find(|k| k.unit == thh_unit() && k.active)
+        .find(|k| k.unit == tih_unit() && k.active)
         .unwrap();
     let blanks = PreMintSecrets::blank(keyset.id, Amount::from(10)).unwrap();
     let secret = [7u8; 32];
@@ -566,14 +570,14 @@ async fn redeemer_stops_the_redemption_with_the_link_key() {
     let order_api = format!("{checkout}/checkout/api/order/{order_id}");
     let o = get_json(&order_api).await;
     assert_eq!(o["can_stop"], true, "{o}");
-    assert_eq!(o["floor_thh"], 1);
-    // Nothing delivered yet: a stop now charges the 1 THH floor, returns 9.
-    assert_eq!(o["stop_charge_thh"], 1, "{o}");
-    assert_eq!(o["stop_change_thh"], 9, "{o}");
+    assert_eq!(o["floor_tih"], 1);
+    // Nothing delivered yet: a stop now charges the 1 TiH floor, returns 9.
+    assert_eq!(o["stop_charge_tih"], 1, "{o}");
+    assert_eq!(o["stop_change_tih"], 9, "{o}");
 
-    // 0.5 THH delivered: below the 1 THH floor only the operator can stop.
+    // 0.5 TiH delivered: below the 1 TiH floor only the operator can stop.
     let stop = format!("{order_api}/stop");
-    let half = (HASHES_PER_THH / 2) as f64 / (1u64 << 32) as f64;
+    let half = (HASHES_PER_TIH / 2) as f64 / (1u64 << 32) as f64;
     h.ledger.credit_share(&rid, half).unwrap();
     let (code, body) = post_status(
         &stop,
@@ -583,7 +587,7 @@ async fn redeemer_stops_the_redemption_with_the_link_key() {
     assert_eq!(code, 409, "{body}");
     assert!(!h.ledger.get(&rid).unwrap().is_finished());
 
-    // 2.5 THH delivered, then the redeemer stops.
+    // 2.5 TiH delivered, then the redeemer stops.
     h.ledger.credit_share(&rid, half * 4.0).unwrap();
     let (code, _) = post_status(
         &stop,
@@ -602,9 +606,9 @@ async fn redeemer_stops_the_redemption_with_the_link_key() {
     .await;
     assert_eq!(code, 200, "{o}");
     assert_eq!(o["state"], "settled");
-    assert_eq!(o["spent_thh"], 3);
+    assert_eq!(o["spent_tih"], 3);
     assert_eq!(o["change"]["state"], "ready", "{o}");
-    assert_eq!(o["change"]["thh"], 7);
+    assert_eq!(o["change"]["tih"], 7);
     // Stopping again changes nothing.
     let (code, again) = post_status(
         &stop,
@@ -612,7 +616,7 @@ async fn redeemer_stops_the_redemption_with_the_link_key() {
     )
     .await;
     assert_eq!(code, 200);
-    assert_eq!(again["change"]["thh"], 7);
+    assert_eq!(again["change"]["tih"], 7);
 
     // The change is on the redeemer's blanks: 7 = 1 + 2 + 4.
     let restored: cdk::nuts::RestoreResponse = serde_json::from_value(
@@ -676,7 +680,7 @@ async fn order_without_stop_hash_cannot_be_stopped_by_the_redeemer() {
 }
 
 /// The redeemer can't stop before the floor is delivered (#83): here a
-/// 1 THH redemption at the 1 THH floor with nothing delivered.
+/// 1 TiH redemption at the 1 TiH floor with nothing delivered.
 #[tokio::test(flavor = "multi_thread")]
 async fn redeemer_cannot_stop_before_the_floor() {
     use sha2::{Digest, Sha256};
@@ -687,7 +691,7 @@ async fn redeemer_cannot_stop_before_the_floor() {
         .keysets()
         .keysets
         .into_iter()
-        .find(|k| k.unit == thh_unit() && k.active)
+        .find(|k| k.unit == tih_unit() && k.active)
         .unwrap();
     let blanks = PreMintSecrets::blank(keyset.id, Amount::from(1)).unwrap();
     let secret = [9u8; 32];
@@ -708,7 +712,7 @@ async fn redeemer_cannot_stop_before_the_floor() {
     opened(&h.ledger, &rid).await;
     let order_api = format!("{checkout}/checkout/api/order/{order_id}");
     let o = get_json(&order_api).await;
-    assert_eq!(o["stop_change_thh"], 0, "{o}");
+    assert_eq!(o["stop_change_tih"], 0, "{o}");
 
     let (code, body) = post_status(
         &format!("{order_api}/stop"),

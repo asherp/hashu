@@ -336,8 +336,8 @@ fn redeemer_cfg() -> PoolCfg {
         name: "redeemer",
         en1: "e1e2e3e4e5",
         en2_size: 8,
-        // 1 THH is 3.6e15 hashes; at 2^19 a share is 2^51 ≈ 2.25e15, so
-        // the redemption fills on the second share.
+        // The order is 3,274 TiH; at 2^19 a share is 2^51 hashes = 2,048
+        // TiH, so the redemption fills on the second share.
         difficulty: (1u64 << 19) as f64,
         job: "rj1",
         coinb1: "03cc",
@@ -376,7 +376,7 @@ fn open_redemption(s: &Setup, pool: &str) -> RedemptionId {
     s.ledger
         .open(Redemption::new(
             id,
-            1,
+            3_274,
             format!("stratum+tcp://{pool}"),
             "alice.rig".into(),
         ))
@@ -831,7 +831,7 @@ async fn supplier_order_is_filled_by_that_suppliers_rig_only() {
         .open(
             Redemption::new(
                 id,
-                1,
+                3_274,
                 format!("stratum+tcp://{redeemer}"),
                 "buyer.rig".into(),
             )

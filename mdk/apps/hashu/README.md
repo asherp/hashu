@@ -1,6 +1,6 @@
 # Hashu Heater (MDK app)
 
-Sells a home miner's hashrate as `THH` and keeps the room comfortable. All
+Sells a home miner's hashrate as `TiH` and keeps the room comfortable. All
 telemetry and control go through the MDK Kernel (`pullTelemetry`,
 `sendCommand`); the app never talks to a miner directly.
 
@@ -21,7 +21,8 @@ Every 2 s the controller (`plugin/lib/controller.js`, started by `plugin/main.js
 | Manual override | `home` / `hashu` / `off` | `off` sleeps |
 
 It also shows sats earned per kWh of heat against a plain electric heater
-(0 sats/kWh for the same heat): `sats/kWh = satsPerThh / (J/TH ÷ 1000)`.
+(0 sats/kWh for the same heat): `sats/kWh = (msatPerPih / 1024 / 1000) /
+kWh per TiH`, where a TiH is 2^40 hashes, so `kWh per TiH = J/TH × 1.0995 / 3.6e6`.
 
 ## Routes
 
@@ -40,7 +41,7 @@ It also shows sats earned per kWh of heat against a plain electric heater
 | `homePool` | `stratum+tcp://216.230.225.61:3333` (bitcoin++ Seoul Testnet4 pool) |
 | `redeemPool` | pool and worker the demo Redeem button uses |
 | `thermostat` | `{ enabled: true, setpointC: 21, hysteresisC: 0.5, maxRoomC: 26 }` |
-| `satsPerThh` | `2` (about mainnet hashprice) |
+| `msatPerPih` | `625` msat per PiH (1,024 TiH), ≈ 2 sats per TH-hour (about mainnet hashprice) |
 | `electricitySatsPerKwh` | `150` |
 
 ## Develop

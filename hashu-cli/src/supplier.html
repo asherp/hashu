@@ -37,12 +37,12 @@ details summary { cursor:pointer; font-weight:600; }
 
   <div class="card">
     <div class="stats">
-      <div class="stat"><b id="ask">–</b><span>sats per THH</span></div>
-      <div class="stat"><b id="avail">–</b><span id="avail-sub">THH for sale</span></div>
+      <div class="stat"><b id="ask">–</b><span id="ask-sub">msat per PiH</span></div>
+      <div class="stat"><b id="avail">–</b><span id="avail-sub">TiH for sale</span></div>
       <div class="stat"><b id="rate">–</b><span>TH/s online</span></div>
       <div class="stat"><b id="horizon">–</b><span>hour horizon</span></div>
     </div>
-    <p class="hint" style="margin-bottom:0">Buy with any Cashu wallet: add this mint's URL and mint THH over Lightning. You pay the supplier's own wallet.</p>
+    <p class="hint" style="margin-bottom:0">Buy with any Cashu wallet: add this mint's URL and mint TiH over Lightning. You pay the supplier's own wallet.</p>
   </div>
 
   <div class="card">
@@ -52,9 +52,10 @@ details summary { cursor:pointer; font-weight:600; }
       <input id="secret" type="password" autocomplete="current-password">
       <button id="unlock">Open settings</button>
       <form id="settings" hidden>
-        <label for="s-ask">Ask <span class="hint">sats per THH, to the millisat (0.001)</span></label>
-        <input id="s-ask" type="number" min="0.001" step="0.001">
-        <label for="s-horizon">Horizon <span class="hint">hours; THH for sale = your rigs' hashrate × horizon − THH owed</span></label>
+        <label for="s-ask">Ask <span class="hint">msat per PiH (1,024 TiH); about 625 is 2 sats per TH-hour</span></label>
+        <input id="s-ask" type="number" min="1" step="1">
+        <p class="hint" id="s-ask-eq"></p>
+        <label for="s-horizon">Horizon <span class="hint">hours; TiH for sale = your rigs' hashrate × horizon − TiH owed</span></label>
         <input id="s-horizon" type="number" min="1" step="1">
         <label for="s-ln">Lightning address <span class="hint">needs payment verification (LUD-21)</span></label>
         <input id="s-ln" autocomplete="off">
@@ -69,17 +70,24 @@ const $ = (id) => document.getElementById(id);
 const fmt = (n, d = 0) => Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
 function say(text, ok) { const m = $('msg'); m.textContent = text; m.className = 'msg ' + (ok ? 'good' : 'bad'); m.hidden = false; }
 
+// Asks are msat per PiH (2^50 hashes = 1,024 TiH). The same ask in the
+// units hashrate markets quote: sats per TH/s per day.
+const satsPerThDay = (msatPerPih) => msatPerPih / 1000 * 86400e12 / 2 ** 50;
+const askEquiv = (m) => Number(m) > 0 ? `≈ ${satsPerThDay(Number(m)).toFixed(1)} sats per TH/s per day (${(Number(m) * 3.6e15 / 2 ** 50 / 1000).toFixed(2)} sats per TH-hour)` : '';
+$('s-ask').addEventListener('input', () => { $('s-ask-eq').textContent = askEquiv($('s-ask').value); });
+
 async function status() {
   try {
     const s = await (await fetch('/api/supplier')).json();
     $('name').textContent = s.name;
     $('url').textContent = s.mint_url;
     document.title = s.name + ' · Hashu supplier mint';
-    $('ask').textContent = s.ask_msat_per_thh == null ? '–' : fmt(s.ask_msat_per_thh / 1000, 3);
-    $('avail').textContent = fmt(s.capacity.available_thh);
+    $('ask').textContent = s.ask_msat_per_pih == null ? '–' : fmt(s.ask_msat_per_pih, 0);
+    $('ask-sub').textContent = s.ask_msat_per_pih == null ? 'msat per PiH' : `msat per PiH · ${askEquiv(s.ask_msat_per_pih)}`;
+    $('avail').textContent = fmt(s.capacity.available_tih);
     $('avail-sub').textContent = s.capacity.below_min
-      ? `THH for sale (${fmt(s.capacity.capacity_thh - s.capacity.owed_thh, 2)} THH headroom, below the 1 THH minimum)`
-      : 'THH for sale';
+      ? `TiH for sale (${fmt(s.capacity.capacity_tih - s.capacity.owed_tih, 0)} TiH headroom, below the 4,096 TiH minimum)`
+      : 'TiH for sale';
     $('rate').textContent = fmt(s.capacity.hashrate_ths, 2);
     $('horizon').textContent = fmt(s.capacity.horizon_hours, 1);
     $('state').textContent = s.selling ? 'selling' : (s.capacity.hashrate_ths > 0 ? 'not selling' : 'no rigs online');
@@ -109,7 +117,8 @@ $('unlock').addEventListener('click', async () => {
   try {
     const s = await api('GET');
     try { sessionStorage.setItem('hashu-secret', $('secret').value.trim()); } catch (e) {}
-    $('s-ask').value = s.ask_msat_per_thh == null ? '' : s.ask_msat_per_thh / 1000;
+    $('s-ask').value = s.ask_msat_per_pih == null ? '' : s.ask_msat_per_pih;
+    $('s-ask-eq').textContent = askEquiv(s.ask_msat_per_pih);
     $('s-horizon').value = s.horizon_hours;
     $('s-ln').value = s.lightning_address ?? '';
     $('settings').hidden = false;
@@ -120,7 +129,7 @@ $('settings').addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
     await api('POST', {
-      ask_msat_per_thh: $('s-ask').value ? Math.round(Number($('s-ask').value) * 1000) : null,
+      ask_msat_per_pih: $('s-ask').value ? Math.round(Number($('s-ask').value)) : null,
       horizon_hours: Number($('s-horizon').value),
       lightning_address: $('s-ln').value.trim() || null,
     });

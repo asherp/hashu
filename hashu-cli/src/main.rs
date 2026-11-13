@@ -26,7 +26,7 @@ enum Cmd {
     /// BTC wallet utilities.
     #[command(subcommand)]
     Wallet(hashu_cli::wallet::WalletAction),
-    /// Mint daemon: cdk mint (THH) + payment rails + Stratum proxy.
+    /// Mint daemon: cdk mint (TiH) + payment rails + Stratum proxy.
     #[command(subcommand)]
     Mint(hashu_cli::mint::MintAction),
     /// Run a SHA-256d Stratum V1 CPU miner against an upstream endpoint.

@@ -1,7 +1,7 @@
 # Hashu — Architecture (Draft v0.1)
 
 A hashrate proxy fused with a Cashu mint. Buyers pay Lightning, receive
-Chaumian hashrate vouchers (blind-signed, denominated in hashrate-time), and redeem them to
+Chaumian hashrate vouchers (blind-signed, denominated in hashes, as `TiH`), and redeem them to
 direct real hashrate at a pool of their choice.
 
 Domain: **hashu.io**
@@ -16,7 +16,7 @@ Today, buying hashrate is custodial, KYC-heavy, and contractually rigid.
 Cashu gives us a privacy-preserving, blinded-signature bearer instrument.
 A Stratum proxy gives us programmable control over where real hashrate
 is pointed. Compose the two and you get a **bearer voucher for
-hashrate-time** that can be transferred, swapped, melted to Lightning,
+hashing work** that can be transferred, swapped, melted to Lightning,
 or redeemed for actual mining work — all without the mint knowing who
 the holder is.
 
@@ -27,7 +27,7 @@ hashrate marketplace. Each Hashu instance is a single trust domain: one
 operator, one mint, one pool of hashrate. Vouchers from different
 operators interoperate through standard Cashu swaps but are issued
 under separate trust assumptions. A Hashu mint sells computation and
-never pays out bitcoin: `THH` is redeemed only for hashrate, never
+never pays out bitcoin: `TiH` is redeemed only for hashrate, never
 melted back to sats.
 
 ## 2. Core actors
@@ -35,7 +35,7 @@ melted back to sats.
 | Actor                | What they do                                                                                              | Trust placed in Hashu                                       |
 | -------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | **Operator**         | Runs Hashu. Sources hashrate (own ASICs / NiceHash / co-op / etc), holds mint signing keys + LN wallet.   | (this is the trusted role — see §6)                         |
-| **Voucher buyer**    | Pays Lightning, receives `THH` vouchers, redeems against any pool.                                        | Mint will redeem; proxy will route honestly.                |
+| **Voucher buyer**    | Pays Lightning, receives `TiH` vouchers, redeems against any pool.                                        | Mint will redeem; proxy will route honestly.                |
 | **Pool operator**    | Receives shares routed by Hashu on behalf of redeemers (or the operator's default pool during idle).      | None directly; just sees inbound stratum traffic.           |
 | **Hashprice oracle** | Publishes sats/Th/day. Initial source: Luxor.                                                             | Operator selects; oracle is the pricing source-of-truth.    |
 
@@ -81,11 +81,19 @@ inbound Stratum connections it is authorized to direct.
 - Built on **`cdk` (Cashu Development Kit)** — actively maintained Rust
   reference. Use `cdk-mintd` as a starting binary or embed `cdk` as a
   library.
-- Custom currency units:
-  - `THH` — terahash-hours (1 unit = 1 Th sustained for 1 hour ≈ 3.6 PH).
-  - `THD` — terahash-days (1 unit = 1 Th sustained for 24 hours). Optional
-    convenience denom.
-- Sat-equivalent vouchers (§5.2) are still issued as `THH`-denominated
+- Custom currency unit `TiH` (tebihash): 1 unit = 2^40 hashes ≈ 1.1 TH
+  (#90). Vouchers count work, not time; hashrate is TiH/s.
+  - Binary fits pool accounting: a difficulty-1 share is 2^32 hashes, so
+    1 TiH is exactly 256 difficulty-1 shares and a difficulty-D share is
+    D/256 TiH. Cashu's power-of-two denominations are powers of two of
+    hashes; the keyset signs 2^0 to 2^40 TiH.
+  - 1 TH/s for an hour (the old `THH` unit, 3.6 × 10^15 hashes) is
+    ≈ 3,274.18 TiH. Wallets may display THH, PiH (2^10 TiH) or EiH, but
+    the token amount is always TiH.
+  - Prices are quoted in msat per PiH (2^50 hashes), since one TiH costs
+    well under a millisat. The smallest purchase and the default smallest
+    redemption are 2^12 TiH (≈ 1.25 THH).
+- Sat-equivalent vouchers (§5.2) are still issued as `TiH`-denominated
   tokens; the *redemption mode* is the variable, not the unit. This
   keeps the mint's denomination tree stable.
 - Standard NUTs in scope: 00, 01, 02, 03, 04 (mint), 05 (melt), 06, 07–09
@@ -169,7 +177,7 @@ inbound Stratum connections it is authorized to direct.
 ### 4.5 Lightning node
 
 - **Mainnet.** Buyers pay real sats. The Lightning network is
-  independent of the redemption side: `THH` bought with mainnet sats can
+  independent of the redemption side: `TiH` bought with mainnet sats can
   be redeemed against any pool, Testnet4 pools included.
 - Default node: **phoenixd** (ACINQ), the same setup overpay runs
   (`PHOENIXD_URL` or `PHOENIXD_HOSTPORT`, `PHOENIXD_PASSWORD`).
@@ -183,18 +191,19 @@ inbound Stratum connections it is authorized to direct.
   abstraction.
 - Holds incoming sats from voucher purchases. **Funds in this wallet
   are operator liability**, not user funds proper — see trust model.
-- Mint-only: the node sells `THH` over bolt11 mint quotes and is never
+- Mint-only: the node sells `TiH` over bolt11 mint quotes and is never
   used to pay out. `hashu-mint` wraps the node's cdk backend in a
-  `ThhIssuer` (`payment.rs`), which prices a quote for `N` THH in sats via
-  `SatsPerThhFromHashprice` (`pricing.rs`: hashprice × 3600 s × (1 +
-  markup)), bills that invoice, and reports the payment back to cdk in
-  `THH`. `add_lightning_issuance` (`lightning.rs`) registers it and
+  `TihIssuer` (`payment.rs`), which prices a quote for `N` TiH in sats via
+  `MsatPerPihFromHashprice` (`pricing.rs`: msat per PiH = hashprice
+  [sats/TH·s] × 1000 × 2^50 / 10^12 × (1 + markup); sats = ⌈N × msat per
+  PiH / 1024 / 1000⌉), bills that invoice, and reports the payment back to cdk in
+  `TiH`. `add_lightning_issuance` (`lightning.rs`) registers it and
   withdraws bolt11 from the advertised melt methods.
 
 #### 4.5.1 Tether (USDT) payment rail
 
-Buyers can also pay in dollars: **USD -> `THH` -> hashrate -> BTC**,
-with no exchange in the path. The buyer pays USDT, holds `THH`, and
+Buyers can also pay in dollars: **USD -> `TiH` -> hashrate -> BTC**,
+with no exchange in the path. The buyer pays USDT, holds `TiH`, and
 redeems it as hashrate pointed at their own pool, which pays them in
 bitcoin. The mint only receives USDT and never pays anything out, so
 a Hashu operator is selling computation, not moving money.
@@ -209,10 +218,10 @@ a Hashu operator is selling computation, not moving money.
   USDC) is for rehearsals. Open quotes, settlements and the scan
   position persist to `<data-dir>/<method>-quotes.json`.
 - **cdk wiring:** `hashu_mint::tether::TetherPayments` is a
-  `MintPayment` backend for `(THH, Custom("usdt"))`. A mint quote is
-  requested in `THH`; a `ThhPricer` (shared with the Lightning rail,
+  `MintPayment` backend for `(TiH, Custom("usdt"))`. A mint quote is
+  requested in `TiH`; a `TihPricer` (shared with the Lightning rail,
   `hashu_mint::pricing`) prices it in micro-USDT. When the transfer
-  confirms the backend emits `PaymentReceived` in `THH`.
+  confirms the backend emits `PaymentReceived` in `TiH`.
 - **Matching without per-quote addresses:** the price is rounded up to
   whole cents and a random tag (1 to 9,999 micro-USDT, under one cent)
   makes each open quote's amount unique. A confirmed transfer of
@@ -300,7 +309,7 @@ machine-readable manifest:
       {"id": "<keyset-id-1>", "status": "active"},
       {"id": "<keyset-id-0>", "status": "retired", "retired_at": <unix>}
     ],
-    "supported_units":  ["THH"],
+    "supported_units":  ["TiH"],
     "supported_melts":  ["hashrate", "hashrate-sats"],
     "hashprice_oracle": "luxor",
     "manifest_version": 1,
@@ -312,7 +321,7 @@ machine-readable manifest:
 Kind 0 is replaceable — only the latest event per pubkey is kept by
 relays — so historical attribution is preserved by making
 `mint_pubkey_ids` **append-only**: rotated keysets remain listed with
-`status: "retired"` rather than being removed. A wallet holding a `THH`
+`status: "retired"` rather than being removed. A wallet holding a `TiH`
 token issued under a retired keyset can still verify the keyset was
 attested by checking the current kind 0. Standard nostr clients render
 the profile fields normally and ignore the unknown `hashu` key.
@@ -326,7 +335,7 @@ Hashu-only npub can also be linked back to a personal identity later
 via NIP-39 `i` tags or a co-signed nostr post, without coupling the
 two at the key level.
 
-Verifiers — typically wallet software receiving `THH` tokens — can
+Verifiers — typically wallet software receiving `TiH` tokens — can
 fetch the manifest, confirm the issuing mint's keyset ID matches one
 the operator has attested to, and treat the nostr npub as the
 canonical operator identity. Same pattern as DNSSEC KSK signing ZSKs,
@@ -452,38 +461,39 @@ audit the integration if Hashu later publishes the tick log.
 
 ## 5. Voucher types & lifecycle
 
-### 5.1 Th-hour voucher (denomination: `THH`)
+### 5.1 Hash voucher (denomination: `TiH`)
 
 ```
 Mint:
-    Buyer ──▶ POST /v1/mint/quote/bolt11 { unit:"THH", amount: N }
+    Buyer ──▶ POST /v1/mint/quote/bolt11 { unit:"TiH", amount: N }
     Mint  ──▶ { quote_id, invoice }   // invoice priced via hashprice oracle
     Buyer ──▶ pays invoice
     Buyer ──▶ POST /v1/mint/bolt11 { quote_id, blinded_messages }
     Mint  ──▶ blinded signatures      // standard NUT-04
 
 Redeem (custom melt method "hashrate"):
-    Holder ──▶ POST /v1/melt/quote/hashrate { unit:"THH", proofs, pool_url, worker_name }
+    Holder ──▶ POST /v1/melt/quote/hashrate { unit:"TiH", proofs, pool_url, worker_name }
     Mint   ──▶ verifies proofs, schedules redemption, returns redemption_id
     Proxy  ──▶ binds pool_url to a slice of connected hashrate
     Proxy  ──▶ logs accepted shares against redemption_id
-    Mint   ──▶ marks redemption complete when ∫ hashrate dt ≥ N · 1h
+    Mint   ──▶ marks redemption complete when Σ share difficulty × 2^32 ≥ N · 2^40
 ```
 
-The melt quote's `amount` is the redemption floor (`min_thh`) and its
+The melt quote's `amount` is the redemption floor (`min_tih`) and its
 `fee_reserve` is the rest of `N`, so the holder's wallet sends NUT-08 blank
 outputs for the refundable part. If delivery stops, the operator *settles*
 the redemption (`POST /redemptions/{id}/settle` on the control API): the
-mint reports `total_spent = max(floor, ⌈delivered THH⌉)` and cdk signs the
+mint reports `total_spent = max(floor, ⌈delivered TiH⌉)` and cdk signs the
 blanks for the remainder in power-of-two denominations. The holder gets
-fresh, unlinkable `THH` back and can redeem it later. Design and later
+fresh, unlinkable `TiH` back and can redeem it later. Design and later
 phases (automatic stall detection, finalizer, checkout change): issue #44.
 
-Pricing at mint time: `invoice_sats = N · hashprice_now · 1h + mint_fee`.
+Pricing at mint time: `invoice_msat = ⌈N · msat_per_pih / 1024⌉`, with
+`msat_per_pih` from hashprice_now plus the operator's markup.
 Buyer is locking in *today's* hashprice for *future* hashrate-time —
 this is the product's economic primitive.
 
-### 5.2 Sats-equivalent redemption (same `THH` token, different melt method)
+### 5.2 Sats-equivalent redemption (same `TiH` token, different melt method)
 
 Hashrate is directed at the **redeemer's chosen pool** until cumulative
 *expected* revenue (∫ hashprice(t) · hashrate(t) dt) reaches the
@@ -530,14 +540,14 @@ Two custom melt methods:
 
 | Method            | Purpose                                       | Spec status |
 | ----------------- | --------------------------------------------- | ----------- |
-| `hashrate`        | Redeem `THH` for routed hashrate-time.        | Hashu-local; propose as NUT extension once stable. |
-| `hashrate-sats`   | Redeem `THH` for routed-until-N-sats.         | Same.       |
+| `hashrate`        | Redeem `TiH` for routed hashrate-time.        | Hashu-local; propose as NUT extension once stable. |
+| `hashrate-sats`   | Redeem `TiH` for routed-until-N-sats.         | Same.       |
 
 Both follow NUT-05's quote/melt request structure but replace the
 BOLT11 invoice field with a `{pool_url, worker_name, target}` payload
 and replace settlement-by-payment with settlement-by-share-accumulation.
 
-`THH` as a custom unit needs no new NUT — Cashu already supports
+`TiH` as a custom unit needs no new NUT — Cashu already supports
 arbitrary `unit` strings in NUT-04/05; clients just need to display it.
 
 ## 8. Prior art
@@ -596,7 +606,7 @@ Resolved 2026-05-07:
   self-hosted; the operator's relationship with their hashrate source
   is managed outside Hashu.
 - ~~Q4 — redemption SLA:~~ on proxy outage or unfillable redemption,
-  the unredeemed portion of `THH` is **re-issued as fresh blinded
+  the unredeemed portion of `TiH` is **re-issued as fresh blinded
   signatures back to the holder**. Holder can re-redeem or hold.
 - ~~Q7 — miner registration UX:~~ **out of scope** (no third-party
   miners connect to a stranger's Hashu under this model).
@@ -613,7 +623,7 @@ Open:
 
 **Phase 0 — Skeleton**
 - Rust workspace: `hashu-mint`, `hashu-proxy`, `hashu-core`, `hashu-cli`.
-- Pull `cdk` as dep, stub `THH` unit.
+- Pull `cdk` as dep, stub `TiH` unit.
 - Stub Stratum V1 listener that just echoes shares to a hardcoded pool.
 
 **Phase 1 — Th-hour MVP**
@@ -633,7 +643,7 @@ Open:
 
 **Phase 3 — Sats-equivalent + secondary market**
 - `hashrate-sats` melt method.
-- Public token spec so other wallets can hold `THH`.
+- Public token spec so other wallets can hold `TiH`.
 
 **Phase 4 — Stratum V2**
 - Migrate proxy to SRI; expose V2 endpoint alongside V1.

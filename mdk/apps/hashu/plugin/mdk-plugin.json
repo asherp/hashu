@@ -1,11 +1,11 @@
 {
   "name": "hashu",
   "version": "0.1.0",
-  "description": "Hashu heater: sells a home miner's hashrate as THH vouchers, switching its pool through MDK while a redemption is filled.",
+  "description": "Hashu heater: sells a home miner's hashrate as TiH vouchers, switching its pool through MDK while a redemption is filled.",
   "routes": [
     {
       "id": "hashu.state",
-      "description": "Heaters, their pool and heat level and why, open THH redemptions, sats earned per kWh of heat, and the event log.",
+      "description": "Heaters, their pool and heat level and why, open TiH redemptions, sats earned per kWh of heat, and the event log.",
       "handler": "./controllers/state.js",
       "safety": "read-only",
       "http": { "method": "GET", "path": "/api/hashu/state" }
@@ -19,7 +19,7 @@
     },
     {
       "id": "hashu.redeem",
-      "description": "Demo only: open a THH redemption on the Hashu proxy (stands in for a Cashu melt).",
+      "description": "Demo only: open a TiH redemption on the Hashu proxy (stands in for a Cashu melt).",
       "handler": "./controllers/redeem.js",
       "safety": "write",
       "http": { "method": "POST", "path": "/api/hashu/redeem" }

@@ -1,8 +1,8 @@
 //! End-to-end: accepted shares fill a redemption in the ledger.
 //!
 //! Topology: fake miner ⇄ proxy (with a [`CreditContext`]) ⇄ fake pool.
-//! The pool sets difficulty 500_000 and accepts every submit. A 1 THH
-//! redemption needs 3.6e15 hashes ≈ 838_190 × 2^32, so:
+//! The pool sets difficulty 500_000 and accepts every submit. A 3,274 TiH
+//! (≈ 1 THH) redemption needs 3,274 × 2^40 hashes = 838,144 × 2^32, so:
 //!   - a share submitted while unbound (default pool) credits nothing;
 //!   - the first bound share leaves it Active at 500_000 × 2^32 hashes;
 //!   - the second bound share completes it and fires the completion signal.
@@ -88,13 +88,13 @@ async fn accepted_shares_fill_bound_redemption() {
     let pool_addr = pool_listener.local_addr().unwrap();
     tokio::spawn(fake_pool(pool_listener));
 
-    // Ledger with one open 1 THH redemption; the binding starts unbound.
+    // Ledger with one open 3,274 TiH redemption; the binding starts unbound.
     let rid = RedemptionId::from_bytes([0x42; 16]);
     let ledger = Arc::new(RedemptionLedger::new());
     ledger
         .open(Redemption::new(
             rid,
-            1,
+            3_274,
             "stratum+tcp://redeemer:3333".into(),
             "w".into(),
         ))

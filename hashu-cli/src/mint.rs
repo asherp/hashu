@@ -2,9 +2,9 @@
 //!
 //! One process runs everything a demo needs:
 //!
-//! - a **cdk mint** for the `THH` unit, served over HTTP (NUT-00..NUT-07 plus
+//! - a **cdk mint** for the `TiH` unit, served over HTTP (NUT-00..NUT-07 plus
 //!   the payment-method routes);
-//! - **payment rails** that sell `THH`: Lightning over phoenixd (mainnet
+//! - **payment rails** that sell `TiH`: Lightning over phoenixd (mainnet
 //!   sats, receive-only) and/or stablecoins (USDT on Ethereum mainnet and
 //!   USDC on Base by default, each chain configurable);
 //! - the **`hashrate` melt method**, which opens redemptions in a
@@ -33,15 +33,16 @@ use cdk::cdk_payment::DynMintPayment;
 use cdk::mint::{MintBuilder, MintMeltLimits, UnitConfig};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use clap::{Args, Subcommand, ValueEnum};
+use hashu_core::denom::msat_per_pih_from_sats_per_ths;
 use hashu_core::hashprice::{HashpriceOracle, HashpriceSample};
 use hashu_core::redemption::RedemptionLedger;
-use hashu_mint::capacity::CapacityBook;
+use hashu_mint::capacity::{CapacityBook, MIN_PURCHASE_TIH};
 use hashu_mint::lightning::add_lightning_issuance;
 use hashu_mint::melt::{reopen_pending_quotes, HashrateMelter, METHOD as HASHRATE};
 use hashu_mint::oracle::{esplora, mrr};
-use hashu_mint::payment::{thh_unit, ThhIssuer};
+use hashu_mint::payment::{tih_unit, TihIssuer};
 use hashu_mint::phoenixd::{Phoenixd, PhoenixdConfig};
-use hashu_mint::pricing::{SatsPerThhFromHashprice, ThhPricer, SECS_PER_THH};
+use hashu_mint::pricing::{MsatPerPihFromHashprice, TihPricer};
 use hashu_mint::tether::{
     EvmRpcSource, FixedUsdtPrice, SatsToUsdt, Stablecoin, TetherPayments, UsdtRail, BASE_CHAIN_ID,
     BASE_USDC, MAINNET_CHAIN_ID, MAINNET_USDT, MICRO_PER_USDT,
@@ -76,11 +77,13 @@ pub const SEPOLIA_TEST_USDT: &str = "0x7169D38820dfd117C3FA1f22a697dBA58d90BA06"
 pub const SEPOLIA_CHAIN_ID: u64 = 11_155_111;
 pub const SEPOLIA_PUBLIC_RPC: &str = "https://ethereum-sepolia-rpc.publicnode.com";
 
-/// `THH` denominations the keyset signs: powers of two up to 2^20.
-pub(crate) const DENOMS: [u64; 21] = {
-    let mut d = [0u64; 21];
+/// `TiH` denominations the keyset signs: powers of two up to 2^40 (one
+/// 2^40 TiH proof is ≈ 336M THH; a TiH-sized keyset needs far more range
+/// than the old THH one, whose 2^20 cap is only ≈ 320 THH in TiH).
+pub(crate) const DENOMS: [u64; 41] = {
+    let mut d = [0u64; 41];
     let mut i = 0;
-    while i < 21 {
+    while i < 41 {
         d[i] = 1 << i;
         i += 1;
     }
@@ -106,7 +109,7 @@ pub enum PriceSource {
     Mrr,
     /// Hashprice derived from recent blocks on `--network` via Esplora.
     Esplora,
-    /// A fixed `--sats-per-thh`.
+    /// A fixed `--msat-per-pih`.
     Fixed,
 }
 
@@ -142,7 +145,7 @@ pub struct RunArgs {
     #[arg(
         long,
         env = "HASHU_MINT_DESCRIPTION",
-        default_value = "Hashrate vouchers in terahash-hours (THH). Pay with Lightning or USDT; redeem by pointing hashrate at your pool."
+        default_value = "Hashrate vouchers in tebihashes (TiH, 2^40 hashes). Pay with Lightning or USDT; redeem by pointing hashrate at your pool."
     )]
     pub description: String,
     /// How to reach the operator (NUT-06 `contact`), comma separated
@@ -150,12 +153,12 @@ pub struct RunArgs {
     /// Shown on the landing page. Empty: no contact.
     #[arg(long, env = "HASHU_MINT_CONTACT", value_delimiter = ',')]
     pub contact: Vec<String>,
-    /// Largest mint quote or redemption, in THH.
-    #[arg(long, default_value_t = 1_000_000)]
-    pub max_thh: u64,
-    /// Smallest redemption, in THH.
-    #[arg(long, default_value_t = hashu_mint::melt::DEFAULT_MIN_THH)]
-    pub min_redeem_thh: u64,
+    /// Largest mint quote or redemption, in TiH (default 2^32 ≈ 1.3M THH).
+    #[arg(long, default_value_t = 1 << 32)]
+    pub max_tih: u64,
+    /// Smallest redemption, in TiH.
+    #[arg(long, default_value_t = hashu_mint::melt::DEFAULT_MIN_TIH)]
+    pub min_redeem_tih: u64,
     /// Serve the hosted-mint waitlist for miners at `/waitlist/` and store
     /// sign-ups in `<data-dir>/waitlist.jsonl` (operator view at
     /// `/waitlist` on the control API). Off: `/waitlist/` is a 404.
@@ -163,14 +166,15 @@ pub struct RunArgs {
     pub waitlist: bool,
 
     // ---- pricing ----------------------------------------------------
-    /// Where the sats price of a THH comes from.
+    /// Where the price of hashes comes from.
     #[arg(long, value_enum, default_value_t = PriceSource::Mrr)]
     pub price: PriceSource,
-    /// Fixed price in sats per THH. Required with `--price fixed`; with a
-    /// live source it is used until the first sample arrives and whenever
-    /// the source goes stale.
-    #[arg(long, env = "HASHU_SATS_PER_THH")]
-    pub sats_per_thh: Option<f64>,
+    /// Fixed price in msat per PiH (2^50 hashes = 1,024 TiH; ≈ 625 msat is
+    /// ≈ 2 sats per THH). Required with `--price fixed`; with a live source
+    /// it is used until the first sample arrives and whenever the source
+    /// goes stale.
+    #[arg(long, env = "HASHU_MSAT_PER_PIH")]
+    pub msat_per_pih: Option<f64>,
     /// Operator markup in basis points, applied to every rail's price.
     /// The operator GUI can change it while the mint runs.
     #[arg(long)]
@@ -226,12 +230,12 @@ pub struct RunArgs {
     /// 30 is about a minute on Base (2 s blocks).
     #[arg(long, env = "HASHU_USDC_CONFIRMATIONS", default_value_t = 30)]
     pub usdc_confirmations: u64,
-    /// Fixed dollar price per THH (e.g. 0.05), used for both USDT and
-    /// USDC. Takes precedence over `--usd-per-btc`.
-    #[arg(long, env = "HASHU_USDT_PER_THH")]
-    pub usdt_per_thh: Option<f64>,
+    /// Fixed dollar price per PiH (2^50 hashes, e.g. 0.0006), used for both
+    /// USDT and USDC. Takes precedence over `--usd-per-btc`.
+    #[arg(long, env = "HASHU_USDT_PER_PIH")]
+    pub usdt_per_pih: Option<f64>,
     /// BTC/USD rate, to price USDT quotes from the sats price so both rails
-    /// sell THH at the same price.
+    /// sell TiH at the same price.
     #[arg(long, env = "HASHU_USD_PER_BTC")]
     pub usd_per_btc: Option<f64>,
 
@@ -333,25 +337,25 @@ impl<O: HashpriceOracle> HashpriceOracle for WithFallback<O> {
     }
 }
 
-fn fixed_from_sats_per_thh(sats_per_thh: f64) -> Result<FixedHashprice> {
-    if !sats_per_thh.is_finite() || sats_per_thh <= 0.0 {
-        bail!("--sats-per-thh must be a positive number (got {sats_per_thh})");
+fn fixed_from_msat_per_pih(msat_per_pih: f64) -> Result<FixedHashprice> {
+    if !msat_per_pih.is_finite() || msat_per_pih <= 0.0 {
+        bail!("--msat-per-pih must be a positive number (got {msat_per_pih})");
     }
     Ok(FixedHashprice {
-        sats_per_ths: sats_per_thh / SECS_PER_THH,
+        sats_per_ths: msat_per_pih / msat_per_pih_from_sats_per_ths(1.0),
     })
 }
 
 /// Build the hashprice oracle and start its poller, if any.
 async fn build_oracle(args: &RunArgs) -> Result<Arc<dyn HashpriceOracle + Send + Sync>> {
-    let fallback = args.sats_per_thh.map(fixed_from_sats_per_thh).transpose()?;
+    let fallback = args.msat_per_pih.map(fixed_from_msat_per_pih).transpose()?;
     let every = Duration::from_secs(args.price_refresh_secs.max(10));
     // A sample stays usable for three refreshes, so one failed fetch
     // doesn't stop quoting.
     let stale = every * 3;
     match args.price {
         PriceSource::Fixed => {
-            let f = fallback.context("--price fixed needs --sats-per-thh")?;
+            let f = fallback.context("--price fixed needs --msat-per-pih")?;
             Ok(Arc::new(f))
         }
         PriceSource::Mrr => {
@@ -397,8 +401,8 @@ async fn build_oracle(args: &RunArgs) -> Result<Arc<dyn HashpriceOracle + Send +
 fn sats_pricer(
     oracle: &Arc<dyn HashpriceOracle + Send + Sync>,
     markup_bps: Option<u32>,
-) -> SatsPerThhFromHashprice {
-    let p = SatsPerThhFromHashprice::new(oracle.clone());
+) -> MsatPerPihFromHashprice {
+    let p = MsatPerPihFromHashprice::new(oracle.clone());
     match markup_bps {
         Some(bps) => p.with_markup_bps(bps),
         None => p,
@@ -490,14 +494,14 @@ async fn lightning_node(args: &RunArgs) -> Result<Option<(DynMintPayment, &'stat
 fn usdt_pricer(
     args: &RunArgs,
     oracle: &Arc<dyn HashpriceOracle + Send + Sync>,
-) -> Result<Arc<dyn ThhPricer>> {
-    if let Some(usdt) = args.usdt_per_thh {
+) -> Result<Arc<dyn TihPricer>> {
+    if let Some(usdt) = args.usdt_per_pih {
         let micro = (usdt * MICRO_PER_USDT as f64).round();
         if !micro.is_finite() || micro < 1.0 {
-            bail!("--usdt-per-thh must be at least 0.000001 (got {usdt})");
+            bail!("--usdt-per-pih must be at least 0.000001 (got {usdt})");
         }
         return Ok(Arc::new(FixedUsdtPrice {
-            micro_per_thh: micro as u64,
+            micro_per_pih: micro as u64,
         }));
     }
     if let Some(usd_per_btc) = args.usd_per_btc {
@@ -506,7 +510,7 @@ fn usdt_pricer(
             usd_per_btc,
         }));
     }
-    bail!("the stablecoin rails need a price: pass --usdt-per-thh or --usd-per-btc")
+    bail!("the stablecoin rails need a price: pass --usdt-per-pih or --usd-per-btc")
 }
 
 /// Poll MRR for the account's active rentals, if a key is configured.
@@ -576,7 +580,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             .with_context(|| format!("open share audit {audit_path:?}"))?,
     );
     let oracle = build_oracle(&args).await?;
-    let limits = MintMeltLimits::new(1, args.max_thh);
+    let limits = MintMeltLimits::new(MIN_PURCHASE_TIH, args.max_tih);
     let started_ms = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -634,24 +638,24 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     }
     builder
         .configure_unit(
-            thh_unit(),
+            tih_unit(),
             UnitConfig {
                 amounts: DENOMS.to_vec(),
                 input_fee_ppk: 0,
             },
         )
-        .context("configure THH unit")?;
+        .context("configure TiH unit")?;
 
     // Redemption: the only way out of the mint.
     builder
         .add_payment_processor(
-            thh_unit(),
+            tih_unit(),
             PaymentMethod::Custom(HASHRATE.into()),
-            MintMeltLimits::new(args.min_redeem_thh.max(1), args.max_thh),
+            MintMeltLimits::new(args.min_redeem_tih.max(1), args.max_tih),
             Arc::new(
                 HashrateMelter::new(ledger.clone())
-                    .with_min_thh(args.min_redeem_thh)
-                    .with_max_thh(args.max_thh),
+                    .with_min_tih(args.min_redeem_tih)
+                    .with_max_tih(args.max_tih),
             ),
         )
         .await
@@ -663,7 +667,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let mut fake_lightning = false;
     if let Some((node, kind)) = lightning_node(&args).await? {
         fake_lightning = kind == "fake";
-        let issuer = ThhIssuer::new(sats_controlled.clone(), node, CurrencyUnit::Sat);
+        let issuer = TihIssuer::new(sats_controlled.clone(), node, CurrencyUnit::Sat);
         builder = add_lightning_issuance(builder, issuer, limits)
             .await
             .context("register Lightning rail")?;
@@ -715,7 +719,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("{symbol} rail: {e}"))?;
         builder
             .add_payment_processor(
-                thh_unit(),
+                tih_unit(),
                 PaymentMethod::Custom(coin.method().into()),
                 limits,
                 Arc::new(payments),
@@ -730,7 +734,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         ));
     }
     // cdk advertises every processor for both minting and melting. A Hashu
-    // mint sells THH over its payment rails and redeems it only as
+    // mint sells TiH over its payment rails and redeems it only as
     // hashrate, so keep NUT-04 to the rails and NUT-05 to `hashrate`.
     let mut info = builder.current_mint_info();
     let hashrate = PaymentMethod::Custom(HASHRATE.into());
@@ -768,18 +772,18 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     tracing::info!(
         limit = cap.limit,
         rented_ths = cap.rented_ths,
-        capacity_thh = cap.capacity_thh,
-        owed_thh = cap.owed_thh,
-        available_thh = ?cap.available_thh,
+        capacity_tih = cap.capacity_tih,
+        owed_tih = cap.owed_tih,
+        available_tih = ?cap.available_tih,
         "capacity"
     );
 
-    let price_now = sats_controlled.quote(1).ok();
+    let price_now = crate::operator::msat_per_pih(&sats_controlled);
     tracing::info!(
         listen = %args.listen,
         rails = ?rails,
-        sats_per_thh = ?price_now,
-        "mint ready (unit THH, melt method `hashrate`); buyer checkout at http://{}/checkout/",
+        msat_per_pih = ?price_now,
+        "mint ready (unit TiH, melt method `hashrate`); buyer checkout at http://{}/checkout/",
         args.listen
     );
 
@@ -803,8 +807,8 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         Some(sats_controlled.clone()),
         usdt_controlled.clone(),
         methods.iter().filter(|m| *m != HASHRATE).cloned().collect(),
-        args.min_redeem_thh.max(1),
-        args.max_thh,
+        args.min_redeem_tih.max(1),
+        args.max_tih,
         ledger.clone(),
         mint.clone(),
         meter.clone(),
@@ -917,8 +921,8 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
                 mint_url: args.mint_url.clone(),
                 stratum_bind: args.stratum_bind.to_string(),
                 rails: rails.clone(),
-                min_redeem_thh: args.min_redeem_thh,
-                max_thh: args.max_thh,
+                min_redeem_tih: args.min_redeem_tih,
+                max_tih: args.max_tih,
             },
             started_ms,
             checkout: checkout.clone(),
@@ -1002,8 +1006,8 @@ fn supplier_mints(
             base,
             dir: args.data_dir.join("mints"),
             ledger: ledger.clone(),
-            min_redeem_thh: args.min_redeem_thh,
-            max_thh: args.max_thh,
+            min_redeem_tih: args.min_redeem_tih,
+            max_tih: args.max_tih,
             fake_lightning,
             hashrate: Arc::new(move |name: &str| r.supplier_hashrate(name)),
             stratum_port: args.stratum_bind.port(),
@@ -1018,33 +1022,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixed_price_round_trips_to_sats_per_thh() {
+    fn fixed_price_round_trips_to_msat_per_pih() {
         let oracle: Arc<dyn HashpriceOracle + Send + Sync> =
-            Arc::new(fixed_from_sats_per_thh(50.0).unwrap());
+            Arc::new(fixed_from_msat_per_pih(500.0).unwrap());
         let p = sats_pricer(&oracle, Some(0));
-        assert_eq!(p.price(10).unwrap(), 500);
+        // 10 PiH at 500 msat = 5 sats.
+        assert_eq!(p.price(10 * 1024).unwrap(), 5);
+        assert!((p.msat_per_pih_now().unwrap() - 500.0).abs() < 1e-9);
     }
 
     #[test]
     fn fallback_covers_an_empty_live_oracle() {
         let o = WithFallback {
             live: mrr::MrrOracle::new(4, Duration::from_secs(60)),
-            fallback: Some(fixed_from_sats_per_thh(36.0).unwrap()),
+            fallback: Some(fixed_from_msat_per_pih(36.0).unwrap()),
         };
         let per_ths = o.sample_at(SystemTime::now()).unwrap();
-        assert!((per_ths * SECS_PER_THH - 36.0).abs() < 1e-9);
+        assert!((msat_per_pih_from_sats_per_ths(per_ths) - 36.0).abs() < 1e-9);
     }
 
     #[test]
     fn denominations_are_powers_of_two() {
         assert_eq!(DENOMS[0], 1);
-        assert_eq!(DENOMS[20], 1 << 20);
+        assert_eq!(DENOMS[40], 1 << 40);
     }
 
     #[test]
     fn rejects_non_positive_fixed_price() {
-        assert!(fixed_from_sats_per_thh(0.0).is_err());
-        assert!(fixed_from_sats_per_thh(-1.0).is_err());
+        assert!(fixed_from_msat_per_pih(0.0).is_err());
+        assert!(fixed_from_msat_per_pih(-1.0).is_err());
     }
 }
 

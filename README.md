@@ -1,10 +1,12 @@
 # Hashu
 
 A hashrate proxy fused with a Cashu mint. Buyers pay Lightning, receive
-Chaumian hashrate vouchers: blind-signed tokens denominated in
-hashrate-time (`THH` —
-terahash-hours), and redeem them to direct real hashrate at a pool of
-their choice.
+Chaumian hashrate vouchers: blind-signed tokens denominated in hashes
+(`TiH`, tebihash: 2^40 hashes, exactly 256 difficulty-1 shares), and
+redeem them to direct real hashrate at a pool of their choice. Prices are
+quoted in msat per PiH (2^50 hashes = 1,024 TiH). 1 TH/s for an hour is
+about 3,274 TiH. See [#90](https://github.com/asherp/hashu/issues/90) for
+why the unit moved from terahash-hours (THH) to TiH.
 
 Hashu is **self-hosted software**, not a service. Anyone with hashrate
 can run a Hashu instance and start issuing vouchers backed by it. The
@@ -19,7 +21,7 @@ trust model, components, and on-the-wire artifacts are described in
 
 Working mint, live on mainnet at <https://mint.hashu.io>. Built at the
 bitcoin++ Seoul 2026 hackathon. Buyers pay with Lightning (phoenixd) or
-dollar stablecoins, get THH vouchers, and redeem them by pointing real
+dollar stablecoins, get TiH vouchers, and redeem them by pointing real
 hashrate at their own pool. The mint never pays out bitcoin.
 
 | Component | Status | Where |
@@ -111,7 +113,7 @@ hashu manifest publish --keyset-id 00deadbeefcafebab    # actually push to confi
 
 The manifest is a kind 0 event whose `content` merges standard nostr
 profile fields with a namespaced `hashu` object listing your instance
-URL, supported units (`THH`), supported melt methods, oracle source,
+URL, supported units (`TiH`), supported melt methods, oracle source,
 and an **append-only** history of mint keyset IDs. Append-only means
 rotated keysets stay in the list with `status: "retired"` rather than
 disappearing — preserving attestation for tokens issued under prior
@@ -133,11 +135,11 @@ hashu oracle ping --source mrr --network testnet4            # MRR rental floor 
 
 `--network` picks the public Esplora for `bitcoin` (default),
 `testnet4`, `testnet` (Testnet3) or `signet`. Esplora pings also print
-the chain's real difficulty and the THH one expected block costs; on
+the chain's real difficulty and the TiH one expected block costs; on
 Testnet4 that skips BIP 94 difficulty-1 blocks (≈1.04e9 real difficulty
-≈ 1,240 THH per block on 2026-11-05).
+≈ 4.06M TiH, or 1.24 PH-hours, per block on 2026-11-05).
 
-For a Testnet4 mint, price THH with `--source mrr`: the
+For a Testnet4 mint, price TiH with `--source mrr`: the
 MiningRigRentals SHA-256 rental floor (BTC/PH/day, public, no key) is
 what the hashrate actually costs, whichever chain it mines. Combined
 with Testnet4's real difficulty it gives the BTC cost of one expected
@@ -185,7 +187,7 @@ target. Signed nostr publication of roots is still planned.
 ### 6. Run the mint
 
 `hashu mint run` is the whole Hashu node in one process: the cdk mint for
-`THH`, the payment rails that sell it, the `hashrate` redemption method,
+`TiH`, the payment rails that sell it, the `hashrate` redemption method,
 the Stratum proxy that fills redemptions, and the control API the
 [MDK app](mdk/README.md) polls.
 
@@ -208,35 +210,38 @@ hashu mint run \
 | `127.0.0.1:3334` (`--control-bind`) | **Operator GUI** at `/`, its API under `/api/`, and the control API: `GET /status`, `GET /redemptions/{id}/root`, `GET /redemptions/{id}/proof/{n}` |
 
 - **Lightning** (`--lightning phoenixd|fake|off`): phoenixd is used when
-  `PHOENIXD_URL` or `PHOENIXD_HOSTPORT` is set. It only buys `THH`; the
+  `PHOENIXD_URL` or `PHOENIXD_HOSTPORT` is set. It only buys `TiH`; the
   mint never pays out. `fake` pays every invoice by itself, for rehearsals.
 - **Stablecoins** (USDT, USDC): each is on when its `--usdt-deposit` /
   `--usdc-deposit` is set, as methods `usdt` and `usdc`. Each coin has its
   own chain: USDT defaults to Ethereum mainnet (12 confirmations), USDC to
   Circle's native USDC on Base (30 confirmations); change one with
   `--usdc-token`, `--usdc-rpc`, `--usdc-chain-id` (same for `usdt`).
-  Open quotes are kept in `<data-dir>/{usdt,usdc}-quotes.json` so a restart loses none. Price both with `--usdt-per-thh 0.05` or derive
+  Open quotes are kept in `<data-dir>/{usdt,usdc}-quotes.json` so a restart loses none. Price both with `--usdt-per-pih 0.0006` (dollars per PiH) or derive
   it from sats with `--usd-per-btc`.
-- **Price** (`--price mrr|esplora|fixed`): MRR rental floor by default;
-  `--sats-per-thh` is the fixed price, and the fallback while a live
+- **Price** (`--price mrr|esplora|fixed`): MRR rental floor by default,
+  converted to msat per PiH (≈ 625 msat/PiH is ≈ 2 sats per TH-hour);
+  `--msat-per-pih` is the fixed price, and the fallback while a live
   source has no fresh sample. `--markup-bps` adds the operator's margin.
-- **Redemption**: a wallet melts `THH` with method `hashrate` and request
-  `{"pool_url", "worker_name", "amount_thh", "nonce"?}`. The proxy routes
+  Lightning invoices round the total up to whole sats. The smallest
+  purchase and the default smallest redemption are 2^12 TiH (≈ 1.25 THH).
+- **Redemption**: a wallet melts `TiH` with method `hashrate` and request
+  `{"pool_url", "worker_name", "amount_tih", "nonce"?}`. The proxy routes
   miners to that pool under that worker until the amount is filled, then
   the melt turns `PAID`. `--upstream` (`HASHU_UPSTREAM`, required) is where miners go otherwise.
 - **Redeem over HTTP 402** ([NUT-24](https://github.com/cashubtc/nuts/blob/main/24.md)):
-  `POST /api/redeem` with `{"pool_url", "worker_name", "worker_password"?, "amount_thh"?}`.
+  `POST /api/redeem` with `{"pool_url", "worker_name", "worker_password"?, "amount_tih"?}`.
   Without payment it answers `402 Payment Required` and an `X-Cashu`
-  header holding a NUT-18 request (`creqA…`: `a` = `amount_thh`, default
-  the smallest redemption; `u` = `thh`; `m` = this mint). Retry with a
-  `cashuB…` THH token in `X-Cashu` to open the redemption; the reply has
+  header holding a NUT-18 request (`creqA…`: `a` = `amount_tih`, default
+  the smallest redemption; `u` = `tih`; `m` = this mint). Retry with a
+  `cashuB…` TiH token in `X-Cashu` to open the redemption; the reply has
   `redemption_id` and a `status_url`. A token from another mint, in
   another unit or worth less than `a` gets `400`. The whole unspent token
   is redeemed, so paying more buys more hashrate. Any NUT-24 client
   works, and so does `curl`:
 
   ```bash
-  body='{"pool_url":"stratum+tcp://pool.example:3333","worker_name":"me.rig1","amount_thh":2}'
+  body='{"pool_url":"stratum+tcp://pool.example:3333","worker_name":"me.rig1","amount_tih":4096}'
   curl -si -X POST https://mint.hashu.io/api/redeem -d "$body"          # 402 + X-Cashu: creqA…
   curl -s  -X POST https://mint.hashu.io/api/redeem -d "$body" -H "X-Cashu: cashuB…"
   ```
@@ -249,16 +254,16 @@ hashu mint run \
 - **Operator GUI** (`http://127.0.0.1:3334/`): real-time hashrate through
   the proxy (from accepted shares, difficulty × 2^32 hashes each, averaged
   over `--hashrate-window` seconds), the current redemption's delivered
-  THH against its target, outstanding obligations (vouchers held by users,
+  TiH against its target, outstanding obligations (vouchers held by users,
   paid-but-unminted quotes, open redemptions), and controls to pause
   issuance or change the markup live. It trusts whoever can reach the
   port, like `POST /redemptions`: keep it on loopback or behind auth. It
   uses relative URLs, so it can sit behind a path prefix.
-- **Checkout** (`http://<mint>/checkout/`): a buyer picks THH, pays the
+- **Checkout** (`http://<mint>/checkout/`): a buyer picks TiH, pays the
   invoice QR (or the USDT request), and gets a `cashuB` token; pasting it
   back with a pool and worker redeems it and shows the hashrate arriving.
   The daemon runs a throwaway wallet per checkout, so it briefly holds the
-  buyer's vouchers; any Cashu wallet with the `thh` unit can skip the page.
+  buyer's vouchers; any Cashu wallet with the `tih` unit can skip the page.
   Per-pool redemption guides (OCEAN, Braiins, ViaBTC, F2Pool, solo pools,
   Testnet4) are in [docs/redeem/](docs/redeem/README.md).
 
@@ -268,10 +273,10 @@ phoenixd and Caddy for TLS), see [deploy/README.md](deploy/README.md).
 Rehearse the whole loop without money or hardware:
 
 ```bash
-hashu mint run --lightning fake --price fixed --sats-per-thh 40 \
+hashu mint run --lightning fake --price fixed --msat-per-pih 625 \
   --upstream stratum+tcp://your-pool.example.com:3333
 cargo run -p hashu --example buy_and_redeem -- \
-  http://127.0.0.1:8085 bolt11 2 stratum+tcp://your-pool.example.com:3333 yourname.worker1
+  http://127.0.0.1:8085 bolt11 8192 stratum+tcp://your-pool.example.com:3333 yourname.worker1
 ```
 
 Or do the same from a browser: open `http://127.0.0.1:8085/checkout/` to buy
@@ -303,7 +308,7 @@ that wires fake-miner ⇄ proxy ⇄ fake-pool over loopback and asserts on
 particular note:
 
 - §1 Vision (self-hosted model)
-- §4.1 Cashu mint (THH unit, NUTs in scope)
+- §4.1 Cashu mint (TiH unit, NUTs in scope)
 - §4.2 Stratum proxy
 - §4.4 Hashprice oracle adapter
 - §4.7.1 Operator manifest (the kind 0 binding pattern)

@@ -1,25 +1,25 @@
-//! Selling `THH` over a payment rail. ARCHITECTURE.md §5.1.
+//! Selling `TiH` over a payment rail. ARCHITECTURE.md §5.1.
 //!
 //! cdk ties every payment backend to one unit, and it records a payment by
 //! converting the backend's reported amount into the quote's unit. It can
-//! convert sats to msat but not sats to `THH`. So a rail that settles in
-//! sats (or micro-USDT) cannot be registered for `THH` as is.
+//! convert sats to msat but not sats to `TiH`. So a rail that settles in
+//! sats (or micro-USDT) cannot be registered for `TiH` as is.
 //!
-//! [`ThhIssuer`] closes that gap. It wraps a rail-native backend (for
+//! [`TihIssuer`] closes that gap. It wraps a rail-native backend (for
 //! Lightning: any cdk backend in sats, such as `cdk-lnd`, `cdk-cln` or
-//! `cdk-ldk-node`) and registers in its place for unit `THH`:
+//! `cdk-ldk-node`) and registers in its place for unit `TiH`:
 //!
-//! - **mint quote**: the buyer asks for `N` THH. The issuer prices `N` with
-//!   its [`ThhPricer`], asks the inner backend for a payment request in the
+//! - **mint quote**: the buyer asks for `N` TiH. The issuer prices `N` with
+//!   its [`TihPricer`], asks the inner backend for a payment request in the
 //!   rail's unit (a bolt11 invoice for that many sats), and remembers the
-//!   lookup id → `N` THH.
+//!   lookup id → `N` TiH.
 //! - **payment received**: the inner backend reports sats. The issuer
-//!   translates that into `THH` for the quote (capped at `N`, pro rata if
+//!   translates that into `TiH` for the quote (capped at `N`, pro rata if
 //!   short), so cdk sees a payment in the quote's own unit.
 //! - **outgoing**: refused. A Hashu mint sells computation and never pays
-//!   out bitcoin (ARCHITECTURE.md §1), so `THH` can't be melted to a rail.
+//!   out bitcoin (ARCHITECTURE.md §1), so `TiH` can't be melted to a rail.
 //!
-//! Limitation: the lookup id → THH book is in memory. A quote created before
+//! Limitation: the lookup id → TiH book is in memory. A quote created before
 //! a restart and paid after it is not credited automatically.
 
 use std::collections::HashMap;
@@ -37,29 +37,29 @@ use cdk::nuts::CurrencyUnit;
 use cdk::Amount;
 use futures::stream::{BoxStream, StreamExt};
 
-use crate::pricing::ThhPricer;
+use crate::pricing::TihPricer;
 
 /// Book entries are pruned this long after their quote expires.
 const BOOK_GRACE_SECS: u64 = 24 * 3600;
 
 /// Error text for every outgoing call.
-pub const NO_PAYOUTS: &str = "THH is redeemed for hashrate only; this mint does not pay out";
+pub const NO_PAYOUTS: &str = "TiH is redeemed for hashrate only; this mint does not pay out";
 
-/// The `THH` unit as cdk holds it: lowercase `thh`.
+/// The `TiH` unit as cdk holds it: lowercase `tih`.
 ///
 /// cdk serializes units in lowercase (NUT-01 units are lowercase on the
 /// wire) and parses them as written, so anything that went through JSON,
-/// including cdk's own stored mint info, compares as `Custom("thh")`.
-/// `Custom("THH")` (and `CurrencyUnit::custom`, which uppercases) would
+/// including cdk's own stored mint info, compares as `Custom("tih")`.
+/// `Custom("TiH")` (and `CurrencyUnit::custom`, which uppercases) would
 /// never match it.
-pub fn thh_unit() -> CurrencyUnit {
-    CurrencyUnit::Custom(hashu_core::denom::UNIT_THH.to_lowercase())
+pub fn tih_unit() -> CurrencyUnit {
+    CurrencyUnit::Custom(hashu_core::denom::UNIT_TIH.to_lowercase())
 }
 
 /// What a mint quote sold, kept until its payment arrives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Sale {
-    amount_thh: u64,
+    amount_tih: u64,
     /// Price in the rail's unit.
     price: Amount<CurrencyUnit>,
     /// Unix expiry of the quote, if known.
@@ -81,13 +81,13 @@ impl Book {
         self.0.lock().expect("book lock").get(id).cloned()
     }
 
-    /// Re-denominate a rail payment in `THH`, or `None` if it isn't one of
-    /// ours or is too small to buy a single `THH`.
+    /// Re-denominate a rail payment in `TiH`, or `None` if it isn't one of
+    /// ours or is too small to buy a single `TiH`.
     fn translate(&self, payment: WaitPaymentResponse) -> Option<WaitPaymentResponse> {
         let Some(sale) = self.get(&payment.payment_identifier) else {
             tracing::warn!(
                 id = ?payment.payment_identifier,
-                "payment for an unknown THH quote; not credited"
+                "payment for an unknown TiH quote; not credited"
             );
             return None;
         };
@@ -103,31 +103,31 @@ impl Book {
                 return None;
             }
         };
-        let thh = thh_for(paid, sale.price.value(), sale.amount_thh);
-        if thh == 0 {
+        let tih = tih_for(paid, sale.price.value(), sale.amount_tih);
+        if tih == 0 {
             tracing::warn!(
                 id = ?payment.payment_identifier,
                 paid,
                 price = sale.price.value(),
-                "payment too small for 1 THH; not credited"
+                "payment too small for 1 TiH; not credited"
             );
             return None;
         }
         Some(WaitPaymentResponse {
             payment_identifier: payment.payment_identifier,
-            payment_amount: Amount::new(thh, thh_unit()),
+            payment_amount: Amount::new(tih, tih_unit()),
             payment_id: payment.payment_id,
         })
     }
 }
 
-/// THH earned by paying `paid` toward a quote of `amount_thh` priced at
+/// TiH earned by paying `paid` toward a quote of `amount_tih` priced at
 /// `price`: all of it once paid in full, pro rata (rounded down) before.
-fn thh_for(paid: u64, price: u64, amount_thh: u64) -> u64 {
+fn tih_for(paid: u64, price: u64, amount_tih: u64) -> u64 {
     if price == 0 || paid >= price {
-        return amount_thh;
+        return amount_tih;
     }
-    ((paid as u128 * amount_thh as u128) / price as u128) as u64
+    ((paid as u128 * amount_tih as u128) / price as u128) as u64
 }
 
 fn unix_now() -> u64 {
@@ -137,27 +137,27 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// A `THH` payment backend over a rail-native backend. See the module docs.
-pub struct ThhIssuer {
-    pricer: Arc<dyn ThhPricer>,
+/// A `TiH` payment backend over a rail-native backend. See the module docs.
+pub struct TihIssuer {
+    pricer: Arc<dyn TihPricer>,
     rail: DynMintPayment,
     rail_unit: CurrencyUnit,
     book: Arc<Book>,
 }
 
-impl Debug for ThhIssuer {
+impl Debug for TihIssuer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ThhIssuer")
+        f.debug_struct("TihIssuer")
             .field("pricer", &self.pricer)
             .field("rail_unit", &self.rail_unit)
             .finish_non_exhaustive()
     }
 }
 
-impl ThhIssuer {
+impl TihIssuer {
     /// `rail` is the rail-native backend, and `rail_unit` the unit `pricer`
     /// prices in (e.g. `CurrencyUnit::Sat` for Lightning).
-    pub fn new(pricer: Arc<dyn ThhPricer>, rail: DynMintPayment, rail_unit: CurrencyUnit) -> Self {
+    pub fn new(pricer: Arc<dyn TihPricer>, rail: DynMintPayment, rail_unit: CurrencyUnit) -> Self {
         Self {
             pricer,
             rail,
@@ -166,21 +166,21 @@ impl ThhIssuer {
         }
     }
 
-    /// Price `amount` (which must be in `THH`) on the rail.
+    /// Price `amount` (which must be in `TiH`) on the rail.
     fn price(&self, amount: &Amount<CurrencyUnit>) -> Result<Amount<CurrencyUnit>, Error> {
-        if *amount.unit() != thh_unit() {
+        if *amount.unit() != tih_unit() {
             return Err(Error::UnsupportedUnit);
         }
         let price = self
             .pricer
             .price(amount.value())
-            .map_err(|e| Error::Custom(format!("cannot price {} THH: {e}", amount.value())))?;
+            .map_err(|e| Error::Custom(format!("cannot price {} TiH: {e}", amount.value())))?;
         Ok(Amount::new(price, self.rail_unit.clone()))
     }
 }
 
 #[async_trait]
-impl MintPayment for ThhIssuer {
+impl MintPayment for TihIssuer {
     type Err = Error;
 
     async fn start(&self) -> Result<(), Self::Err> {
@@ -194,9 +194,9 @@ impl MintPayment for ThhIssuer {
     async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
         let rail = self.rail.get_settings().await?;
         Ok(SettingsResponse {
-            unit: hashu_core::denom::UNIT_THH.to_string(),
+            unit: hashu_core::denom::UNIT_TIH.to_string(),
             // Quotes must name an amount to be priced, and MPP is a melt
-            // feature, which THH doesn't offer over a rail.
+            // feature, which TiH doesn't offer over a rail.
             bolt11: rail.bolt11.map(|b| cdk::cdk_payment::Bolt11Settings {
                 mpp: false,
                 amountless: false,
@@ -213,22 +213,22 @@ impl MintPayment for ThhIssuer {
         &self,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-        let (rail_options, amount_thh, price, expiry) = match options {
+        let (rail_options, amount_tih, price, expiry) = match options {
             IncomingPaymentOptions::Bolt11(mut o) => {
-                let amount_thh = o.amount.value();
+                let amount_tih = o.amount.value();
                 let price = self.price(&o.amount)?;
                 o.amount = price.clone();
                 o.description
-                    .get_or_insert_with(|| format!("Hashu: {amount_thh} THH"));
+                    .get_or_insert_with(|| format!("Hashu: {amount_tih} TiH"));
                 let expiry = o.unix_expiry;
-                (IncomingPaymentOptions::Bolt11(o), amount_thh, price, expiry)
+                (IncomingPaymentOptions::Bolt11(o), amount_tih, price, expiry)
             }
             IncomingPaymentOptions::Custom(mut o) => {
-                let amount_thh = o.amount.value();
+                let amount_tih = o.amount.value();
                 let price = self.price(&o.amount)?;
                 o.amount = price.clone();
                 let expiry = o.unix_expiry;
-                (IncomingPaymentOptions::Custom(o), amount_thh, price, expiry)
+                (IncomingPaymentOptions::Custom(o), amount_tih, price, expiry)
             }
             IncomingPaymentOptions::Bolt12(_) => return Err(Error::UnsupportedPaymentOption),
         };
@@ -238,15 +238,15 @@ impl MintPayment for ThhIssuer {
             .create_incoming_payment_request(rail_options)
             .await?;
         tracing::info!(
-            amount_thh,
+            amount_tih,
             price = %price.display_with_unit(),
             id = ?response.request_lookup_id,
-            "THH mint quote priced"
+            "TiH mint quote priced"
         );
         self.book.insert(
             response.request_lookup_id.clone(),
             Sale {
-                amount_thh,
+                amount_tih,
                 price,
                 expiry: response.expiry.or(expiry),
             },
@@ -321,14 +321,14 @@ mod tests {
     use crate::pricing::PricingError;
     use cdk::cdk_payment::{Bolt11IncomingPaymentOptions, CustomIncomingPaymentOptions};
 
-    /// Two sats per THH, or no price at all.
+    /// Two sats per TiH, or no price at all.
     #[derive(Debug)]
     struct FixedPricer(Option<u64>);
 
-    impl ThhPricer for FixedPricer {
-        fn price(&self, amount_thh: u64) -> Result<u64, PricingError> {
+    impl TihPricer for FixedPricer {
+        fn price(&self, amount_tih: u64) -> Result<u64, PricingError> {
             self.0
-                .map(|per| per * amount_thh)
+                .map(|per| per * amount_tih)
                 .ok_or(PricingError::NoPrice)
         }
     }
@@ -412,10 +412,10 @@ mod tests {
         }
     }
 
-    fn issuer(per_thh: Option<u64>) -> (ThhIssuer, Arc<FakeRail>) {
+    fn issuer(per_pih: Option<u64>) -> (TihIssuer, Arc<FakeRail>) {
         let rail = Arc::new(FakeRail::default());
-        let issuer = ThhIssuer::new(
-            Arc::new(FixedPricer(per_thh)),
+        let issuer = TihIssuer::new(
+            Arc::new(FixedPricer(per_pih)),
             rail.clone(),
             CurrencyUnit::Sat,
         );
@@ -430,8 +430,8 @@ mod tests {
         })
     }
 
-    fn thh(n: u64) -> Amount<CurrencyUnit> {
-        Amount::new(n, thh_unit())
+    fn tih(n: u64) -> Amount<CurrencyUnit> {
+        Amount::new(n, tih_unit())
     }
 
     fn paid(amount: Amount<CurrencyUnit>) -> WaitPaymentResponse {
@@ -443,28 +443,28 @@ mod tests {
     }
 
     #[test]
-    fn thh_for_is_full_once_paid_and_pro_rata_before() {
-        assert_eq!(thh_for(20, 20, 10), 10);
-        assert_eq!(thh_for(25, 20, 10), 10);
-        assert_eq!(thh_for(10, 20, 10), 5);
-        assert_eq!(thh_for(1, 20, 10), 0);
+    fn tih_for_is_full_once_paid_and_pro_rata_before() {
+        assert_eq!(tih_for(20, 20, 10), 10);
+        assert_eq!(tih_for(25, 20, 10), 10);
+        assert_eq!(tih_for(10, 20, 10), 5);
+        assert_eq!(tih_for(1, 20, 10), 0);
     }
 
     #[tokio::test]
-    async fn settings_are_thh_bolt11_with_amount_and_no_bolt12() {
+    async fn settings_are_tih_bolt11_with_amount_and_no_bolt12() {
         let (i, _) = issuer(Some(2));
         let s = i.get_settings().await.unwrap();
-        assert_eq!(s.unit, "THH");
+        assert_eq!(s.unit, "TiH");
         let b = s.bolt11.unwrap();
         assert!(!b.amountless && !b.mpp && b.invoice_description);
         assert!(s.bolt12.is_none());
     }
 
     #[tokio::test]
-    async fn bolt11_quote_for_thh_asks_rail_for_priced_sats() {
+    async fn bolt11_quote_for_tih_asks_rail_for_priced_sats() {
         let (i, rail) = issuer(Some(2));
         let r = i
-            .create_incoming_payment_request(bolt11(thh(10)))
+            .create_incoming_payment_request(bolt11(tih(10)))
             .await
             .unwrap();
         assert_eq!(r.request, "lntb1fake");
@@ -474,7 +474,7 @@ mod tests {
             panic!("expected bolt11");
         };
         assert_eq!(o.amount, Amount::new(20, CurrencyUnit::Sat));
-        assert_eq!(o.description.as_deref(), Some("Hashu: 10 THH"));
+        assert_eq!(o.description.as_deref(), Some("Hashu: 10 TiH"));
     }
 
     #[tokio::test]
@@ -483,7 +483,7 @@ mod tests {
         let opts = IncomingPaymentOptions::Custom(Box::new(CustomIncomingPaymentOptions {
             method: "usdt".into(),
             description: None,
-            amount: thh(4),
+            amount: tih(4),
             unix_expiry: None,
             extra_json: None,
         }));
@@ -508,16 +508,16 @@ mod tests {
 
         let (no_price, _) = issuer(None);
         assert!(no_price
-            .create_incoming_payment_request(bolt11(thh(1)))
+            .create_incoming_payment_request(bolt11(tih(1)))
             .await
             .is_err());
         assert!(rail.asked.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn payment_events_are_reported_in_thh() {
+    async fn payment_events_are_reported_in_tih() {
         let (i, rail) = issuer(Some(2));
-        i.create_incoming_payment_request(bolt11(thh(10)))
+        i.create_incoming_payment_request(bolt11(tih(10)))
             .await
             .unwrap();
         // LN backends commonly report msat.
@@ -529,12 +529,12 @@ mod tests {
         let events: Vec<Event> = i.wait_payment_event().await.unwrap().collect().await;
         assert_eq!(events.len(), 1);
         let Event::PaymentReceived(p) = &events[0];
-        assert_eq!(p.payment_amount, thh(10));
+        assert_eq!(p.payment_amount, tih(10));
         assert_eq!(p.payment_id, "p1");
     }
 
     #[tokio::test]
-    async fn check_reports_thh_and_drops_unknown_or_dust() {
+    async fn check_reports_tih_and_drops_unknown_or_dust() {
         let (i, rail) = issuer(Some(2));
         let id = PaymentIdentifier::PaymentHash(HASH);
 
@@ -549,13 +549,13 @@ mod tests {
             .unwrap()
             .is_empty());
 
-        i.create_incoming_payment_request(bolt11(thh(10)))
+        i.create_incoming_payment_request(bolt11(tih(10)))
             .await
             .unwrap();
         let got = i.check_incoming_payment_status(&id).await.unwrap();
-        assert_eq!(got[0].payment_amount, thh(10));
+        assert_eq!(got[0].payment_amount, tih(10));
 
-        // Paying 1 sat of a 20 sat price for 10 THH buys nothing.
+        // Paying 1 sat of a 20 sat price for 10 TiH buys nothing.
         rail.paid.lock().unwrap()[0] = paid(Amount::new(1, CurrencyUnit::Sat));
         assert!(i
             .check_incoming_payment_status(&id)

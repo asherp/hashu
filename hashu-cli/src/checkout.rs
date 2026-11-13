@@ -1,27 +1,27 @@
 //! Buyer checkout page, served by `hashu mint run` on the mint's public
 //! HTTP port at `/checkout/` (issue #3).
 //!
-//! A buyer picks an amount of THH and a rail, pays the Lightning invoice
+//! A buyer picks an amount of TiH and a rail, pays the Lightning invoice
 //! (or the USDT/USDC deposit) shown as a QR code, and gets a Cashu token for the
-//! THH. They can then paste the token back with their pool and worker to
+//! TiH. They can then paste the token back with their pool and worker to
 //! redeem it as hashrate, and watch the hashrate land on their pool.
 //!
 //! The daemon runs a throwaway cdk wallet per checkout against its own mint
 //! API, so the page needs no browser wallet. That makes the daemon briefly
 //! hold the buyer's ecash: the token it hands over is bearer money, and so
-//! is the one a redeemer pastes in. Any Cashu wallet that speaks the `thh`
+//! is the one a redeemer pastes in. Any Cashu wallet that speaks the `tih`
 //! unit can buy and redeem without this page.
 //!
 //! - `GET  /checkout/`: the page.
 //! - `GET  /checkout/api/info`: price, rails, limits, whether issuance is on.
-//! - `POST /checkout/api/buy` `{ amount_thh, method }`: a quote to pay.
+//! - `POST /checkout/api/buy` `{ amount_tih, method }`: a quote to pay.
 //! - `GET  /checkout/api/buy/{id}`: quote state; once paid, the token.
 //! - `POST /checkout/api/redeem` `{ token, pool_url, worker_name, outputs?,
 //!   stop_hash? }`.
 //! - `GET  /checkout/api/redemption/{id}`: progress and delivered work.
-//! - `POST /api/redeem` `{ pool_url, worker_name, amount_thh? }`: the same
+//! - `POST /api/redeem` `{ pool_url, worker_name, amount_tih? }`: the same
 //!   redemption paid over HTTP 402 (Cashu NUT-24): no `X-Cashu` header
-//!   gets a `402` with a payment request, a `cashuB` THH token in
+//!   gets a `402` with a payment request, a `cashuB` TiH token in
 //!   `X-Cashu` opens the redemption. See [`crate::paid`].
 //! - `GET  /checkout/order/{order_id}`: the page for one redemption order,
 //!   a private link: delivery graph, then the change once it settles.
@@ -29,7 +29,7 @@
 //!   the redemption has ended, where its change stands (see [`crate::orders`]).
 //! - `POST /checkout/api/order/{order_id}/stop` `{ stop_secret }`: the
 //!   redeemer stops the redemption early and gets the rest back as change.
-//!   Refused (409) before `floor_thh` is delivered (only the operator can
+//!   Refused (409) before `floor_tih` is delivered (only the operator can
 //!   stop it then) and while a stop would return nothing.
 //!   Redeem requests carry `stop_hash` (SHA-256 of the secret) for this;
 //!   the page derives the secret from the key in the order link's `#`.
@@ -51,8 +51,8 @@ use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, State as ProofSpentState, Token};
 use cdk::wallet::{KeysetFilter, Wallet};
 use cdk::Amount;
-use hashu_core::redemption::{RedemptionId, RedemptionLedger, HASHES_PER_THH};
-use hashu_mint::capacity::MIN_PURCHASE_THH;
+use hashu_core::redemption::{RedemptionId, RedemptionLedger, HASHES_PER_TIH};
+use hashu_mint::capacity::MIN_PURCHASE_TIH;
 use hashu_mint::melt::{redemption_id_for, METHOD as HASHRATE};
 use hashu_mint::tether::{METHOD as USDT, USDC_METHOD as USDC};
 use hashu_proxy::meter::HashrateMeter;
@@ -104,17 +104,17 @@ pub(crate) async fn change_js() -> Response {
 async fn mint_in_process(
     s: &CheckoutState,
     quote_id: &str,
-    amount_thh: u64,
+    amount_tih: u64,
 ) -> anyhow::Result<cdk::nuts::Proofs> {
     use cdk::nuts::{MintRequest, PreMintSecrets};
-    let unit = CurrencyUnit::Custom("thh".into());
+    let unit = CurrencyUnit::Custom("tih".into());
     let keyset = s
         .mint
         .keysets()
         .keysets
         .into_iter()
         .find(|k| k.unit == unit && k.active)
-        .ok_or_else(|| anyhow::anyhow!("no active THH keyset"))?;
+        .ok_or_else(|| anyhow::anyhow!("no active TiH keyset"))?;
     let keys = s
         .mint
         .keyset_pubkeys(&keyset.id)?
@@ -126,7 +126,7 @@ async fn mint_in_process(
     let amounts: Vec<u64> = keys.iter().map(|(a, _)| u64::from(*a)).collect();
     let premint = PreMintSecrets::random(
         keyset.id,
-        Amount::from(amount_thh),
+        Amount::from(amount_tih),
         &SplitTarget::default(),
         &(0u64, amounts).into(),
     )?;
@@ -171,26 +171,26 @@ async fn new_quote(
     s: &CheckoutState,
     wallet: &Wallet,
     method: &str,
-    amount_thh: u64,
+    amount_tih: u64,
 ) -> anyhow::Result<(String, String)> {
     if method == "bolt11" {
         let q = wallet
             .mint_quote(
                 method_of(method),
-                Some(Amount::from(amount_thh)),
+                Some(Amount::from(amount_tih)),
                 None,
                 None,
             )
             .await?;
         return Ok((q.id, q.request));
     }
-    let unit = CurrencyUnit::Custom("thh".into());
+    let unit = CurrencyUnit::Custom("tih".into());
     let resp = s
         .mint
         .get_mint_quote(cdk::mint::MintQuoteRequest::Custom {
             method: method.to_string(),
             request: cdk::nuts::MintQuoteCustomRequest {
-                amount: Amount::from(amount_thh),
+                amount: Amount::from(amount_tih),
                 unit: unit.clone(),
                 description: None,
                 pubkey: None,
@@ -206,7 +206,7 @@ async fn new_quote(
         id.clone(),
         MintUrl::from_str(&s.internal_url)?,
         method_of(method),
-        Some(Amount::from(amount_thh)),
+        Some(Amount::from(amount_tih)),
         unit,
         response.request.clone(),
         response.expiry.unwrap_or_default(),
@@ -222,7 +222,7 @@ struct Checkout {
     wallet: Wallet,
     quote_id: String,
     method: String,
-    amount_thh: u64,
+    amount_tih: u64,
     price: Option<u64>,
     request: String,
     token: Option<String>,
@@ -240,10 +240,10 @@ pub struct CheckoutState {
     pub controls: Arc<MintControls>,
     pub sats: Option<Arc<ControlledPricer>>,
     pub usdt: Option<Arc<ControlledPricer>>,
-    /// Payment methods the mint sells THH over (`bolt11`, `usdt`).
+    /// Payment methods the mint sells TiH over (`bolt11`, `usdt`).
     pub methods: Vec<String>,
-    pub min_redeem_thh: u64,
-    pub max_thh: u64,
+    pub min_redeem_tih: u64,
+    pub max_tih: u64,
     pub ledger: Arc<RedemptionLedger>,
     pub mint: Arc<cdk::mint::Mint>,
     pub meter: Arc<HashrateMeter>,
@@ -261,8 +261,8 @@ impl CheckoutState {
         sats: Option<Arc<ControlledPricer>>,
         usdt: Option<Arc<ControlledPricer>>,
         methods: Vec<String>,
-        min_redeem_thh: u64,
-        max_thh: u64,
+        min_redeem_tih: u64,
+        max_tih: u64,
         ledger: Arc<RedemptionLedger>,
         mint: Arc<cdk::mint::Mint>,
         meter: Arc<HashrateMeter>,
@@ -275,8 +275,8 @@ impl CheckoutState {
             sats,
             usdt,
             methods,
-            min_redeem_thh,
-            max_thh,
+            min_redeem_tih,
+            max_tih,
             ledger,
             mint,
             meter,
@@ -287,10 +287,10 @@ impl CheckoutState {
 }
 
 impl CheckoutState {
-    /// NUT-24 payments this mint takes: its own THH, named by the URL its
+    /// NUT-24 payments this mint takes: its own TiH, named by the URL its
     /// tokens carry.
     fn cashu_scheme(&self) -> anyhow::Result<CashuScheme> {
-        Ok(CashuScheme::thh(MintUrl::from_str(&self.public_url)?))
+        Ok(CashuScheme::tih(MintUrl::from_str(&self.public_url)?))
     }
 }
 
@@ -329,7 +329,7 @@ async fn fresh_wallet(url: &str) -> anyhow::Result<Wallet> {
     let db = cdk_sqlite::wallet::memory::empty().await?;
     Ok(Wallet::new(
         url,
-        CurrencyUnit::Custom("thh".into()),
+        CurrencyUnit::Custom("tih".into()),
         Arc::new(db),
         seed,
         None,
@@ -374,10 +374,10 @@ fn qr_svg(data: &str) -> Option<String> {
 /// One proof per set bit of the amount. The cdk wallet's default split
 /// keeps several proofs of each size for making change, which only makes
 /// a token we hand over longer (and its QR code harder to scan).
-fn fewest_proofs(amount_thh: u64) -> SplitTarget {
+fn fewest_proofs(amount_tih: u64) -> SplitTarget {
     SplitTarget::Values(
         (0..64)
-            .filter(|b| amount_thh >> b & 1 == 1)
+            .filter(|b| amount_tih >> b & 1 == 1)
             .map(|b| Amount::from(1u64 << b))
             .collect(),
     )
@@ -408,29 +408,34 @@ fn method_of(name: &str) -> PaymentMethod {
 async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
     let cap = s.controls.capacity.snapshot(hashu_mint::capacity::now_ms());
     Json(json!({
-        // THH the rented hashrate can still deliver beyond what is owed;
+        // TiH the rented hashrate can still deliver beyond what is owed;
         // null when the mint does not cap sales.
-        "available_thh": cap.available_thh,
+        "available_tih": cap.available_tih,
         // Unrounded capacity − owed (0 when oversold), and the smallest
-        // purchase. With 0 < headroom < min the mint is sold out only
-        // because THH is sold in whole units.
-        "headroom_thh": cap.headroom_thh.max(0.0),
-        "min_buy_thh": MIN_PURCHASE_THH,
+        // purchase (2^12 TiH). With 0 < headroom < min the mint is sold out
+        // only because of that minimum.
+        "headroom_tih": cap.headroom_tih.max(0.0),
+        "min_buy_tih": MIN_PURCHASE_TIH,
         "below_min": cap.below_min,
         // allocated + available = total capacity (rented TH/s × hours
-        // left); allocated is THH already sold or still being delivered.
-        "capacity_thh": cap.capacity_thh,
-        "allocated_thh": cap.owed_thh,
+        // left); allocated is TiH already sold or still being delivered.
+        "capacity_tih": cap.capacity_tih,
+        "allocated_tih": cap.owed_tih,
         "rented_ths": cap.rented_ths,
         "capacity_ends_ms": cap.ends_ms,
         "issuance_paused": s.controls.issuance_paused(),
         "methods": s.methods,
-        "sats_per_thh": s.sats.as_ref().and_then(|p| p.quote(1).ok()),
-        "usdt_per_thh": s.usdt.as_ref().and_then(|p| p.quote(1_000_000).ok()).map(|m| m as f64 / 1e12),
-        "min_redeem_thh": s.min_redeem_thh,
-        "max_thh": s.max_thh,
+        // Prices per PiH (2^50 hashes = 1,024 TiH, #90), plus the same
+        // Lightning price in sats per TH/s per day for comparison.
+        "msat_per_pih": s.sats.as_deref().and_then(crate::operator::msat_per_pih),
+        "usdt_per_pih": s.usdt.as_deref().and_then(crate::operator::usdt_per_pih),
+        "sats_per_th_day": s.sats.as_deref().and_then(crate::operator::msat_per_pih).map(|m| hashu_core::denom::sats_per_th_day(m as f64)),
+        "tih_per_pih": hashu_core::denom::TIH_PER_PIH,
+        "tih_per_thh": hashu_core::denom::TIH_PER_THH,
+        "min_redeem_tih": s.min_redeem_tih,
+        "max_tih": s.max_tih,
         "mint_url": s.public_url,
-        "hashes_per_thh": HASHES_PER_THH as f64,
+        "hashes_per_tih": HASHES_PER_TIH as f64,
         "delivery": delivery_json(&s),
     }))
 }
@@ -439,18 +444,18 @@ async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
 const ETA_WINDOW: Duration = Duration::from_secs(300);
 
 /// What a delivery estimate needs: the proxy's current hashrate and the
-/// THH still owed to open redemptions, which are served before a new one.
+/// TiH still owed to open redemptions, which are served before a new one.
 fn delivery_json(s: &CheckoutState) -> Value {
     let queue: Vec<_> = s.ledger.active();
-    let queue_thh: f64 = queue
+    let queue_tih: f64 = queue
         .iter()
         .map(|r| r.target_hashes.saturating_sub(r.accumulated_hashes) as f64)
         .sum::<f64>()
-        / HASHES_PER_THH as f64;
+        / HASHES_PER_TIH as f64;
     json!({
         "hashrate_hs": s.meter.rate_over(ETA_WINDOW),
         "window_s": ETA_WINDOW.as_secs(),
-        "queue_thh": queue_thh,
+        "queue_tih": queue_tih,
         "open_redemptions": queue.len(),
     })
 }
@@ -460,13 +465,13 @@ async fn buy(State(s): State<Arc<CheckoutState>>, body: Bytes) -> Response {
         Ok(v) => v,
         Err(e) => return err(StatusCode::BAD_REQUEST, format!("invalid JSON: {e}")),
     };
-    let Some(amount) = v["amount_thh"]
+    let Some(amount) = v["amount_tih"]
         .as_u64()
-        .filter(|a| *a >= MIN_PURCHASE_THH && *a <= s.max_thh)
+        .filter(|a| *a >= MIN_PURCHASE_TIH && *a <= s.max_tih)
     else {
         return err(
             StatusCode::BAD_REQUEST,
-            format!("amount_thh must be {MIN_PURCHASE_THH} to {}", s.max_thh),
+            format!("amount_tih must be {MIN_PURCHASE_TIH} to {}", s.max_tih),
         );
     };
     let method = v["method"].as_str().unwrap_or("bolt11").to_string();
@@ -513,7 +518,7 @@ async fn buy(State(s): State<Arc<CheckoutState>>, body: Bytes) -> Response {
         wallet,
         quote_id: quote.0.clone(),
         method,
-        amount_thh: amount,
+        amount_tih: amount,
         price,
         request: quote.1.clone(),
         token: None,
@@ -530,7 +535,7 @@ async fn buy(State(s): State<Arc<CheckoutState>>, body: Bytes) -> Response {
         });
         map.insert(id.clone(), Arc::new(Mutex::new(c)));
     }
-    tracing::info!(quote = %id, amount_thh = amount, "checkout started");
+    tracing::info!(quote = %id, amount_tih = amount, "checkout started");
     Json(body).into_response()
 }
 
@@ -543,7 +548,7 @@ fn checkout_json(id: &str, c: &Checkout, state: &str) -> Value {
     json!({
         "id": id,
         "method": c.method,
-        "amount_thh": c.amount_thh,
+        "amount_tih": c.amount_tih,
         // sats for bolt11, micro-USDT/USDC for usdt/usdc
         "price": c.price,
         "request": c.request,
@@ -579,12 +584,12 @@ async fn buy_status(State(s): State<Arc<CheckoutState>>, Path(id): Path<String>)
         Err(e) => return err(StatusCode::BAD_GATEWAY, e),
     }
     let minted = if custom {
-        mint_in_process(&s, &c.quote_id, c.amount_thh)
+        mint_in_process(&s, &c.quote_id, c.amount_tih)
             .await
             .map_err(|e| e.to_string())
     } else {
         c.wallet
-            .mint(&c.quote_id, fewest_proofs(c.amount_thh), None)
+            .mint(&c.quote_id, fewest_proofs(c.amount_tih), None)
             .await
             .map_err(|e| e.to_string())
     };
@@ -604,13 +609,13 @@ async fn buy_status(State(s): State<Arc<CheckoutState>>, Path(id): Path<String>)
     let token = Token::new(
         mint_url,
         proofs,
-        Some("Hashu THH".into()),
-        CurrencyUnit::Custom("thh".into()),
+        Some("Hashu TiH".into()),
+        CurrencyUnit::Custom("tih".into()),
     );
     let token = token.to_string();
     c.token_words = crate::words::to_words(&token);
     c.token = Some(token);
-    tracing::info!(quote = %id, amount_thh = c.amount_thh, "checkout paid; token issued");
+    tracing::info!(quote = %id, amount_tih = c.amount_tih, "checkout paid; token issued");
     Json(checkout_json(&id, &c, "issued")).into_response()
 }
 
@@ -641,14 +646,14 @@ pub(crate) async fn redeem(State(s): State<Arc<CheckoutState>>, body: Bytes) -> 
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
-    let amount = checked.unspent_thh;
+    let amount = checked.unspent_tih;
     if amount == 0 {
         return TokenProblem::new(TokenIssue::Spent).into_response();
     }
-    if amount < s.min_redeem_thh {
+    if amount < s.min_redeem_tih {
         return err(
             StatusCode::BAD_REQUEST,
-            format!("redeem at least {} THH", s.min_redeem_thh),
+            format!("redeem at least {} TiH", s.min_redeem_tih),
         );
     }
     spend_for_hashrate(&s, &wallet, checked, &target, blanks, stop_hash).await
@@ -697,18 +702,18 @@ fn stop_hash(v: &Value) -> Result<Option<String>, Response> {
     }
 }
 
-/// `POST /api/redeem`, paid per NUT-24: redeem a THH voucher sent in the
+/// `POST /api/redeem`, paid per NUT-24: redeem a TiH voucher sent in the
 /// `X-Cashu` header, as hashrate to the pool in the JSON body
-/// `{ pool_url, worker_name, worker_password?, amount_thh?, outputs?,
+/// `{ pool_url, worker_name, worker_password?, amount_tih?, outputs?,
 /// stop_hash? }`, where `outputs` are blank outputs for change (see
 /// [`blank_outputs`]) and `stop_hash` lets the caller stop it early (see
 /// [`stop_hash`]).
 ///
 /// Without `X-Cashu` it answers `402` with a NUT-18 request for
-/// `amount_thh` (default: the smallest redemption) in unit `thh` from this
+/// `amount_tih` (default: the smallest redemption) in unit `tih` from this
 /// mint. With one, the token must be a `cashuB` token from this mint, in
-/// `thh`, worth at least `amount_thh`, or the answer is `400`. Every
-/// unspent THH in the token is redeemed, so sending more than asked buys
+/// `tih`, worth at least `amount_tih`, or the answer is `400`. Every
+/// unspent TiH in the token is redeemed, so sending more than asked buys
 /// more hashrate rather than tipping the mint.
 pub(crate) async fn paid_redeem(
     State(s): State<Arc<CheckoutState>>,
@@ -735,28 +740,28 @@ pub(crate) async fn paid_redeem(
         Ok(h) => h,
         Err(r) => return r,
     };
-    let amount_thh = match &v["amount_thh"] {
-        Value::Null => s.min_redeem_thh,
+    let amount_tih = match &v["amount_tih"] {
+        Value::Null => s.min_redeem_tih,
         n => match n.as_u64().filter(|a| *a > 0) {
             Some(a) => a,
             None => {
                 return err(
                     StatusCode::BAD_REQUEST,
-                    "amount_thh must be a positive integer",
+                    "amount_tih must be a positive integer",
                 )
             }
         },
     };
-    if amount_thh < s.min_redeem_thh {
+    if amount_tih < s.min_redeem_tih {
         return err(
             StatusCode::BAD_REQUEST,
-            format!("redeem at least {} THH", s.min_redeem_thh),
+            format!("redeem at least {} TiH", s.min_redeem_tih),
         );
     }
     let price = Price {
-        amount_thh,
+        amount_tih,
         description: format!(
-            "{amount_thh} THH of hashrate to {} as {}",
+            "{amount_tih} TiH of hashrate to {} as {}",
             target.pool_url, target.worker
         ),
     };
@@ -782,10 +787,10 @@ pub(crate) async fn paid_redeem(
         Ok(c) => c,
         Err(r) => return r,
     };
-    if checked.unspent_thh < amount_thh {
+    if checked.unspent_tih < amount_tih {
         return Rejection::Insufficient {
-            have: checked.unspent_thh,
-            need: amount_thh,
+            have: checked.unspent_tih,
+            need: amount_tih,
         }
         .into_response();
     }
@@ -836,12 +841,12 @@ async fn spend_for_hashrate(
     blanks: Option<Vec<cdk::nuts::BlindedMessage>>,
     stop_hash: Option<String>,
 ) -> Response {
-    let amount = checked.unspent_thh;
+    let amount = checked.unspent_tih;
     let pool_url = &target.pool_url;
     let mut request = json!({
         "pool_url": pool_url,
         "worker_name": target.worker,
-        "amount_thh": amount,
+        "amount_tih": amount,
         "nonce": hex::encode(rand::random::<[u8; 8]>()),
     });
     if let Some(pw) = &target.password {
@@ -864,7 +869,7 @@ async fn spend_for_hashrate(
     };
     // Melt the token's unspent proofs as they are, with the redeemer's
     // blanks. Nothing passes through a server-side wallet, so the server
-    // never holds the redeemer's THH or the keys to its change, and a
+    // never holds the redeemer's TiH or the keys to its change, and a
     // refused melt leaves the token spendable.
     let with_change = blanks.is_some();
     let melt = cdk::nuts::MeltRequest::new(quote_id, checked.unspent, blanks);
@@ -886,10 +891,10 @@ async fn spend_for_hashrate(
         finalized: false,
         stop_hash,
     });
-    tracing::info!(redemption = %rid, amount_thh = amount, %pool_url, with_change, "checkout redemption opened");
+    tracing::info!(redemption = %rid, amount_tih = amount, %pool_url, with_change, "checkout redemption opened");
     Json(json!({
         "redemption_id": rid.to_string(),
-        "amount_thh": amount,
+        "amount_tih": amount,
         "status_url": format!("/checkout/api/redemption/{rid}"),
         "order_id": order_id,
         "order_path": format!("/checkout/order/{order_id}"),
@@ -903,7 +908,7 @@ async fn spend_for_hashrate(
 pub(crate) enum TokenIssue {
     Empty,
     NotToken,
-    NotThh,
+    NotTih,
     WrongMint,
     Spent,
     Pending,
@@ -914,7 +919,7 @@ impl TokenIssue {
         match self {
             Self::Empty => "empty",
             Self::NotToken => "not_token",
-            Self::NotThh => "not_thh",
+            Self::NotTih => "not_tih",
             Self::WrongMint => "wrong_mint",
             Self::Spent => "spent",
             Self::Pending => "pending",
@@ -925,7 +930,7 @@ impl TokenIssue {
         match self {
             Self::Empty => "Paste or scan a Cashu token.",
             Self::NotToken => "That isn't a Cashu token. Copy the cashuB… text from your wallet's send screen, or paste the voucher's words in full.",
-            Self::NotThh => "This token isn't THH, so it can't be redeemed for hashrate here.",
+            Self::NotTih => "This token isn't TiH, so it can't be redeemed for hashrate here.",
             Self::WrongMint => "This token is from a different mint.",
             Self::Spent => "This token is already spent. If your wallet claimed it, send a fresh token from the wallet.",
             Self::Pending => "This token is in the middle of another redemption. Try again in a moment.",
@@ -964,8 +969,8 @@ impl IntoResponse for TokenProblem {
 
 /// A token checked against the mint without spending it.
 pub(crate) struct CheckedToken {
-    pub total_thh: u64,
-    pub unspent_thh: u64,
+    pub total_tih: u64,
+    pub unspent_tih: u64,
     pub unspent: cdk::nuts::Proofs,
     pub memo: Option<String>,
     /// Set when the token was pasted as words: how many parity repaired.
@@ -994,8 +999,8 @@ pub(crate) async fn inspect_token(wallet: &Wallet, raw: &str) -> Result<CheckedT
         Ok(t) => t,
         Err(_) => return problem(TokenIssue::NotToken),
     };
-    if !token.unit().as_ref().is_some_and(is_thh) {
-        return problem(TokenIssue::NotThh);
+    if !token.unit().as_ref().is_some_and(is_tih) {
+        return problem(TokenIssue::NotTih);
     }
     // The token names the mint's public URL; resolve its proofs against our
     // keysets over loopback. Every keyset, not just the active ones, so a
@@ -1011,7 +1016,7 @@ pub(crate) async fn inspect_token(wallet: &Wallet, raw: &str) -> Result<CheckedT
         .check_proofs_spent(proofs.clone())
         .await
         .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("mint check failed: {e}")))?;
-    let total_thh: u64 = proofs.iter().map(|p| u64::from(p.amount)).sum();
+    let total_tih: u64 = proofs.iter().map(|p| u64::from(p.amount)).sum();
     let mut pending = false;
     let unspent: cdk::nuts::Proofs = proofs
         .into_iter()
@@ -1022,8 +1027,8 @@ pub(crate) async fn inspect_token(wallet: &Wallet, raw: &str) -> Result<CheckedT
         })
         .map(|(p, _)| p)
         .collect();
-    let unspent_thh = unspent.iter().map(|p| u64::from(p.amount)).sum();
-    if unspent_thh == 0 {
+    let unspent_tih = unspent.iter().map(|p| u64::from(p.amount)).sum();
+    if unspent_tih == 0 {
         return problem(if pending {
             TokenIssue::Pending
         } else {
@@ -1031,8 +1036,8 @@ pub(crate) async fn inspect_token(wallet: &Wallet, raw: &str) -> Result<CheckedT
         });
     }
     Ok(CheckedToken {
-        total_thh,
-        unspent_thh,
+        total_tih,
+        unspent_tih,
         unspent,
         memo: token.memo().clone(),
         repaired_words,
@@ -1052,13 +1057,13 @@ pub(crate) async fn check_token(State(s): State<Arc<CheckoutState>>, body: Bytes
         Ok(c) => c,
         Err(r) => return r,
     };
-    let below_min = c.unspent_thh < s.min_redeem_thh;
+    let below_min = c.unspent_tih < s.min_redeem_tih;
     Json(json!({
-        "amount_thh": c.unspent_thh,
-        "total_thh": c.total_thh,
-        "spent_thh": c.total_thh - c.unspent_thh,
+        "amount_tih": c.unspent_tih,
+        "total_tih": c.total_tih,
+        "spent_tih": c.total_tih - c.unspent_tih,
         "memo": c.memo,
-        "min_redeem_thh": s.min_redeem_thh,
+        "min_redeem_tih": s.min_redeem_tih,
         "redeemable": !below_min,
         "from_words": c.repaired_words.is_some(),
         "repaired_words": c.repaired_words,
@@ -1085,18 +1090,18 @@ pub(crate) fn extract_token(input: &str) -> Option<String> {
     (token.len() > 6).then_some(token)
 }
 
-fn is_thh(unit: &CurrencyUnit) -> bool {
-    matches!(unit, CurrencyUnit::Custom(u) if u.eq_ignore_ascii_case("thh"))
+fn is_tih(unit: &CurrencyUnit) -> bool {
+    matches!(unit, CurrencyUnit::Custom(u) if u.eq_ignore_ascii_case("tih"))
 }
 
-/// Mint `amount_thh` of test THH without a payment, for the operator to
+/// Mint `amount_tih` of test TiH without a payment, for the operator to
 /// rehearse a redemption on a live mint. It opens a mint quote on the first
 /// rail and marks it paid from inside the mint, so cdk's books stay
-/// consistent: the THH counts as issued ecash like any other.
+/// consistent: the TiH counts as issued ecash like any other.
 pub(crate) async fn operator_test_mint(
     s: &CheckoutState,
     mint: &cdk::mint::Mint,
-    amount_thh: u64,
+    amount_tih: u64,
 ) -> Result<(String, String), (StatusCode, String)> {
     let bad_gw = |e: String| (StatusCode::BAD_GATEWAY, e);
     let Some(method) = s.methods.first().cloned() else {
@@ -1114,7 +1119,7 @@ pub(crate) async fn operator_test_mint(
     if paused {
         s.controls.set_issuance_paused(false);
     }
-    let quote = new_quote(s, &wallet, &method, amount_thh).await;
+    let quote = new_quote(s, &wallet, &method, amount_tih).await;
     if paused {
         s.controls.set_issuance_paused(true);
     }
@@ -1131,7 +1136,7 @@ pub(crate) async fn operator_test_mint(
     let payment_id = format!("operator-test-{}", hex::encode(rand::random::<[u8; 8]>()));
     mint.pay_mint_quote_for_request_id(cdk::cdk_payment::WaitPaymentResponse {
         payment_identifier: lookup,
-        payment_amount: cdk::Amount::new(amount_thh, hashu_mint::payment::thh_unit()),
+        payment_amount: cdk::Amount::new(amount_tih, hashu_mint::payment::tih_unit()),
         payment_id: payment_id.clone(),
     })
     .await
@@ -1139,19 +1144,19 @@ pub(crate) async fn operator_test_mint(
 
     let proofs = if method == "bolt11" {
         wallet
-            .mint(&quote_id, fewest_proofs(amount_thh), None)
+            .mint(&quote_id, fewest_proofs(amount_tih), None)
             .await
             .map_err(|e| e.to_string())
     } else {
-        mint_in_process(s, &quote_id, amount_thh)
+        mint_in_process(s, &quote_id, amount_tih)
             .await
             .map_err(|e| e.to_string())
     }
     .map_err(|e| bad_gw(format!("minting failed: {e}")))?;
     let minted: u64 = proofs.iter().map(|p| u64::from(p.amount)).sum();
-    if minted != amount_thh {
+    if minted != amount_tih {
         return Err(bad_gw(format!(
-            "minted {minted} THH, expected {amount_thh}"
+            "minted {minted} TiH, expected {amount_tih}"
         )));
     }
     let mint_url = MintUrl::from_str(&s.public_url)
@@ -1159,14 +1164,14 @@ pub(crate) async fn operator_test_mint(
     let token = Token::new(
         mint_url,
         proofs,
-        Some("Hashu test THH (operator)".into()),
-        CurrencyUnit::Custom("thh".into()),
+        Some("Hashu test TiH (operator)".into()),
+        CurrencyUnit::Custom("tih".into()),
     );
     tracing::warn!(
-        amount_thh,
+        amount_tih,
         quote = %quote_id,
         %payment_id,
-        "operator minted test THH without payment"
+        "operator minted test TiH without payment"
     );
     Ok((token.to_string(), quote_id))
 }
@@ -1223,13 +1228,13 @@ async fn order(State(s): State<Arc<CheckoutState>>, Path(order_id): Path<String>
     let change = match change {
         Change::Open => json!({ "state": "open" }),
         Change::Waiting => json!({ "state": "waiting" }),
-        Change::None => json!({ "state": "none", "thh": 0 }),
-        Change::Unclaimable { thh } => json!({ "state": "unclaimable", "thh": thh }),
-        Change::Ready { thh } => json!({
+        Change::None => json!({ "state": "none", "tih": 0 }),
+        Change::Unclaimable { tih } => json!({ "state": "unclaimable", "tih": tih }),
+        Change::Ready { tih } => json!({
             "state": "ready",
-            "thh": thh,
+            "tih": tih,
             "mint_url": s.public_url,
-            "unit": "thh",
+            "unit": "tih",
         }),
     };
     redemption["order_id"] = json!(order_id);
@@ -1240,7 +1245,7 @@ async fn order(State(s): State<Arc<CheckoutState>>, Path(order_id): Path<String>
 
 /// `POST /checkout/api/order/{order_id}/stop` with `{ "stop_secret": hex }`:
 /// the redeemer stops the redemption now. It settles like the operator's
-/// settle: charged for the work delivered (rounded up to whole THH, never
+/// settle: charged for the work delivered (rounded up to whole TiH, never
 /// below the floor), and the rest comes back as change on the redeemer's
 /// blanks. Only the holder of the secret behind the order's `stop_hash`
 /// can stop it; then this answers like `GET` on the order.
@@ -1286,23 +1291,23 @@ async fn stop_order(
         // Below the floor a stop charges the whole floor for less work, so
         // only the operator may end the redemption there (e.g. a delivery
         // that never started).
-        if !r.is_finished() && r.accumulated_hashes < u128::from(r.floor_thh) * HASHES_PER_THH {
+        if !r.is_finished() && r.accumulated_hashes < u128::from(r.floor_tih) * HASHES_PER_TIH {
             return err(
                 StatusCode::CONFLICT,
-                format!("the redeemer can stop this redemption once {} THH is delivered; before that only the mint operator can stop it", r.floor_thh),
+                format!("the redeemer can stop this redemption once {} TiH is delivered; before that only the mint operator can stop it", r.floor_tih),
             );
         }
         if let Some((charged, 0)) = r.settle_preview() {
             return err(
                 StatusCode::CONFLICT,
-                format!("stopping now would charge all {charged} THH and return nothing, so this redemption cannot be stopped for change"),
+                format!("stopping now would charge all {charged} TiH and return nothing, so this redemption cannot be stopped for change"),
             );
         }
     }
     match s.ledger.settle(&o.redemption_id) {
         Ok(out) => {
             if out.newly_settled {
-                tracing::info!(order = %order_id, redemption = %o.redemption_id, change_thh = out.change_thh, "redeemer stopped the redemption");
+                tracing::info!(order = %order_id, redemption = %o.redemption_id, change_tih = out.change_tih, "redeemer stopped the redemption");
             }
         }
         // The async melt hasn't opened it yet.
@@ -1327,10 +1332,10 @@ enum Change {
     Waiting,
     /// It ended with nothing to return.
     None,
-    /// `thh` came back, signed on the redeemer's blanks.
-    Ready { thh: u64 },
-    /// `thh` was undelivered, but the redemption sent no blanks to sign it on.
-    Unclaimable { thh: u64 },
+    /// `tih` came back, signed on the redeemer's blanks.
+    Ready { tih: u64 },
+    /// `tih` was undelivered, but the redemption sent no blanks to sign it on.
+    Unclaimable { tih: u64 },
 }
 
 /// Make sure the mint has finalized the order's melt (so the change is
@@ -1358,10 +1363,10 @@ async fn change_state(s: &CheckoutState, o: &Order) -> anyhow::Result<Change> {
         }
         s.orders.set_finalized(&o.order_id);
     }
-    Ok(match r.change_thh() {
+    Ok(match r.change_tih() {
         0 => Change::None,
-        thh if o.with_change => Change::Ready { thh },
-        thh => Change::Unclaimable { thh },
+        tih if o.with_change => Change::Ready { tih },
+        tih => Change::Unclaimable { tih },
     })
 }
 
@@ -1370,21 +1375,21 @@ fn redemption_json(s: &CheckoutState, rid: &RedemptionId) -> Option<Value> {
     let r = s.ledger.get(rid)?;
     let id = rid.to_string();
     let track = s.meter.tracks().into_iter().find(|t| t.id == id);
-    let filled = r.accumulated_hashes as f64 / HASHES_PER_THH as f64;
+    let filled = r.accumulated_hashes as f64 / HASHES_PER_TIH as f64;
     Some(json!({
             "id": id,
             "pool_url": r.pool_url,
             "worker_name": r.worker_name,
-            "amount_thh": r.amount_thh,
-            "floor_thh": r.floor_thh,
-            "filled_thh": filled,
+            "amount_tih": r.amount_tih,
+            "floor_tih": r.floor_tih,
+            "filled_tih": filled,
             // What a stop right now would charge and return; null once finished.
-            "stop_charge_thh": r.settle_preview().map(|(c, _)| c),
-            "stop_change_thh": r.settle_preview().map(|(_, m)| m),
+            "stop_charge_tih": r.settle_preview().map(|(c, _)| c),
+            "stop_change_tih": r.settle_preview().map(|(_, m)| m),
             "progress": if r.target_hashes == 0 { 1.0 } else { (r.accumulated_hashes as f64 / r.target_hashes as f64).min(1.0) },
             "state": r.state.as_str(),
-            "spent_thh": r.is_finished().then(|| r.spent_thh()),
-            "change_thh": r.is_finished().then(|| r.change_thh()),
+            "spent_tih": r.is_finished().then(|| r.spent_tih()),
+            "change_tih": r.is_finished().then(|| r.change_tih()),
             "track": track,
             "now_ms": now_ms(),
     }))
@@ -1450,13 +1455,13 @@ mod tests {
     }
 
     #[test]
-    fn thh_unit_any_case() {
-        assert!(is_thh(&CurrencyUnit::Custom("thh".into())));
-        assert!(is_thh(&CurrencyUnit::Custom("THH".into())));
-        assert!(!is_thh(&CurrencyUnit::Sat));
+    fn tih_unit_any_case() {
+        assert!(is_tih(&CurrencyUnit::Custom("tih".into())));
+        assert!(is_tih(&CurrencyUnit::Custom("TiH".into())));
+        assert!(!is_tih(&CurrencyUnit::Sat));
     }
 
-    /// A whole mint in-process: THH unit, the `hashrate` melt and a fake
+    /// A whole mint in-process: TiH unit, the `hashrate` melt and a fake
     /// Lightning rail, its API on a loopback port, and the checkout state
     /// the handlers run on.
     mod live {
@@ -1465,15 +1470,15 @@ mod tests {
         use cdk::mint::{MintBuilder, MintMeltLimits, UnitConfig};
         use hashu_mint::lightning::add_lightning_issuance;
         use hashu_mint::melt::HashrateMelter;
-        use hashu_mint::payment::{thh_unit, ThhIssuer};
-        use hashu_mint::pricing::{PricingError, ThhPricer};
+        use hashu_mint::payment::{tih_unit, TihIssuer};
+        use hashu_mint::pricing::{PricingError, TihPricer};
         use hashu_proxy::ProxyMetrics;
 
         #[derive(Debug)]
-        struct TenSatsPerThh;
-        impl ThhPricer for TenSatsPerThh {
-            fn price(&self, amount_thh: u64) -> Result<u64, PricingError> {
-                Ok(amount_thh * 10)
+        struct TenSatsPerTih;
+        impl TihPricer for TenSatsPerTih {
+            fn price(&self, amount_tih: u64) -> Result<u64, PricingError> {
+                Ok(amount_tih * 10)
             }
         }
 
@@ -1483,7 +1488,7 @@ mod tests {
             let mut builder = MintBuilder::new(db.clone());
             builder
                 .configure_unit(
-                    thh_unit(),
+                    tih_unit(),
                     UnitConfig {
                         amounts: crate::mint::DENOMS.to_vec(),
                         input_fee_ppk: 0,
@@ -1492,10 +1497,11 @@ mod tests {
                 .unwrap();
             builder
                 .add_payment_processor(
-                    thh_unit(),
+                    tih_unit(),
                     PaymentMethod::Custom(HASHRATE.into()),
                     MintMeltLimits::new(1, 1000),
-                    Arc::new(HashrateMelter::new(ledger.clone())),
+                    // Floor 1 TiH keeps the small test amounts redeemable.
+                    Arc::new(HashrateMelter::new(ledger.clone()).with_min_tih(1)),
                 )
                 .await
                 .unwrap();
@@ -1504,7 +1510,7 @@ mod tests {
             capacity.set_limit(Some(false));
             let controls = Arc::new(MintControls::with_capacity(0, capacity));
             let pricer = Arc::new(ControlledPricer::new(
-                Arc::new(TenSatsPerThh),
+                Arc::new(TenSatsPerTih),
                 controls.clone(),
             ));
             let node = cdk_fake_wallet::FakeWallet::new(
@@ -1517,7 +1523,7 @@ mod tests {
                 2,
                 CurrencyUnit::Sat,
             );
-            let issuer = ThhIssuer::new(pricer.clone(), Arc::new(node), CurrencyUnit::Sat);
+            let issuer = TihIssuer::new(pricer.clone(), Arc::new(node), CurrencyUnit::Sat);
             builder = add_lightning_issuance(builder, issuer, MintMeltLimits::new(1, 1000))
                 .await
                 .unwrap();
@@ -1561,17 +1567,17 @@ mod tests {
             ))
         }
 
-        async fn token(s: &CheckoutState, thh: u64) -> String {
-            operator_test_mint(s, &s.mint, thh).await.unwrap().0
+        async fn token(s: &CheckoutState, tih: u64) -> String {
+            operator_test_mint(s, &s.mint, tih).await.unwrap().0
         }
 
-        fn body(amount_thh: Option<u64>) -> Bytes {
+        fn body(amount_tih: Option<u64>) -> Bytes {
             let mut v = json!({
                 "pool_url": "stratum+tcp://pool.example:3333",
                 "worker_name": "alice.rig1",
             });
-            if let Some(a) = amount_thh {
-                v["amount_thh"] = json!(a);
+            if let Some(a) = amount_tih {
+                v["amount_tih"] = json!(a);
             }
             Bytes::from(v.to_string())
         }
@@ -1600,7 +1606,7 @@ mod tests {
         async fn unspent(s: &CheckoutState, t: &str) -> u64 {
             let w = fresh_wallet(&s.internal_url).await.unwrap();
             match inspect_token(&w, t).await {
-                Ok(c) => c.unspent_thh,
+                Ok(c) => c.unspent_tih,
                 Err(_) => 0,
             }
         }
@@ -1618,7 +1624,7 @@ mod tests {
             .await;
             let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
             let v: Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(v["amount_thh"], 10, "{v}");
+            assert_eq!(v["amount_tih"], 10, "{v}");
             assert_eq!(v["from_words"], true);
             assert_eq!(v["repaired_words"], 0);
             assert_eq!(unspent(&s, &words).await, 10);
@@ -1632,7 +1638,7 @@ mod tests {
             let req =
                 cdk::nuts::nut18::PaymentRequest::from_str(h["x-cashu"].to_str().unwrap()).unwrap();
             assert_eq!(req.amount, Some(Amount::from(3)));
-            assert_eq!(req.unit, Some(thh_unit()));
+            assert_eq!(req.unit, Some(tih_unit()));
             assert_eq!(req.mints, vec![MintUrl::from_str(&s.public_url).unwrap()]);
             assert!(req.transports.is_empty());
             // No amount: the smallest redemption.
@@ -1654,7 +1660,7 @@ mod tests {
             let t = token(&s, 4).await;
             let (code, _, v) = call(&s, paying(&t), body(Some(4))).await;
             assert_eq!(code, StatusCode::OK, "{v}");
-            assert_eq!(v["amount_thh"], 4);
+            assert_eq!(v["amount_tih"], 4);
             let rid = parse_id(v["redemption_id"].as_str().unwrap()).unwrap();
             // The melt opens the redemption in the background.
             let mut r = None;
@@ -1666,7 +1672,7 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
             let r = r.expect("redemption in the ledger");
-            assert_eq!(r.amount_thh, 4);
+            assert_eq!(r.amount_tih, 4);
             assert_eq!(r.pool_url, "stratum+tcp://pool.example:3333");
             assert_eq!(r.worker_name, "alice.rig1");
             assert_eq!(unspent(&s, &t).await, 0);
@@ -1682,7 +1688,7 @@ mod tests {
             let t = token(&s, 6).await;
             let (code, _, v) = call(&s, paying(&t), body(Some(2))).await;
             assert_eq!(code, StatusCode::OK, "{v}");
-            assert_eq!(v["amount_thh"], 6);
+            assert_eq!(v["amount_tih"], 6);
         }
 
         #[tokio::test]
@@ -1700,7 +1706,7 @@ mod tests {
                 MintUrl::from_str("https://other.example").unwrap(),
                 tok.proofs(&keysets).unwrap(),
                 None,
-                thh_unit(),
+                tih_unit(),
             )
             .to_string();
             let (code, _, v) = call(&s, paying(&moved), body(Some(1))).await;

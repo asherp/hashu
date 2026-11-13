@@ -5,15 +5,16 @@
 //!
 //! ```text
 //! heat (J)   = hashes / 10^12 × J/TH
-//! heat (kWh) = THH × 3600 × J/TH / 3.6e6 = THH × J/TH / 1000
+//! heat (kWh) = TiH × 2^40 / 10^12 × J/TH / 3.6e6
 //! ```
 //!
-//! since 1 THH is 3,600 TH. The proxy knows the work (accepted share
+//! since 1 TiH is 2^40 hashes ≈ 1.0995 TH. The proxy knows the work (accepted share
 //! difficulty) but not the machines, so J/TH is an estimate: matched from
 //! the rental's rig name (MRR rig names and operator labels usually name the
 //! model, e.g. "Antminer S19j Pro"), else from the make alone ("Whatsminer
 //! IMM 4", "ANT #9"), else a configurable default.
 
+use hashu_core::denom::TIH_PER_TH_SECOND;
 use serde::Serialize;
 
 use crate::capacity::RentalView;
@@ -176,9 +177,9 @@ fn contains_model(s: &str, gap: &[bool], pat: &str) -> bool {
     })
 }
 
-/// kWh of heat behind `thh` at `j_per_th`.
-pub fn kwh(thh: f64, j_per_th: f64) -> f64 {
-    thh.max(0.0) * j_per_th / 1000.0
+/// kWh of heat behind `tih` at `j_per_th`.
+pub fn kwh(tih: f64, j_per_th: f64) -> f64 {
+    tih.max(0.0) / TIH_PER_TH_SECOND * j_per_th / 3.6e6
 }
 
 /// kW of heat from `ths` of hashrate at `j_per_th`.
@@ -263,7 +264,7 @@ mod tests {
                 end_ms: 10_000,
             },
             hours_left: 1.0,
-            thh_left: ths,
+            tih_left: ths,
         }
     }
 
@@ -333,8 +334,12 @@ mod tests {
 
     #[test]
     fn heat_units() {
-        // 1 THH at 30 J/TH: 3600 TH × 30 J = 108 kJ = 0.03 kWh.
-        assert!((kwh(1.0, 30.0) - 0.03).abs() < 1e-12);
+        // One THH's worth (≈ 3,274 TiH) at 30 J/TH: 3600 TH × 30 J =
+        // 108 kJ = 0.03 kWh.
+        let thh = hashu_core::denom::TIH_PER_THH;
+        assert!((kwh(thh, 30.0) - 0.03).abs() < 1e-12);
+        // 1 TiH = 2^40 hashes ≈ 1.0995 TH: 33 J.
+        assert!((kwh(1.0, 30.0) - 1.0995e12 * 30.0 / 1e12 / 3.6e6).abs() < 1e-9);
         // 413 TH/s of S21s: about 7.2 kW.
         assert!((kw(413.0, 17.5) - 7.2275).abs() < 1e-9);
     }

@@ -1,15 +1,15 @@
-//! Custom melt method `hashrate`: redeem `THH` vouchers for routed hashrate.
+//! Custom melt method `hashrate`: redeem `TiH` vouchers for routed hashrate.
 //! ARCHITECTURE.md §5.1, §7.
 //!
 //! cdk treats a custom melt method as a payment backend. `HashrateMelter`
-//! is that backend, registered for `(THH, "hashrate")`:
+//! is that backend, registered for `(TiH, "hashrate")`:
 //!
 //! - **quote**: the request string carries `{pool_url, worker_name,
-//!   amount_thh}`. The quote splits `amount_thh` in two: `amount` is the
-//!   floor (`min_thh`), which the redeemer pays however little is
+//!   amount_tih}`. The quote splits `amount_tih` in two: `amount` is the
+//!   floor (`min_tih`), which the redeemer pays however little is
 //!   delivered, and `fee` (cdk's fee reserve) is the rest. The mint
 //!   requires melted proofs ≥ amount + fee, so the redeemer still melts the
-//!   full `amount_thh`. Putting the refundable part in the fee reserve is
+//!   full `amount_tih`. Putting the refundable part in the fee reserve is
 //!   what makes a stock cdk wallet send blank outputs (NUT-08) for it, the
 //!   same way it does for a Lightning fee reserve.
 //! - **melt**: opens a redemption in the shared [`RedemptionLedger`] and
@@ -17,9 +17,9 @@
 //! - **check**: cdk's pending-melt poller calls `check_outgoing_payment`.
 //!   It reports `Paid` once the redemption completes or is settled.
 //!   Completion is driven by the proxy crediting accepted shares to the
-//!   ledger. A settled redemption reports only its delivered `THH` as
+//!   ledger. A settled redemption reports only its delivered `TiH` as
 //!   `total_spent`, and cdk signs the blanks for the difference: the
-//!   redeemer gets the undelivered hashrate back as fresh `THH`.
+//!   redeemer gets the undelivered hashrate back as fresh `TiH`.
 //!
 //! Incoming payments, invoices and wait-events do not apply to this
 //! method.
@@ -42,13 +42,14 @@ use serde::{Deserialize, Serialize};
 /// Method name as it appears in melt requests and NUT-05 settings.
 pub const METHOD: &str = "hashrate";
 
-/// Unit string for terahash-hour vouchers (see `hashu_core::denom`).
-const THH: &str = hashu_core::denom::UNIT_THH;
+/// Unit string for tebihash vouchers (see `hashu_core::denom`).
+const TIH: &str = hashu_core::denom::UNIT_TIH;
 
-/// Smallest accepted redemption, in THH. ARCHITECTURE.md §9 Q5 leaves the
+/// Smallest accepted redemption, in TiH: 2^12 (≈ 1.25 THH, #90), the power
+/// of two closest to the old 1 THH floor. ARCHITECTURE.md §9 Q5 leaves the
 /// real floor open; below roughly a Th-minute, share variance dominates
-/// the integral. This default is a conservative placeholder.
-pub const DEFAULT_MIN_THH: u64 = 1;
+/// the integral.
+pub const DEFAULT_MIN_TIH: u64 = 1 << 12;
 
 /// Payload carried in the melt request's `request` string (JSON).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,8 +62,8 @@ pub struct HashrateRequest {
     /// Password for the worker, if the pool needs one (default `x`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_password: Option<String>,
-    /// `THH` to redeem. Must be covered by the melted proofs.
-    pub amount_thh: u64,
+    /// `TiH` to redeem. Must be covered by the melted proofs.
+    pub amount_tih: u64,
     /// Optional wallet-chosen value that makes the request unique. The
     /// redemption id is derived from the request string, and cdk refuses a
     /// second melt of an identical request, so a wallet that redeems the
@@ -114,8 +115,8 @@ fn is_routable_pool_url(pool_url: &str) -> bool {
 #[derive(Debug)]
 pub struct HashrateMelter {
     ledger: Arc<RedemptionLedger>,
-    min_thh: u64,
-    max_thh: Option<u64>,
+    min_tih: u64,
+    max_tih: Option<u64>,
     /// The registered supplier whose mint this is; `None` for the
     /// operator's own mint. Its redemptions go only to that supplier's rigs.
     supplier: Option<String>,
@@ -125,8 +126,8 @@ impl HashrateMelter {
     pub fn new(ledger: Arc<RedemptionLedger>) -> Self {
         Self {
             ledger,
-            min_thh: DEFAULT_MIN_THH,
-            max_thh: None,
+            min_tih: DEFAULT_MIN_TIH,
+            max_tih: None,
             supplier: None,
         }
     }
@@ -149,27 +150,27 @@ impl HashrateMelter {
 
     /// Largest accepted redemption. cdk's melt limits only see the quote
     /// amount, which is the floor, so the melter checks the full amount.
-    pub fn with_max_thh(mut self, max_thh: u64) -> Self {
-        self.max_thh = Some(max_thh);
+    pub fn with_max_tih(mut self, max_tih: u64) -> Self {
+        self.max_tih = Some(max_tih);
         self
     }
 
-    /// Non-refundable part of a redemption of `amount_thh`: the minimum
+    /// Non-refundable part of a redemption of `amount_tih`: the minimum
     /// redemption, at least 1 so the quote amount is never zero.
-    fn floor_for(&self, amount_thh: u64) -> u64 {
-        self.min_thh.max(1).min(amount_thh)
+    fn floor_for(&self, amount_tih: u64) -> u64 {
+        self.min_tih.max(1).min(amount_tih)
     }
 
-    pub fn with_min_thh(mut self, min_thh: u64) -> Self {
-        self.min_thh = min_thh;
+    pub fn with_min_tih(mut self, min_tih: u64) -> Self {
+        self.min_tih = min_tih;
         self
     }
 
     /// The unit this backend accepts. Lowercase, because cdk lowercases
     /// custom units whenever it serialises them (mint info, database,
-    /// wire): a wallet's `THH` arrives as `Custom("thh")`.
+    /// wire): a wallet's `TiH` arrives as `Custom("tih")`.
     pub fn unit() -> CurrencyUnit {
-        CurrencyUnit::Custom(THH.to_lowercase())
+        CurrencyUnit::Custom(TIH.to_lowercase())
     }
 
     fn check_unit(&self, unit: &CurrencyUnit) -> Result<(), Error> {
@@ -181,16 +182,16 @@ impl HashrateMelter {
 
     fn validated(&self, request: &str) -> Result<HashrateRequest, Error> {
         let req = HashrateRequest::parse(request)?;
-        if req.amount_thh < self.min_thh {
+        if req.amount_tih < self.min_tih {
             return Err(Error::Custom(format!(
-                "amount_thh {} is below the minimum of {}",
-                req.amount_thh, self.min_thh
+                "amount_tih {} is below the minimum of {}",
+                req.amount_tih, self.min_tih
             )));
         }
-        if let Some(max) = self.max_thh.filter(|m| req.amount_thh > *m) {
+        if let Some(max) = self.max_tih.filter(|m| req.amount_tih > *m) {
             return Err(Error::Custom(format!(
-                "amount_thh {} is above the maximum of {max}",
-                req.amount_thh
+                "amount_tih {} is above the maximum of {max}",
+                req.amount_tih
             )));
         }
         Ok(req)
@@ -284,8 +285,8 @@ pub fn reopen_pending_quotes_in(
             tracing::warn!(quote = %quote.id, "pending hashrate quote has an unreadable request");
             continue;
         };
-        let floor = req.amount_thh.saturating_sub(quote.fee_reserve().value());
-        let r = Redemption::new(id, req.amount_thh, req.pool_url, req.worker_name)
+        let floor = req.amount_tih.saturating_sub(quote.fee_reserve().value());
+        let r = Redemption::new(id, req.amount_tih, req.pool_url, req.worker_name)
             .with_password(req.worker_password)
             .with_floor(floor)
             .with_supplier(supplier.map(str::to_string));
@@ -305,10 +306,10 @@ impl MintPayment for HashrateMelter {
         let mut custom = HashMap::new();
         custom.insert(
             METHOD.to_string(),
-            serde_json::json!({ "min_thh": self.min_thh }).to_string(),
+            serde_json::json!({ "min_tih": self.min_tih }).to_string(),
         );
         Ok(SettingsResponse {
-            unit: THH.to_string(),
+            unit: TIH.to_string(),
             bolt11: None,
             bolt12: None,
             custom,
@@ -335,11 +336,11 @@ impl MintPayment for HashrateMelter {
             return Err(Error::UnsupportedPaymentOption);
         }
         let req = self.validated(&custom.request)?;
-        let floor = self.floor_for(req.amount_thh);
+        let floor = self.floor_for(req.amount_tih);
         Ok(PaymentQuoteResponse {
             request_lookup_id: Some(lookup_id(&self.id_for(&custom.request))),
             amount: Amount::new(floor, unit.clone()),
-            fee: Amount::new(req.amount_thh - floor, unit.clone()),
+            fee: Amount::new(req.amount_tih - floor, unit.clone()),
             state: MeltQuoteState::Unpaid,
         })
     }
@@ -361,7 +362,7 @@ impl MintPayment for HashrateMelter {
         // quote from before the reserve existed has none, so its
         // redemption can't return change.
         let reserve = custom.max_fee_amount.as_ref().map_or(0, |a| a.value());
-        let floor = req.amount_thh.saturating_sub(reserve);
+        let floor = req.amount_tih.saturating_sub(reserve);
 
         let id = self.id_for(&custom.request);
         if self.ledger.get(&id).is_some() {
@@ -371,7 +372,7 @@ impl MintPayment for HashrateMelter {
         self.ledger
             .open(
                 self.open_redemption(
-                    Redemption::new(id, req.amount_thh, req.pool_url, req.worker_name)
+                    Redemption::new(id, req.amount_tih, req.pool_url, req.worker_name)
                         .with_password(req.worker_password)
                         .with_floor(floor),
                 ),
@@ -383,7 +384,7 @@ impl MintPayment for HashrateMelter {
             payment_proof: None,
             // Pending: proofs stay locked until the redemption completes.
             status: MeltQuoteState::Pending,
-            total_spent: Amount::new(req.amount_thh, unit.clone()),
+            total_spent: Amount::new(req.amount_tih, unit.clone()),
         })
     }
 
@@ -431,7 +432,7 @@ impl MintPayment for HashrateMelter {
             payment_proof: None,
             status,
             // Never below the quote amount (the floor): cdk subtracts it.
-            total_spent: Amount::new(redemption.spent_thh(), Self::unit()),
+            total_spent: Amount::new(redemption.spent_tih(), Self::unit()),
         })
     }
 }
@@ -444,7 +445,16 @@ mod tests {
 
     fn melter() -> (HashrateMelter, Arc<RedemptionLedger>) {
         let ledger = Arc::new(RedemptionLedger::new());
-        (HashrateMelter::new(ledger.clone()), ledger)
+        // Small amounts keep the tests readable: floor 1 TiH, as before #90.
+        (HashrateMelter::new(ledger.clone()).with_min_tih(1), ledger)
+    }
+
+    #[test]
+    fn default_floor_is_two_to_the_twelve_tih() {
+        assert_eq!(DEFAULT_MIN_TIH, 4_096);
+        let m = HashrateMelter::new(Arc::new(RedemptionLedger::new()));
+        assert_eq!(m.floor_for(10_000), 4_096);
+        assert_eq!(m.floor_for(100), 100);
     }
 
     /// cdk re-subscribes the moment a payment stream ends, so the melter's
@@ -462,11 +472,11 @@ mod tests {
         );
     }
 
-    fn request(amount_thh: u64) -> String {
+    fn request(amount_tih: u64) -> String {
         serde_json::json!({
             "pool_url": POOL,
             "worker_name": "rig1",
-            "amount_thh": amount_thh,
+            "amount_tih": amount_tih,
         })
         .to_string()
     }
@@ -523,8 +533,10 @@ mod tests {
     #[tokio::test]
     async fn supplier_melter_opens_redemptions_for_that_supplier_only() {
         let ledger = Arc::new(RedemptionLedger::new());
-        let alice = HashrateMelter::new(ledger.clone()).with_supplier("alice");
-        let operator = HashrateMelter::new(ledger.clone());
+        let alice = HashrateMelter::new(ledger.clone())
+            .with_min_tih(1)
+            .with_supplier("alice");
+        let operator = HashrateMelter::new(ledger.clone()).with_min_tih(1);
         let r = request(10);
         let paid = alice
             .make_payment(&HashrateMelter::unit(), with_reserve(r.clone(), 0))
@@ -547,7 +559,7 @@ mod tests {
     fn nonce_makes_identical_redemptions_distinct() {
         let with = |n: &str| {
             serde_json::json!({
-                "pool_url": POOL, "worker_name": "rig1", "amount_thh": 3, "nonce": n,
+                "pool_url": POOL, "worker_name": "rig1", "amount_tih": 3, "nonce": n,
             })
             .to_string()
         };
@@ -560,12 +572,12 @@ mod tests {
         let r = HashrateRequest::parse(&request(3)).unwrap();
         assert_eq!(r.pool_url, POOL);
         assert_eq!(r.worker_name, "rig1");
-        assert_eq!(r.amount_thh, 3);
+        assert_eq!(r.amount_tih, 3);
     }
 
     #[test]
     fn parse_accepts_tls_pool() {
-        let tls = r#"{"pool_url":"stratum+ssl://btcssl.f2pool.com:1300","worker_name":"w","amount_thh":1}"#;
+        let tls = r#"{"pool_url":"stratum+ssl://btcssl.f2pool.com:1300","worker_name":"w","amount_tih":1}"#;
         assert!(HashrateRequest::parse(tls).is_ok());
     }
 
@@ -574,21 +586,21 @@ mod tests {
         // Not JSON.
         assert!(HashrateRequest::parse("pool").is_err());
         // Unknown field.
-        let extra = r#"{"pool_url":"stratum+tcp://p:1","worker_name":"w","amount_thh":1,"x":1}"#;
+        let extra = r#"{"pool_url":"stratum+tcp://p:1","worker_name":"w","amount_tih":1,"x":1}"#;
         assert!(HashrateRequest::parse(extra).is_err());
         // Wrong scheme.
-        let http = r#"{"pool_url":"https://p","worker_name":"w","amount_thh":1}"#;
+        let http = r#"{"pool_url":"https://p","worker_name":"w","amount_tih":1}"#;
         assert!(HashrateRequest::parse(http).is_err());
         // Stratum V2 isn't supported.
-        let sv2 = r#"{"pool_url":"stratum2+tcp://p:3333","worker_name":"w","amount_thh":1}"#;
+        let sv2 = r#"{"pool_url":"stratum2+tcp://p:3333","worker_name":"w","amount_tih":1}"#;
         assert!(HashrateRequest::parse(sv2).is_err());
         // No port, or a path (e.g. an SV2 URL with a key).
-        let no_port = r#"{"pool_url":"stratum+tcp://p","worker_name":"w","amount_thh":1}"#;
+        let no_port = r#"{"pool_url":"stratum+tcp://p","worker_name":"w","amount_tih":1}"#;
         assert!(HashrateRequest::parse(no_port).is_err());
-        let path = r#"{"pool_url":"stratum+tcp://p:3333/key","worker_name":"w","amount_thh":1}"#;
+        let path = r#"{"pool_url":"stratum+tcp://p:3333/key","worker_name":"w","amount_tih":1}"#;
         assert!(HashrateRequest::parse(path).is_err());
         // Empty worker.
-        let no_worker = r#"{"pool_url":"stratum+tcp://p:1","worker_name":"","amount_thh":1}"#;
+        let no_worker = r#"{"pool_url":"stratum+tcp://p:1","worker_name":"","amount_tih":1}"#;
         assert!(HashrateRequest::parse(no_worker).is_err());
     }
 
@@ -596,7 +608,7 @@ mod tests {
     async fn settings_advertise_hashrate_under_custom() {
         let (m, _) = melter();
         let s = m.get_settings().await.unwrap();
-        assert_eq!(s.unit, "THH");
+        assert_eq!(s.unit, "TiH");
         assert!(s.bolt11.is_none());
         assert!(s.custom.contains_key(METHOD));
     }
@@ -615,7 +627,7 @@ mod tests {
         assert_eq!(q.state, MeltQuoteState::Unpaid);
         // A higher minimum raises the floor.
         let q = m
-            .with_min_thh(3)
+            .with_min_tih(3)
             .get_payment_quote(&HashrateMelter::unit(), custom(request(5)))
             .await
             .unwrap();
@@ -626,7 +638,7 @@ mod tests {
     #[tokio::test]
     async fn quote_enforces_maximum() {
         let (m, _) = melter();
-        let m = m.with_max_thh(4);
+        let m = m.with_max_tih(4);
         assert!(m
             .get_payment_quote(&HashrateMelter::unit(), custom(request(5)))
             .await
@@ -646,20 +658,18 @@ mod tests {
     }
 
     /// cdk hands `make_payment` the quote's fee reserve; the redemption's
-    /// floor is what's left. Settling then reports only delivered THH.
+    /// floor is what's left. Settling then reports only delivered TiH.
     #[tokio::test]
-    async fn settled_redemption_reports_delivered_thh_as_spent() {
+    async fn settled_redemption_reports_delivered_tih_as_spent() {
         let (m, ledger) = melter();
         let paid = m
             .make_payment(&HashrateMelter::unit(), with_reserve(request(10), 9))
             .await
             .unwrap();
         let id = redemption_id_for(&request(10));
-        assert_eq!(ledger.get(&id).unwrap().floor_thh, 1);
-        // 2.5 THH delivered.
-        ledger
-            .credit_share(&id, 9.0e15 / (1u64 << 32) as f64)
-            .unwrap();
+        assert_eq!(ledger.get(&id).unwrap().floor_tih, 1);
+        // 2.5 TiH delivered: a difficulty-640 share (640 / 256).
+        ledger.credit_share(&id, 640.0).unwrap();
         let check = m
             .check_outgoing_payment(&paid.payment_lookup_id)
             .await
@@ -684,7 +694,7 @@ mod tests {
             .await
             .unwrap();
         let id = redemption_id_for(&request(4));
-        assert_eq!(ledger.get(&id).unwrap().floor_thh, 4);
+        assert_eq!(ledger.get(&id).unwrap().floor_tih, 4);
         ledger.settle(&id).unwrap();
         let check = m
             .check_outgoing_payment(&paid.payment_lookup_id)
@@ -697,7 +707,7 @@ mod tests {
     #[tokio::test]
     async fn quote_enforces_minimum_and_unit() {
         let (m, _) = melter();
-        let m = m.with_min_thh(4);
+        let m = m.with_min_tih(4);
         assert!(m
             .get_payment_quote(&HashrateMelter::unit(), custom(request(3)))
             .await
@@ -746,8 +756,8 @@ mod tests {
         // The redemption exists in the ledger with the right target.
         let id = parse_lookup_id(&made.payment_lookup_id).unwrap();
         let r = ledger.get(&id).unwrap();
-        assert_eq!(r.amount_thh, 2);
-        assert_eq!(r.target_hashes, 2 * hashu_core::redemption::HASHES_PER_THH);
+        assert_eq!(r.amount_tih, 2);
+        assert_eq!(r.target_hashes, 2 * hashu_core::redemption::HASHES_PER_TIH);
         assert_eq!(r.pool_url, POOL);
 
         // Credit a share that is not enough, then one that is.
@@ -816,9 +826,9 @@ mod tests {
     #[test]
     fn unit_matches_what_cdk_deserialises() {
         // cdk serialises units lowercase, so any unit that crossed the wire
-        // or the database comes back as `thh`.
+        // or the database comes back as `tih`.
         let json = serde_json::to_string(&HashrateMelter::unit()).unwrap();
-        assert_eq!(json, "\"thh\"");
+        assert_eq!(json, "\"tih\"");
         let roundtrip: CurrencyUnit = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtrip, HashrateMelter::unit());
     }

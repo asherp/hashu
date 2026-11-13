@@ -55,15 +55,17 @@ test('off override sleeps', () => {
 })
 
 test('economics: sats per kWh of heat', () => {
-  const e = economics({ powerW: 1300, hashrateThs: 40, satsPerThh: 2, electricitySatsPerKwh: 150 })
+  // 625 msat per PiH ≈ 2 sats per THH.
+  const e = economics({ powerW: 1300, hashrateThs: 40, msatPerPih: 625, electricitySatsPerKwh: 150 })
   assert.equal(e.joulesPerTh, 32.5)
-  assert.ok(Math.abs(e.kwhPerThh - 0.0325) < 1e-12)
-  assert.ok(Math.abs(e.satsPerKwh - 61.538) < 0.01)
-  assert.ok(Math.abs(e.billOffsetPct - 41.03) < 0.01)
-  assert.equal(e.satsPerHour, 80)
+  // A TiH is 2^40 hashes ≈ 1.0995 TH: 32.5 J/TH × 1.0995 TH / 3.6e6 J/kWh.
+  assert.ok(Math.abs(e.kwhPerTih - 9.926e-6) < 1e-9)
+  assert.ok(Math.abs(e.satsPerKwh - 61.489) < 0.01)
+  assert.ok(Math.abs(e.billOffsetPct - 40.99) < 0.01)
+  assert.ok(Math.abs(e.satsPerHour - 79.94) < 0.01)
   // asleep: quote the last measured efficiency, earn nothing now
-  const z = economics({ powerW: 3, hashrateThs: 0, joulesPerTh: 32.5, satsPerThh: 2, electricitySatsPerKwh: 150 })
-  assert.ok(Math.abs(z.satsPerKwh - 61.538) < 0.01)
+  const z = economics({ powerW: 3, hashrateThs: 0, joulesPerTh: 32.5, msatPerPih: 625, electricitySatsPerKwh: 150 })
+  assert.ok(Math.abs(z.satsPerKwh - 61.489) < 0.01)
   assert.equal(z.satsPerHour, 0)
 })
 

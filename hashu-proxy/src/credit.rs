@@ -241,10 +241,10 @@ mod tests {
         }
     }
 
-    fn ctx_with(redemption: RedemptionId, thh: u64) -> (CreditContext, Arc<StaticBinding>) {
+    fn ctx_with(redemption: RedemptionId, tih: u64) -> (CreditContext, Arc<StaticBinding>) {
         let ledger = Arc::new(RedemptionLedger::new());
         ledger
-            .open(Redemption::new(redemption, thh, "p".into(), "w".into()))
+            .open(Redemption::new(redemption, tih, "p".into(), "w".into()))
             .unwrap();
         let binding = Arc::new(StaticBinding::default());
         let ctx = CreditContext::new(Arc::new(ShareCrediter::new(ledger)), binding.clone());
@@ -300,13 +300,13 @@ mod tests {
         let (ctx, _) = ctx_with(id(2), 1);
         let mut rx = ctx.crediter.subscribe_completions();
         let m = ProxyMetrics::default();
-        // 1 THH = 3.6e15 hashes ≈ 838_190.3 × 2^32. Two diff-5e5 shares
-        // cross the target on the second one.
-        ctx.credit_accepted(ConnectionId(1), Some(id(2)), Some(5e5), ev(), &m);
+        // 1 TiH = 2^40 hashes = 256 × 2^32. Two diff-200 shares cross the
+        // target on the second one.
+        ctx.credit_accepted(ConnectionId(1), Some(id(2)), Some(200.0), ev(), &m);
         assert!(rx.try_recv().is_err());
-        ctx.credit_accepted(ConnectionId(1), Some(id(2)), Some(5e5), ev(), &m);
+        ctx.credit_accepted(ConnectionId(1), Some(id(2)), Some(200.0), ev(), &m);
         assert_eq!(rx.try_recv().unwrap(), id(2));
-        ctx.credit_accepted(ConnectionId(1), Some(id(2)), Some(5e5), ev(), &m);
+        ctx.credit_accepted(ConnectionId(1), Some(id(2)), Some(200.0), ev(), &m);
         assert!(rx.try_recv().is_err());
         assert!(ctx.crediter.ledger().get(&id(2)).unwrap().is_complete());
         // The share after completion is not in the tree.

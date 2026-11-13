@@ -42,11 +42,8 @@ impl HashuManifest {
         Self {
             instance_url: state.instance_url.clone(),
             mint_pubkey_ids: state.keysets.clone(),
-            supported_units: vec!["THH".to_string()],
-            supported_melts: vec![
-                "hashrate".to_string(),
-                "hashrate-sats".to_string(),
-            ],
+            supported_units: vec!["TiH".to_string()],
+            supported_melts: vec!["hashrate".to_string(), "hashrate-sats".to_string()],
             hashprice_oracle: state.hashprice_oracle.clone(),
             manifest_version: Self::VERSION,
             issued_at,
@@ -86,11 +83,7 @@ pub fn build_metadata(state: &ManifestState, issued_at: u64) -> Result<Metadata,
 /// under clock skew still produces a strictly later event — relays that
 /// keep only the latest event per (pubkey, kind=0) won't get stuck on a
 /// stale one.
-pub fn build_event(
-    state: &ManifestState,
-    keys: &Keys,
-    now: u64,
-) -> Result<Event, ManifestError> {
+pub fn build_event(state: &ManifestState, keys: &Keys, now: u64) -> Result<Event, ManifestError> {
     let created_at = match state.last_published_at {
         Some(prev) if prev >= now => prev + 1,
         _ => now,
@@ -137,7 +130,7 @@ mod tests {
         assert_eq!(m.manifest_version, 1);
         assert_eq!(m.instance_url, "https://mint.example.com");
         assert_eq!(m.hashprice_oracle, "esplora");
-        assert_eq!(m.supported_units, vec!["THH"]);
+        assert_eq!(m.supported_units, vec!["TiH"]);
         assert_eq!(m.supported_melts.len(), 2);
         assert_eq!(m.issued_at, 9_000);
         assert_eq!(m.mint_pubkey_ids.len(), 2);
@@ -166,7 +159,10 @@ mod tests {
         let s = state_with_keysets();
         let meta = build_metadata(&s, 9_000).unwrap();
         assert_eq!(meta.name.as_deref(), Some("Hashu Op"));
-        assert_eq!(meta.about.as_deref(), Some("Hashu mint at mint.example.com"));
+        assert_eq!(
+            meta.about.as_deref(),
+            Some("Hashu mint at mint.example.com")
+        );
         assert_eq!(meta.nip05.as_deref(), Some("op@example.com"));
         assert_eq!(meta.lud16.as_deref(), Some("op@example.com"));
         assert_eq!(meta.website.as_deref(), Some("https://mint.example.com"));
@@ -189,7 +185,10 @@ mod tests {
         let event = build_event(&s, &keys, 9_000).unwrap();
         let parsed: Value = serde_json::from_str(&event.content).unwrap();
         assert_eq!(parsed["name"], Value::from("Hashu Op"));
-        assert_eq!(parsed["hashu"]["instance_url"], Value::from("https://mint.example.com"));
+        assert_eq!(
+            parsed["hashu"]["instance_url"],
+            Value::from("https://mint.example.com")
+        );
         let ids = parsed["hashu"]["mint_pubkey_ids"].as_array().unwrap();
         assert_eq!(ids[1]["status"], Value::from("active"));
     }

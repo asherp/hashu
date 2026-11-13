@@ -1,6 +1,7 @@
-# Redeeming THH at your pool
+# Redeeming TiH at your pool
 
-A Hashu token holds THH (terahash-hours; 1 THH is 1 TH/s for one hour).
+A Hashu token holds TiH (tebihash: 1 TiH is 2^40 hashes, exactly 256
+difficulty-1 shares; 1 TH/s for one hour is about 3,274 TiH).
 Redeeming it points the mint's miners at **your** pool, under **your**
 worker name, until that much work has been delivered. Your pool then pays
 you for the work the way it pays any miner.
@@ -23,7 +24,7 @@ the exact values to type in.
 The checkout page (`/checkout/` on the mint, for example
 <https://mint.hashu.io/checkout/>) asks for four things. A Cashu wallet that
 melts with the `hashrate` method sends the same fields as JSON:
-`{"pool_url", "worker_name", "worker_password"?, "amount_thh"}`.
+`{"pool_url", "worker_name", "worker_password"?, "amount_tih"}`.
 
 | Field | What Hashu accepts | Notes |
 |---|---|---|
@@ -40,8 +41,8 @@ melts with the `hashrate` method sends the same fields as JSON:
 > a path, or with another scheme (such as Stratum V2's `stratum2+tcp://`)
 > when you ask for a quote, before you pay anything.
 
-The redemption must be at least the mint's minimum (`min_redeem_thh`, shown
-by `GET /checkout/api/info`; 1 THH by default).
+The redemption must be at least the mint's minimum (`min_redeem_tih`, shown
+by `GET /checkout/api/info`; 4,096 TiH, about 1.25 TH-hours, by default).
 
 ## What happens next
 
@@ -50,8 +51,8 @@ by `GET /checkout/api/info`; 1 THH by default).
 2. The proxy disconnects its miners; when they reconnect, it sends them to
    your pool with your worker name.
 3. Each share **your pool accepts** counts its difficulty × 2^32 hashes
-   toward your THH. Shares your pool rejects count for nothing.
-4. When the THH is delivered, miners go back to the operator's pool and the
+   toward your TiH. Shares your pool rejects count for nothing.
+4. When the TiH is delivered, miners go back to the operator's pool and the
    redemption shows as paid.
 
 If your pool can't be reached, the proxy sends the miners back to the
@@ -61,7 +62,7 @@ while they are away.
 ## How to check the hashrate arrived
 
 - **On the checkout page.** After you redeem, the "Hashrate delivered to
-  your pool" chart shows THH delivered against the target, with an ETA.
+  your pool" chart shows TiH delivered against the target, with an ETA.
   The same data is at `GET /checkout/api/redemption/{id}`.
 - **On your pool.** Look for the worker name you entered. Pool dashboards
   average over 5 to 60 minutes, so expect the worker to appear a few
@@ -75,11 +76,11 @@ while they are away.
 ## How much will I earn?
 
 Whatever your pool pays for that much work, minus its fee. At current
-hashprice a single THH is worth only a few sats, so mind your pool's
+hashprice the minimum redemption (4,096 TiH) is worth only a few sats, so mind your pool's
 **minimum payout**: small redemptions may sit in your pool balance until it
 crosses the threshold. Pools with Lightning payouts (OCEAN, Braiins) suit
 small amounts best. Solo pools pay only if a block is found, which for a
-few THH almost never happens.
+few thousand TiH almost never happens.
 
 ## About the pool details in these guides
 

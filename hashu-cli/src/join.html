@@ -42,10 +42,11 @@ code { font:14px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-a
     <label for="ln">Lightning address <span class="hint">your wallet must support payment verification (LUD-21)</span></label>
     <input id="ln" required placeholder="you@wallet.example" autocomplete="off">
 
-    <label for="ask">Ask <span class="hint">sats per THH, to the millisat (0.001)</span></label>
-    <input id="ask" type="number" min="0.001" step="0.001" required>
+    <label for="ask">Ask <span class="hint">msat per PiH (1,024 TiH); about 625 is 2 sats per TH-hour</span></label>
+    <input id="ask" type="number" min="1" step="1" required>
+    <p class="hint" id="ask-eq"></p>
 
-    <label for="horizon">Horizon <span class="hint">hours ahead you sell: THH for sale = your rigs' hashrate × horizon</span></label>
+    <label for="horizon">Horizon <span class="hint">hours ahead you sell: TiH for sale = your rigs' hashrate × horizon</span></label>
     <input id="horizon" type="number" min="1" step="1" value="24" required>
 
     <button id="go">Create my mint</button>
@@ -72,6 +73,11 @@ code { font:14px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-a
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
+// Asks are msat per PiH (2^50 hashes = 1,024 TiH). The same ask in the
+// units hashrate markets quote: sats per TH/s per day.
+const satsPerThDay = (msatPerPih) => msatPerPih / 1000 * 86400e12 / 2 ** 50;
+const askEquiv = (m) => Number(m) > 0 ? `≈ ${satsPerThDay(Number(m)).toFixed(1)} sats per TH/s per day (${(Number(m) * 3.6e15 / 2 ** 50 / 1000).toFixed(2)} sats per TH-hour)` : '';
+$('ask').addEventListener('input', () => { $('ask-eq').textContent = askEquiv($('ask').value); });
 $('base').textContent = '.' + location.hostname;
 fetch('/waitlist/api', { cache: 'no-store' })
   .then((r) => { if (r.ok) $('waitlist').hidden = false; })
@@ -87,7 +93,7 @@ $('join').addEventListener('submit', async (e) => {
       body: JSON.stringify({
         name: $('name').value.trim().toLowerCase(),
         lightning_address: $('ln').value.trim(),
-        ask_msat_per_thh: Math.round(Number($('ask').value) * 1000),
+        ask_msat_per_pih: Math.round(Number($('ask').value)),
         horizon_hours: Number($('horizon').value),
       }),
     });

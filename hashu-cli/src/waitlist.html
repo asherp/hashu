@@ -167,7 +167,7 @@ button.btn[disabled] { opacity: 0.6; cursor: wait; }
               </select>
             </label>
           </div>
-          <p class="est" id="est">Your hashrate × how long = the terahash-hours (THH) your mint could sell.</p>
+          <p class="est" id="est">Your hashrate × how long = the hashes, in TiH (tebihash, 2^40 hashes), your mint could sell.</p>
           <label class="sub">Your rigs
             <input name="hashrate" maxlength="80" autocomplete="off" placeholder="2 Bitaxes, 1 S21…">
           </label>
@@ -209,7 +209,7 @@ fetch('/checkout/api/info', { cache: 'no-store' })
   .catch(() => {});
 
 const form = document.getElementById('join');
-// THH for sale = TH/s × hours.
+// TiH for sale = TH/s × hours × 3,274.18 TiH per TH-hour (TiH = 2^40 hashes).
 const est = document.getElementById('est');
 const estHint = est.textContent;
 function updateEstimate() {
@@ -217,11 +217,11 @@ function updateEstimate() {
   const opt = form.horizon.selectedOptions[0];
   const hours = opt && opt.dataset.hours ? Number(opt.dataset.hours) : 0;
   if (!(ths > 0) || !hours) { est.textContent = estHint; return; }
-  const thh = ths * hours;
+  const tih = ths * hours * 3.6e15 / 2 ** 40;
   est.innerHTML = '';
   est.append(ths + ' TH/s × ' + hours.toLocaleString() + ' h ≈ ');
   const b = document.createElement('b');
-  b.textContent = thh.toLocaleString(undefined, { maximumFractionDigits: thh < 10 ? 2 : 0 }) + ' THH';
+  b.textContent = tih.toLocaleString(undefined, { maximumFractionDigits: tih < 10 ? 2 : 0 }) + ' TiH';
   est.append(b, ' for sale');
 }
 form.addEventListener('input', updateEstimate);
