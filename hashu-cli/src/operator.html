@@ -529,7 +529,7 @@ function render () {
   if (cap) {
     $('t-avail').textContent = cap.available_tih != null ? fmtTih(cap.available_tih, 0) : '∞'
     $('t-avail-sub').textContent = !cap.limit ? 'sales not capped'
-      : cap.below_min ? `${fmtTih(cap.headroom_tih, 0)} TiH headroom, below the 4,096 TiH minimum`
+      : cap.below_min ? `${fmtTih(cap.headroom_tih, 0)} TiH headroom, below the 1,024 TiH minimum`
       : [cap.rented_ths > 0 ? `${fmtTih(cap.rented_ths, 1)} TH/s rented${cap.ends_ms ? ` · ends in ${fmtDur((cap.ends_ms - op.now_ms) / 1000)}` : ''}` : '',
           lv && lv.on ? `${fmtTih(lv.extra_ths, 2)} TH/s live × ${fmtTih(lv.horizon_hours, 0)} h` : ''].filter(Boolean).join(' · ') || 'no rentals or live hashrate: sold out'
     $('cap-bar').innerHTML = capBar(cap.capacity_tih, cap.owed_tih, Math.max(cap.headroom_tih, 0), (n) => fmtTih(n, 0))
@@ -538,7 +538,7 @@ function render () {
       ['Live hashrate counted', lv && lv.on ? `${fmtTih(lv.tih)} TiH` : 'off'],
       ['Total capacity', fmtTih(cap.capacity_tih)],
       ['Allocated (sold, or still being delivered)', fmtTih(cap.owed_tih)],
-      [cap.headroom_tih < 0 ? 'Oversold by' : 'Available to buy', cap.limit ? fmtTih(Math.abs(cap.headroom_tih)) + (cap.below_min ? ' (below the 4,096 TiH minimum purchase: sold out)' : '') : `${fmtTih(Math.max(cap.headroom_tih, 0))} (not enforced)`, 'total'],
+      [cap.headroom_tih < 0 ? 'Oversold by' : 'Available to buy', cap.limit ? fmtTih(Math.abs(cap.headroom_tih)) + (cap.below_min ? ' (below the 1,024 TiH minimum purchase: sold out)' : '') : `${fmtTih(Math.max(cap.headroom_tih, 0))} (not enforced)`, 'total'],
     ])
     const mode = cap.limit_explicit ? (cap.limit ? 'on' : 'off') : 'auto'
     for (const b of $('cap-limit').querySelectorAll('button')) b.classList.toggle('on', b.dataset.v === mode)

@@ -224,7 +224,7 @@ hashu mint run \
   `--msat-per-pih` is the fixed price, and the fallback while a live
   source has no fresh sample. `--markup-bps` adds the operator's margin.
   Lightning invoices round the total up to whole sats. The smallest
-  purchase and the default smallest redemption are 2^12 TiH (≈ 1.25 THH).
+  purchase and the default smallest redemption are 2^10 TiH = 1 PiH (≈ 0.31 THH).
 - **Redemption**: a wallet melts `TiH` with method `hashrate` and request
   `{"pool_url", "worker_name", "amount_tih", "nonce"?}`. The proxy routes
   miners to that pool under that worker until the amount is filled, then

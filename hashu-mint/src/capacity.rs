@@ -36,8 +36,8 @@
 //!
 //! Rental `capacity_tih` is *declared* capacity (rentals × hours left), not the
 //! hashrate the proxy measures right now. Headroom below
-//! [`MIN_PURCHASE_TIH`] (2^12 TiH ≈ 1.25 THH) cannot be sold: a 1 TH/s rental
-//! with 55 minutes left is ≈ 3,000 TiH of capacity and nothing to sell.
+//! [`MIN_PURCHASE_TIH`] (2^10 TiH = 1 PiH ≈ 0.31 THH) cannot be sold: a 1 TH/s
+//! rental with 15 minutes left is ≈ 820 TiH of capacity and nothing to sell.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -48,9 +48,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::pricing::PricingError;
 
-/// Smallest purchase: 2^12 TiH (≈ 1.25 THH, #90), the power of two closest
-/// to the old 1 THH floor. Headroom below it is unsellable.
-pub const MIN_PURCHASE_TIH: u64 = 1 << 12;
+/// Smallest purchase: 2^10 TiH = 1 PiH (≈ 0.31 THH), the same as the default
+/// smallest redemption (`melt::DEFAULT_MIN_TIH`), since a smaller voucher
+/// could not be redeemed on its own. At ~625 msat/PiH it is about 1 sat,
+/// the smallest Lightning invoice the main mint issues. Headroom below it
+/// is unsellable.
+pub const MIN_PURCHASE_TIH: u64 = 1 << 10;
 
 const MS_PER_HOUR: f64 = 3_600_000.0;
 
@@ -432,12 +435,12 @@ mod tests {
 
     #[test]
     fn headroom_under_one_tih_is_below_min() {
-        // A 1 TH/s rental with ~56 minutes left: 0.929 THH ≈ 3,042 TiH
-        // declared, under the 4,096 TiH minimum: 0 to sell.
+        // A 1 TH/s rental with 15 minutes left: 0.25 THH ≈ 819 TiH
+        // declared, under the 1,024 TiH minimum: 0 to sell.
         let b = CapacityBook::new();
-        b.set_manual(vec![rental(1.0, 3_344_400)]);
+        b.set_manual(vec![rental(1.0, 900_000)]);
         let s = b.snapshot(0);
-        assert!((s.headroom_tih - 0.929 * T).abs() < 1e-6);
+        assert!((s.headroom_tih - 0.25 * T).abs() < 1e-6);
         assert_eq!(s.available_tih, Some(0));
         assert!(s.below_min);
         // Nothing rented, or the minimum or more, is not "below the minimum".

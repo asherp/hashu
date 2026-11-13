@@ -92,7 +92,8 @@ inbound Stratum connections it is authorized to direct.
     the token amount is always TiH.
   - Prices are quoted in msat per PiH (2^50 hashes), since one TiH costs
     well under a millisat. The smallest purchase and the default smallest
-    redemption are 2^12 TiH (≈ 1.25 THH).
+    redemption are 2^10 TiH = 1 PiH (≈ 0.31 THH): one share at the
+    262,144 starting difficulty of pools like F2Pool and OCEAN.
 - Sat-equivalent vouchers (§5.2) are still issued as `TiH`-denominated
   tokens; the *redemption mode* is the variable, not the unit. This
   keeps the mint's denomination tree stable.
@@ -612,9 +613,10 @@ Resolved 2026-05-07:
   miners connect to a stranger's Hashu under this model).
 
 Open:
-- **Q5** — Minimum redemption granularity. Below ~1 Th-minute, share
-  variance dominates the integral; refuse tiny redemptions or require
-  a minimum redemption duration.
+- **Q5** — Minimum redemption granularity. Work is credited one accepted
+  share at a time (D / 256 TiH at difficulty D), so a redemption smaller
+  than one share at the redeemer's pool difficulty is overfilled by the
+  supplier. Default floor: 1 PiH, one share at difficulty 262,144.
 - **Q6** — Pool URL allowlist vs. open routing. Open is more
   censorship-resistant but exposes operators to pools that blacklist
   proxies. Likely answer: open by default, operator-pluggable denylist.

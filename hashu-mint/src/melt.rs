@@ -45,11 +45,16 @@ pub const METHOD: &str = "hashrate";
 /// Unit string for tebihash vouchers (see `hashu_core::denom`).
 const TIH: &str = hashu_core::denom::UNIT_TIH;
 
-/// Smallest accepted redemption, in TiH: 2^12 (≈ 1.25 THH, #90), the power
-/// of two closest to the old 1 THH floor. ARCHITECTURE.md §9 Q5 leaves the
-/// real floor open; below roughly a Th-minute, share variance dominates
-/// the integral.
-pub const DEFAULT_MIN_TIH: u64 = 1 << 12;
+/// Smallest accepted redemption, in TiH: 2^10 = 1 PiH (≈ 0.31 THH).
+///
+/// The old 1 THH floor came from the voucher unit. With TiH vouchers the
+/// limit is the redeemer's pool instead: work is credited one accepted
+/// share at a time, and a share at difficulty D is D / 256 TiH. Pools that
+/// start at difficulty 262,144 (F2Pool, OCEAN) credit 1,024 TiH per share,
+/// so a smaller redemption to them is still filled by one whole share. It
+/// is also about a minute of a 20 TH/s rig and 15 minutes of a Bitaxe, so
+/// the seconds lost to a pool switch stay a small fraction of it.
+pub const DEFAULT_MIN_TIH: u64 = 1 << 10;
 
 /// Payload carried in the melt request's `request` string (JSON).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -450,10 +455,10 @@ mod tests {
     }
 
     #[test]
-    fn default_floor_is_two_to_the_twelve_tih() {
-        assert_eq!(DEFAULT_MIN_TIH, 4_096);
+    fn default_floor_is_one_pih() {
+        assert_eq!(DEFAULT_MIN_TIH, 1_024);
         let m = HashrateMelter::new(Arc::new(RedemptionLedger::new()));
-        assert_eq!(m.floor_for(10_000), 4_096);
+        assert_eq!(m.floor_for(10_000), 1_024);
         assert_eq!(m.floor_for(100), 100);
     }
 

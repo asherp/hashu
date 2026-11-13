@@ -258,15 +258,15 @@ mod tests {
     }
 
     #[test]
-    fn bitaxe_one_hour_is_below_the_minimum() {
-        // 0.6 TH/s for a 1 h horizon ≈ 1,964 TiH, under the 4,096 TiH
-        // minimum: nothing for sale, but say why. 3 h is enough.
-        let c = pricer(0.6, Some(40), 1.0, 0.0).capacity();
+    fn small_rig_one_hour_is_below_the_minimum() {
+        // 0.25 TH/s for a 1 h horizon ≈ 819 TiH, under the 1,024 TiH
+        // minimum: nothing for sale, but say why. 2 h is enough.
+        let c = pricer(0.25, Some(40), 1.0, 0.0).capacity();
         assert_eq!(c.available_tih, 0);
         assert!(c.below_min);
-        let c = pricer(0.6, Some(40), 3.0, 0.0).capacity();
+        let c = pricer(0.25, Some(40), 2.0, 0.0).capacity();
         assert!(!c.below_min);
-        assert_eq!(c.available_tih, 5_893);
+        assert_eq!(c.available_tih, 1_637);
     }
 
     #[test]

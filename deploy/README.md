@@ -402,8 +402,8 @@ proxy, one upstream connection per miner connection):
 ## 9. Demo script (mainnet)
 
 Price check: the MRR floor is about 0.00045 BTC/PH/day, i.e. ~2 sats per
-TH-hour, ≈ 625 msat per PiH. Check the live price with a 4,096 TiH (the
-minimum, ≈ 1.25 TH-hour) quote:
+TH-hour, ≈ 625 msat per PiH. Check the live price with a 4,096 TiH (4 PiH,
+≈ 1.25 TH-hour) quote:
 
 ```bash
 curl -s -X POST https://mint.hashu.io/v1/mint/quote/bolt11 \
@@ -448,12 +448,12 @@ redemptions). Once a capacity source is set, mint quotes beyond that are
 refused on every rail, the checkout shows "N TiH available" and the
 landing page shows the same number. Rental capacity is *declared*, from the
 rentals MRR reports, not the hashrate the proxy measures. Your own rigs can
-add live capacity too (below). The smallest purchase is 4,096 TiH
-(2^12, ≈ 1.25 TH-hours), so headroom under that cannot be sold: a 1 TH/s
-rental with 55 minutes left is ≈ 3,000 TiH of capacity and 0 available.
-The checkout, landing page and operator GUI then say so ("3,001 TiH
-headroom, below the 4,096 TiH minimum") instead of a bare 0. For a
-Bitaxe-class rig (≈ 1.1 TiH/s) 4,096 TiH is roughly an hour of hashing. Three sources:
+add live capacity too (below). The smallest purchase is 1,024 TiH
+(2^10 = 1 PiH, ≈ 0.31 TH-hours), so headroom under that cannot be sold: a 1 TH/s
+rental with 15 minutes left is ≈ 820 TiH of capacity and 0 available.
+The checkout, landing page and operator GUI then say so ("819 TiH
+headroom, below the 1,024 TiH minimum") instead of a bare 0. For a
+Bitaxe-class rig (≈ 1.1 TiH/s) 1,024 TiH is about 15 minutes of hashing. Three sources:
 
 - **Automatic, from MRR.** Put `MRR_API_KEY` / `MRR_API_SECRET` (the same
   key `btc-rent.py` uses) in `.env`. The mint reads `GET /rental?type=active`

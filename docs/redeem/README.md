@@ -42,7 +42,7 @@ melts with the `hashrate` method sends the same fields as JSON:
 > when you ask for a quote, before you pay anything.
 
 The redemption must be at least the mint's minimum (`min_redeem_tih`, shown
-by `GET /checkout/api/info`; 4,096 TiH, about 1.25 TH-hours, by default).
+by `GET /checkout/api/info`; 1,024 TiH (1 PiH), about 0.31 TH-hours, by default).
 
 ## What happens next
 
@@ -76,7 +76,7 @@ while they are away.
 ## How much will I earn?
 
 Whatever your pool pays for that much work, minus its fee. At current
-hashprice the minimum redemption (4,096 TiH) is worth only a few sats, so mind your pool's
+hashprice the minimum redemption (1,024 TiH) is worth about a sat, so mind your pool's
 **minimum payout**: small redemptions may sit in your pool balance until it
 crosses the threshold. Pools with Lightning payouts (OCEAN, Braiins) suit
 small amounts best. Solo pools pay only if a block is found, which for a

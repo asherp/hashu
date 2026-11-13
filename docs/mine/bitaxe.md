@@ -122,9 +122,9 @@ worker secret once and the AxeOS settings above. Your mint is live at
   holds the payment.
 - What's for sale: `measured hashrate of your verified rigs × horizon −
   TiH your mint already owes`, in TiH (a 1.2 TH/s Bitaxe over 24 h is
-  ≈ 94,000 TiH). The smallest sale is 4,096 TiH, so a Bitaxe needs a
-  horizon of about 3 hours or more to sell anything (in circulation plus open redemptions). The
-  horizon is yours to choose, 1 hour or more (default 24). With no rigs
+  ≈ 94,000 TiH). The smallest sale is 1,024 TiH (1 PiH), so a Bitaxe sells
+  something even at the shortest horizon ("owes" counts TiH in circulation
+  plus open redemptions). The horizon is yours to choose, 1 hour or more (default 24). With no rigs
   online your mint is sold out.
 - Melting TiH on your mint (method `hashrate`) opens a redemption only your
   rigs fill.

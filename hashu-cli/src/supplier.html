@@ -86,7 +86,7 @@ async function status() {
     $('ask-sub').textContent = s.ask_msat_per_pih == null ? 'msat per PiH' : `msat per PiH · ${askEquiv(s.ask_msat_per_pih)}`;
     $('avail').textContent = fmt(s.capacity.available_tih);
     $('avail-sub').textContent = s.capacity.below_min
-      ? `TiH for sale (${fmt(s.capacity.capacity_tih - s.capacity.owed_tih, 0)} TiH headroom, below the 4,096 TiH minimum)`
+      ? `TiH for sale (${fmt(s.capacity.capacity_tih - s.capacity.owed_tih, 0)} TiH headroom, below the 1,024 TiH minimum)`
       : 'TiH for sale';
     $('rate').textContent = fmt(s.capacity.hashrate_ths, 2);
     $('horizon').textContent = fmt(s.capacity.horizon_hours, 1);
