@@ -866,6 +866,12 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             .with_home_pools(args.home.config()?)
             .with_suppliers(registry.clone()),
     );
+    // The operator's own connected rigs, counted in capacity once the
+    // operator sets a live horizon (operator GUI, "Live hashrate").
+    {
+        let r = router.clone();
+        capacity.set_live_source(Arc::new(move || r.operator_hashrate() / 1e12));
+    }
     // Registered suppliers' mints, on <name>.<this mint's host>.
     let tenants = supplier_mints(&args, &registry, &ledger, fake_lightning, &router);
     if let Some(t) = &tenants {

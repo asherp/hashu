@@ -21,13 +21,26 @@
 //! payment for hashrate it has no machines to deliver. The operator can
 //! turn the limit off explicitly (`limit: false`) to sell uncapped.
 //!
-//! `capacity_thh` is *declared* capacity (rentals × hours left), not the
+//! The operator can also count the mint's own connected rigs (a Bitaxe at
+//! home, say) by setting a live horizon: their measured hashrate × that
+//! horizon is added, the same rule supplier mints sell by. To avoid counting
+//! rented rigs twice (they mine on the proxy too), only measured hashrate
+//! above the running rentals' declared TH/s is counted:
+//!
+//! ```text
+//! live_thh = max(0, measured TH/s − rented TH/s) × live horizon
+//! ```
+//!
+//! Live capacity rolls forward: it never ends, but it drops as soon as the
+//! rigs go quiet, so a mint that sold against it can end up oversold.
+//!
+//! Rental `capacity_thh` is *declared* capacity (rentals × hours left), not the
 //! hashrate the proxy measures right now. And because THH amounts are whole
 //! numbers, headroom below [`MIN_PURCHASE_THH`] cannot be sold: a 1 TH/s
 //! rental with 55 minutes left is 0.92 THH of capacity and 0 available.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -39,6 +52,20 @@ use crate::pricing::PricingError;
 pub const MIN_PURCHASE_THH: u64 = 1;
 
 const MS_PER_HOUR: f64 = 3_600_000.0;
+
+/// Shortest live horizon, the same floor supplier mints use.
+pub const MIN_LIVE_HORIZON_HOURS: f64 = 1.0;
+
+/// Measured hashrate (TH/s) of the rigs that fill this mint's orders.
+pub type LiveHashrate = Arc<dyn Fn() -> f64 + Send + Sync>;
+
+struct LiveSource(LiveHashrate);
+
+impl std::fmt::Debug for LiveSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LiveSource")
+    }
+}
 
 /// One rented machine (or group of machines) mining on the proxy.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -75,6 +102,9 @@ struct Persisted {
     mrr: Vec<Rental>,
     #[serde(default)]
     mrr_synced_ms: Option<u64>,
+    /// Count connected rigs' live hashrate × this many hours; `None` is off.
+    #[serde(default)]
+    live_horizon_hours: Option<f64>,
 }
 
 #[derive(Debug, Default)]
@@ -90,6 +120,7 @@ struct Inner {
 #[derive(Debug, Default)]
 pub struct CapacityBook {
     inner: Mutex<Inner>,
+    live: Mutex<Option<LiveSource>>,
     path: Option<PathBuf>,
 }
 
@@ -118,6 +149,26 @@ pub struct CapacitySnapshot {
     pub mrr_enabled: bool,
     pub mrr_synced_ms: Option<u64>,
     pub mrr_error: Option<String>,
+    /// The mint's own connected rigs (see the module docs).
+    pub live: LiveView,
+}
+
+/// Live hashrate × horizon, the part of capacity that is measured.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct LiveView {
+    /// The proxy reports hashrate to this mint (false in tests or tools).
+    pub available: bool,
+    /// Counted in capacity: a horizon is set.
+    pub on: bool,
+    pub horizon_hours: Option<f64>,
+    /// Measured TH/s of the rigs that fill this mint's orders.
+    pub measured_ths: f64,
+    /// Of that, TH/s already declared by running rentals.
+    pub rented_ths: f64,
+    /// `max(0, measured − rented)`: what the horizon multiplies.
+    pub extra_ths: f64,
+    /// THH this adds to capacity (0 while off).
+    pub thh: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -155,6 +206,7 @@ impl CapacityBook {
                 p,
                 ..Default::default()
             }),
+            live: Mutex::new(None),
             path: Some(path),
         })
     }
@@ -204,6 +256,26 @@ impl CapacityBook {
         }
     }
 
+    /// Where live hashrate comes from (the proxy's operator rigs, TH/s).
+    pub fn set_live_source(&self, f: LiveHashrate) {
+        *self.live.lock().unwrap() = Some(LiveSource(f));
+    }
+
+    /// Count live hashrate × `hours`, or stop counting it with `None`.
+    pub fn set_live_horizon(&self, hours: Option<f64>) -> Result<(), String> {
+        if let Some(h) = hours {
+            if !h.is_finite() || h < MIN_LIVE_HORIZON_HOURS {
+                return Err(format!(
+                    "live horizon must be at least {MIN_LIVE_HORIZON_HOURS} hour"
+                ));
+            }
+        }
+        let mut g = self.inner.lock().unwrap();
+        g.p.live_horizon_hours = hours;
+        self.save(&g.p);
+        Ok(())
+    }
+
     /// THH already owed (from the mint's obligations).
     pub fn set_owed(&self, owed_thh: f64, now_ms: u64) {
         let mut g = self.inner.lock().unwrap();
@@ -212,6 +284,8 @@ impl CapacityBook {
     }
 
     pub fn snapshot(&self, now_ms: u64) -> CapacitySnapshot {
+        // Read the proxy before taking our own lock.
+        let measured = self.live.lock().unwrap().as_ref().map(|LiveSource(f)| f());
         let g = self.inner.lock().unwrap();
         // Auto means on: no rented hashrate, nothing to sell.
         let limit = g.p.limit.unwrap_or(true);
@@ -228,9 +302,10 @@ impl CapacityBook {
                 })
                 .collect();
         let running = rentals.iter().filter(|r| r.rental.end_ms > now_ms);
-        let rented_ths = running.clone().map(|r| r.rental.ths.max(0.0)).sum();
+        let rented_ths: f64 = running.clone().map(|r| r.rental.ths.max(0.0)).sum();
         let ends_ms = running.map(|r| r.rental.end_ms).max();
-        let capacity_thh: f64 = rentals.iter().map(|r| r.thh_left).sum();
+        let live = live_view(measured, rented_ths, g.p.live_horizon_hours);
+        let capacity_thh: f64 = rentals.iter().map(|r| r.thh_left).sum::<f64>() + live.thh;
         let headroom_thh = capacity_thh - g.owed_thh;
         CapacitySnapshot {
             limit,
@@ -247,6 +322,7 @@ impl CapacityBook {
             mrr_enabled: g.mrr_enabled,
             mrr_synced_ms: g.p.mrr_synced_ms,
             mrr_error: g.mrr_error.clone(),
+            live,
         }
     }
 
@@ -259,6 +335,28 @@ impl CapacityBook {
             }),
             _ => Ok(()),
         }
+    }
+}
+
+fn live_view(measured_ths: Option<f64>, rented_ths: f64, horizon: Option<f64>) -> LiveView {
+    let measured = measured_ths
+        .filter(|t| t.is_finite())
+        .unwrap_or(0.0)
+        .max(0.0);
+    let extra = (measured - rented_ths).max(0.0);
+    let on = horizon.is_some() && measured_ths.is_some();
+    LiveView {
+        available: measured_ths.is_some(),
+        on,
+        horizon_hours: horizon,
+        measured_ths: measured,
+        rented_ths: rented_ths.min(measured),
+        extra_ths: extra,
+        thh: if on {
+            extra * horizon.unwrap_or(0.0)
+        } else {
+            0.0
+        },
     }
 }
 
@@ -426,6 +524,69 @@ mod tests {
         let s = again.snapshot(0);
         assert!(s.limit_explicit);
         assert!((s.capacity_thh - 62.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn live_hashrate_times_horizon_backs_sales() {
+        let b = CapacityBook::new();
+        let ths = Arc::new(Mutex::new(1.2));
+        let t = ths.clone();
+        b.set_live_source(Arc::new(move || *t.lock().unwrap()));
+        // Measured, but off until the operator sets a horizon.
+        let s = b.snapshot(0);
+        assert!(s.live.available && !s.live.on);
+        assert_eq!(s.available_thh, Some(0));
+        b.set_live_horizon(Some(24.0)).unwrap();
+        let s = b.snapshot(0);
+        assert!((s.live.thh - 28.8).abs() < 1e-9);
+        assert_eq!(s.available_thh, Some(28));
+        b.set_owed(10.0, 0);
+        assert_eq!(b.snapshot(0).available_thh, Some(18));
+        // The rig goes quiet: nothing left to sell, and the mint is oversold.
+        *ths.lock().unwrap() = 0.0;
+        let s = b.snapshot(0);
+        assert_eq!(s.available_thh, Some(0));
+        assert!(s.headroom_thh < 0.0);
+        // Off again.
+        b.set_live_horizon(None).unwrap();
+        assert!(!b.snapshot(0).live.on);
+    }
+
+    #[test]
+    fn live_does_not_count_rented_rigs_twice() {
+        let b = CapacityBook::new();
+        // 10 TH/s rented for 2 h; the proxy measures 11 TH/s in all.
+        b.set_manual(vec![rental(10.0, 2 * H)]);
+        b.set_live_source(Arc::new(|| 11.0));
+        b.set_live_horizon(Some(5.0)).unwrap();
+        let s = b.snapshot(0);
+        assert!((s.live.extra_ths - 1.0).abs() < 1e-9);
+        assert!((s.capacity_thh - 25.0).abs() < 1e-9);
+        // Measuring less than rented adds nothing (and takes nothing away).
+        b.set_live_source(Arc::new(|| 7.0));
+        let s = b.snapshot(0);
+        assert_eq!(s.live.extra_ths, 0.0);
+        assert!((s.capacity_thh - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn live_horizon_validated_and_persisted() {
+        let b = CapacityBook::new();
+        assert!(b.set_live_horizon(Some(0.5)).is_err());
+        assert!(b.set_live_horizon(Some(f64::NAN)).is_err());
+        // Without a proxy the horizon is kept but nothing is counted.
+        b.set_live_horizon(Some(3.0)).unwrap();
+        let s = b.snapshot(0);
+        assert!(!s.live.available && !s.live.on && s.live.thh == 0.0);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capacity.json");
+        CapacityBook::load(path.clone())
+            .unwrap()
+            .set_live_horizon(Some(12.0))
+            .unwrap();
+        let again = CapacityBook::load(path).unwrap();
+        assert_eq!(again.snapshot(0).live.horizon_hours, Some(12.0));
     }
 
     #[test]

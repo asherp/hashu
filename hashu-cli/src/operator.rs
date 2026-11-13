@@ -24,9 +24,12 @@
 //! - `GET /api/operator` also carries `heat`: the heat the hashrate turned
 //!   into, estimated as work × J/TH (see `hashu_mint::heat`).
 //! - `POST /api/capacity`: `{ "rentals": [{ "ths", "hours" | "end_ms",
-//!   "label"?, "id"? }], "limit": bool | null }`, either field optional.
-//!   `rentals` replaces the operator's list (MRR rentals sync on their
-//!   own); `limit: null` goes back to automatic (on once a rental is set).
+//!   "label"?, "id"? }], "limit": bool | null, "live_horizon_hours":
+//!   hours | null }`, every field optional. `rentals` replaces the
+//!   operator's manual list (MRR rentals sync on their own; the GUI no
+//!   longer adds manual ones); `limit: null` goes back to automatic.
+//!   `live_horizon_hours` counts the connected rigs' measured hashrate
+//!   (above what rentals declare) × that many hours; `null` turns it off.
 //!
 //! `POST /api/controls` settings are saved to `operator-settings.json` in the
 //! data dir and capacity to `capacity.json`, so both survive a restart; a
@@ -447,6 +450,16 @@ async fn set_capacity(State(s): State<Arc<OperatorState>>, body: Bytes) -> Respo
         };
         s.controls.capacity.set_limit(limit);
     }
+    if let Some(h) = v.get("live_horizon_hours") {
+        let hours = match h {
+            Value::Null => None,
+            Value::Number(n) => n.as_f64(),
+            _ => return bad("live_horizon_hours must be a number of hours or null".into()),
+        };
+        if let Err(e) = s.controls.capacity.set_live_horizon(hours) {
+            return bad(e);
+        }
+    }
     // Owed may have moved since the last refresh; recount before answering.
     if let Ok(o) = obligations(&s.mint, &s.control.ledger).await {
         s.controls.capacity.set_owed(o.total_owed(), now_ms());
@@ -454,6 +467,7 @@ async fn set_capacity(State(s): State<Arc<OperatorState>>, body: Bytes) -> Respo
     let snap = s.controls.capacity.snapshot(now_ms());
     tracing::info!(
         rented_ths = snap.rented_ths,
+        live_horizon_hours = ?snap.live.horizon_hours,
         capacity_thh = snap.capacity_thh,
         available_thh = ?snap.available_thh,
         "operator changed capacity"

@@ -444,21 +444,34 @@ rentals will still deliver: `rented TH/s × hours left − THH owed` (vouchers
 held by users, paid-but-unminted quotes and the rest of open
 redemptions). Once a capacity source is set, mint quotes beyond that are
 refused on every rail, the checkout shows "N THH available" and the
-landing page shows the same number. This is *declared* capacity, from the
-rentals you enter or sync, not the hashrate the proxy measures live. THH is
+landing page shows the same number. Rental capacity is *declared*, from the
+rentals MRR reports, not the hashrate the proxy measures. Your own rigs can
+add live capacity too (below). THH is
 sold in whole units (1 THH minimum), so headroom under 1 THH cannot be
 sold: a 1 TH/s rental with 55 minutes left is 0.92 THH of capacity and 0
 available. The checkout, landing page and operator GUI then say so ("0.92
 THH headroom, below the 1 THH minimum") instead of a bare 0. For a
-Bitaxe-class rig 1 THH is roughly 100 minutes of hashing. Two ways to set it:
+Bitaxe-class rig 1 THH is roughly 100 minutes of hashing. Three sources:
 
 - **Automatic, from MRR.** Put `MRR_API_KEY` / `MRR_API_SECRET` (the same
   key `btc-rent.py` uses) in `.env`. The mint reads `GET /rental?type=active`
   every minute and takes each rental's advertised hashrate and end time.
   If the account also has rentals mining somewhere else (the fx-faucet),
-  list the ones on the proxy in `HASHU_MRR_RENTAL_IDS=123,456`.
-- **By hand**, in the operator GUI's *Hashrate capacity* card (TH/s and
-  hours left), or:
+  list the ones on the proxy in `HASHU_MRR_RENTAL_IDS=123,456`. The
+  operator GUI's *MiningRigRentals* card lists them and is greyed out
+  without a key.
+- **Live hashrate of your own rigs** (a Bitaxe at home). In the operator
+  GUI's *Live hashrate* card set a horizon (at least 1 hour): the measured
+  hashrate of rigs filling this mint's orders × the horizon is added, the
+  same rule supplier mints sell by. Only hashrate above what running
+  rentals declare counts, so rented rigs are not counted twice. Rigs count
+  when they serve this mint: those mining as `HASHU_OPERATOR_WORKER.<rig>`,
+  or any unregistered rig when that variable is unset. Home-pool-only and
+  supplier rigs do not. Capacity follows the measurement, so if the rigs
+  go quiet it drops and the mint can end up oversold. API:
+  `{"live_horizon_hours": 24}`, `null` turns it off.
+- **By hand**, through the API only (the GUI no longer adds manual
+  rentals; it lists any left over so you can remove them):
 
   ```sh
   curl -s -u operator:$OPERATOR_PASSWORD -XPOST \
