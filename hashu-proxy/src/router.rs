@@ -598,6 +598,19 @@ impl Router {
             .sum()
     }
 
+    /// Summed measured hashrate (H/s) of rigs that fill the operator's own
+    /// mint's orders: Hashu's rigs, or any unregistered rig when no operator
+    /// worker is set. Home-pool-only and supplier rigs are not counted.
+    pub fn operator_hashrate(&self) -> f64 {
+        let now = Instant::now();
+        self.lock()
+            .conns
+            .values()
+            .filter(|b| b.serves == Serves::Operator)
+            .filter_map(|b| b.rate.rate(now))
+            .sum()
+    }
+
     /// Where a miner with `identity` goes while no order needs it.
     fn idle_route(&self, identity: Option<&MinerIdentity>) -> Route {
         match identity.and_then(|i| i.home.as_ref()) {
@@ -1816,6 +1829,21 @@ mod tests {
         let v = router.suppliers();
         assert!(v.iter().any(|s| s.supplier == "alice" && s.verified));
         assert!(v.iter().any(|s| s.supplier == "alicex" && !s.verified));
+    }
+
+    #[test]
+    fn operator_hashrate_skips_supplier_rigs() {
+        let router = supplier_router(Arc::new(RedemptionLedger::new()));
+        let a = rig(
+            &router,
+            "alice.rig1",
+            "pw=a-secret,pool=public-pool.io:21496",
+        );
+        warm(&router, a.conn, 1.0, Instant::now());
+        assert_eq!(router.operator_hashrate(), 0.0);
+        let op = rig(&router, "hashu.bitaxe", "x");
+        warm(&router, op.conn, 1.0, Instant::now());
+        assert!(router.operator_hashrate() > 0.0);
     }
 
     #[test]
