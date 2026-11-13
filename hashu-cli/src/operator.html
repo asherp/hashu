@@ -71,7 +71,7 @@ h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacin
 button.act { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 6px; padding: 6px 14px; cursor: pointer; font: inherit; }
 button.act.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
 button.act.danger { border-color: var(--bad); color: var(--bad); }
-input[type=text] { width: 120px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; }
+input[type=text], input[type=password] { width: 120px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; }
 button.x { border: 0; background: transparent; color: var(--ink-3); cursor: pointer; font: inherit; padding: 0 4px; }
 input[type=number] { width: 96px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; }
 .bar { height: 8px; background: var(--grid); border-radius: 4px; overflow: hidden; }
@@ -214,6 +214,17 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
         </table>
       </div>
       <p class="note" id="mrr-note"></p>
+      <form id="mrr-form" autocomplete="off" onsubmit="return false">
+        <div class="row" id="mrr-creds">
+          <input type="text" id="mrr-key" placeholder="API key" aria-label="MRR API key" autocomplete="off" spellcheck="false">
+          <input type="password" id="mrr-secret" placeholder="API secret" aria-label="MRR API secret" autocomplete="new-password">
+        </div>
+        <div class="row">
+          <input type="text" id="mrr-ids" placeholder="rental ids (optional)" aria-label="Only these rental ids">
+          <button class="act primary" id="btn-mrr" type="button">Connect</button>
+          <button class="act danger" id="btn-mrr-off" type="button" hidden>Disconnect</button>
+        </div>
+      </form>
     </section>
 
     <section class="card" aria-labelledby="h-heat">
@@ -555,9 +566,12 @@ function render () {
 
     // MRR: driven by the API only; greyed out without credentials.
     const mrr = cap.rentals.filter((r) => r.source === 'mrr')
-    $('mrr-card').style.opacity = cap.mrr_enabled ? '' : '0.6'
+    const acct = op.mrr || {}
+    $('mrr').style.opacity = cap.mrr_enabled ? '' : '0.6'
     $('mrr-pill').textContent = !cap.mrr_enabled ? 'not connected' : cap.mrr_error ? 'sync error' : cap.mrr_synced_ms ? 'synced' : 'syncing…'
     $('mrr').innerHTML = cap.mrr_enabled ? kv([
+      ['API key', `<span class="mono">${esc(acct.key_hint || '')}</span> <span class="sub">${acct.source === 'gui' ? 'set here' : 'from MRR_API_KEY'}</span>`],
+      ['Rentals counted', acct.rental_ids && acct.rental_ids.length ? esc(acct.rental_ids.join(', ')) : 'all active'],
       ['Last sync', cap.mrr_error ? `<span style="color:var(--bad)">${esc(cap.mrr_error)}</span>` : cap.mrr_synced_ms ? `${fmtDur((op.now_ms - cap.mrr_synced_ms) / 1000)} ago` : 'waiting…'],
       ['Running rentals', `${mrr.filter((r) => r.hours_left > 0).length} · ${fmtThh(mrr.filter((r) => r.hours_left > 0).reduce((a, r) => a + r.ths, 0), 2)} TH/s`]
     ]) : ''
@@ -565,8 +579,11 @@ function render () {
     $('mrr-rows').innerHTML = mrr.length ? mrr.map((r) => rentalRow(r)).join('')
       : '<tr><td colspan="4" class="sub">No active rentals on the MRR account. Rent rigs pointed at this proxy and they appear here on the next sync.</td></tr>'
     $('mrr-note').innerHTML = cap.mrr_enabled
-      ? 'Active rentals come from the MRR API every minute (only <span class="mono">HASHU_MRR_RENTAL_IDS</span> when set).'
-      : 'Not connected: set <span class="mono">MRR_API_KEY</span> and <span class="mono">MRR_API_SECRET</span> on the mint to sync active rentals as capacity.'
+      ? 'Active rentals come from the MRR API every minute. Paste a new key pair below to switch accounts.'
+      : 'Not connected. Paste an MRR API key and secret (MRR → Account → API Keys, read access to rentals) to count active rentals as capacity. They are checked with MRR, then saved on the mint (<span class="mono">mrr.json</span>), never shown again.'
+    $('btn-mrr').textContent = acct.connected ? 'Save' : 'Connect'
+    $('btn-mrr-off').hidden = !acct.connected
+    if (!state.mrrDirty && document.activeElement !== $('mrr-ids')) $('mrr-ids').value = (acct.rental_ids || []).join(', ')
   }
 
   const h = op.heat
@@ -774,6 +791,27 @@ $('manual-rows').addEventListener('click', (ev) => {
   setCapacity({ rentals: manualRentals().filter((_, j) => j !== i) })
 })
 $('live-hours').addEventListener('input', () => { state.liveDirty = true })
+$('mrr-ids').addEventListener('input', () => { state.mrrDirty = true })
+async function setMrr (body, btn) {
+  btn.disabled = true
+  try {
+    await api('api/mrr', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    $('mrr-key').value = ''; $('mrr-secret').value = ''; state.mrrDirty = false
+    alertMsg('')
+  } catch (e) { alertMsg(e.message) } finally { btn.disabled = false; poll() }
+}
+$('btn-mrr').addEventListener('click', () => {
+  const key = $('mrr-key').value.trim(), secret = $('mrr-secret').value.trim()
+  const ids = $('mrr-ids').value.split(',').map((x) => x.trim()).filter(Boolean)
+  const connected = state.op && state.op.mrr && state.op.mrr.connected
+  if (!key && !secret && !connected) return alertMsg('Enter the MRR API key and secret')
+  if ((key && !secret) || (!key && secret)) return alertMsg('Enter both the MRR API key and secret')
+  setMrr(key ? { key, secret, rental_ids: ids } : { rental_ids: ids }, $('btn-mrr'))
+})
+$('btn-mrr-off').addEventListener('click', () => {
+  if (!confirm('Stop syncing MRR rentals? Their capacity stops counting now, and stays off after a restart even if MRR_API_KEY is set.')) return
+  setMrr({ disconnect: true }, $('btn-mrr-off'))
+})
 $('btn-live').addEventListener('click', async () => {
   const hours = Number($('live-hours').value)
   if (!(hours >= 1)) return alertMsg('Enter a horizon of at least 1 hour')

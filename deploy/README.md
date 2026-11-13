@@ -67,7 +67,7 @@ again at startup, so running them without compose fails the same way.
 | `HASHU_PRICE`, `HASHU_SATS_PER_THH`, `HASHU_NETWORK` | no | Pricing: `mrr` (default), `esplora` or `fixed`; fallback 40 sats/THH. |
 | `HASHU_LIGHTNING`, `PHOENIXD_CHAIN` | no | `phoenixd` (default), `fake`, `off`; `mainnet`. |
 | `HASHU_USDT_DEPOSIT`, `HASHU_USDC_DEPOSIT` + `HASHU_USDT_PER_THH` or `HASHU_USD_PER_BTC` | no | Stablecoin rails, each on when its deposit address is set. Token, RPC, chain id and confirmations default to the canonical USDT (Ethereum) and USDC (Base) contracts and public RPCs. |
-| `MRR_API_KEY`, `MRR_API_SECRET`, `HASHU_MRR_RENTAL_IDS` | no | Capacity from your MiningRigRentals rentals. |
+| `MRR_API_KEY`, `MRR_API_SECRET`, `HASHU_MRR_RENTAL_IDS` | no | Capacity from your MiningRigRentals rentals (or set them in the operator GUI). |
 | `HASHU_HEAT_J_PER_TH` | no | Heat estimate default, 30 J/TH. |
 | `COMPOSE_PROFILES=mdk` + `HASHU_MDK_DOMAIN`, `MDK_DEMO_USER`, `MDK_DEMO_PASSWORD` | no | The mock MDK dashboard demo. Off by default; when on, all three are required. |
 | `HASHU_REGISTRY`, `HASHU_IMAGE_TAG` | no | Image source for `docker compose pull` (default `ghcr.io/asherp`, `latest`). Point at your fork's registry to deploy your own builds. |
@@ -457,9 +457,13 @@ Bitaxe-class rig 1 THH is roughly 100 minutes of hashing. Three sources:
   key `btc-rent.py` uses) in `.env`. The mint reads `GET /rental?type=active`
   every minute and takes each rental's advertised hashrate and end time.
   If the account also has rentals mining somewhere else (the fx-faucet),
-  list the ones on the proxy in `HASHU_MRR_RENTAL_IDS=123,456`. The
-  operator GUI's *MiningRigRentals* card lists them and is greyed out
-  without a key.
+  list the ones on the proxy in `HASHU_MRR_RENTAL_IDS=123,456`. Or paste
+  the key pair (and rental ids) into the operator GUI's *MiningRigRentals*
+  card instead: the mint checks them with MRR, saves them in
+  `/data/mrr.json` (mode 0600) and starts syncing, no restart. A choice
+  saved there, including *Disconnect*, wins over the env on restart; delete
+  `mrr.json` to go back to the env. The card lists the synced rentals and
+  shows only the key's last 4 characters.
 - **Live hashrate of your own rigs** (a Bitaxe at home). In the operator
   GUI's *Live hashrate* card set a horizon (at least 1 hour): the measured
   hashrate of rigs filling this mint's orders × the horizon is added, the

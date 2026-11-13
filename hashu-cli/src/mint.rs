@@ -35,7 +35,7 @@ use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use clap::{Args, Subcommand, ValueEnum};
 use hashu_core::hashprice::{HashpriceOracle, HashpriceSample};
 use hashu_core::redemption::RedemptionLedger;
-use hashu_mint::capacity::{CapacityBook, Rental};
+use hashu_mint::capacity::CapacityBook;
 use hashu_mint::lightning::add_lightning_issuance;
 use hashu_mint::melt::{reopen_pending_quotes, HashrateMelter, METHOD as HASHRATE};
 use hashu_mint::oracle::{esplora, mrr};
@@ -57,6 +57,7 @@ use hashu_proxy::ProxyMetrics;
 
 use crate::checkout::{self, CheckoutState};
 use crate::landing;
+use crate::mrr_sync::{MrrCredentials, MrrSync};
 use crate::network::{default_esplora_url, parse_network};
 use crate::operator::{self, ControlledPricer, DaemonInfo, MintControls, OperatorState};
 use crate::orders::OrderBook;
@@ -509,55 +510,20 @@ fn usdt_pricer(
 }
 
 /// Poll MRR for the account's active rentals, if a key is configured.
-fn spawn_mrr_sync(args: &RunArgs, capacity: &Arc<CapacityBook>) {
-    let (Some(key), Some(secret)) = (
-        args.mrr_api_key.clone().filter(|k| !k.trim().is_empty()),
-        args.mrr_api_secret.clone().filter(|k| !k.trim().is_empty()),
-    ) else {
-        return;
+/// MRR rental sync: env credentials unless the operator GUI saved a choice
+/// in `mrr.json` (see [`crate::mrr_sync`]).
+fn start_mrr_sync(args: &RunArgs, capacity: &Arc<CapacityBook>) -> Result<Arc<MrrSync>> {
+    let env = match (&args.mrr_api_key, &args.mrr_api_secret) {
+        (Some(k), Some(s)) => MrrCredentials::new(k, s, &args.mrr_rental_ids),
+        _ => None,
     };
-    capacity.enable_mrr();
-    let ids: Vec<String> = args
-        .mrr_rental_ids
-        .iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let account = mrr::MrrAccount::with_base(
+    MrrSync::start(
+        capacity.clone(),
         args.mrr_api_base.clone(),
-        mrr::DEFAULT_ALGO.into(),
-        key,
-        secret,
-    );
-    let capacity = capacity.clone();
-    let every = Duration::from_secs(args.mrr_refresh_secs.max(15));
-    tracing::info!(rental_ids = ?ids, "capacity from MRR active rentals");
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(every);
-        loop {
-            tick.tick().await;
-            let result = account
-                .active_rentals()
-                .await
-                .map(|list| {
-                    list.into_iter()
-                        .filter(|r| ids.is_empty() || ids.contains(&r.id))
-                        .map(|r| Rental {
-                            id: r.id,
-                            label: r.rig_name,
-                            ths: r.ths,
-                            end_ms: (r.end_unix * 1000.0).max(0.0) as u64,
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .map_err(|e| e.to_string());
-            match &result {
-                Ok(r) => tracing::debug!(rentals = r.len(), "mrr rentals synced"),
-                Err(e) => tracing::warn!(error = %e, "mrr rental sync failed"),
-            }
-            capacity.set_mrr(result, hashu_mint::capacity::now_ms());
-        }
-    });
+        Duration::from_secs(args.mrr_refresh_secs),
+        Some(args.data_dir.join("mrr.json")),
+        env,
+    )
 }
 
 /// Parse `--contact` entries (`method:info`) into NUT-06 contact info.
@@ -619,7 +585,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         .with_context(|| format!("create {:?}", args.data_dir))?;
     // Rented hashrate: what the mint can still sell (operator GUI / MRR).
     let capacity = Arc::new(CapacityBook::load(args.data_dir.join("capacity.json"))?);
-    spawn_mrr_sync(&args, &capacity);
+    let mrr_sync = start_mrr_sync(&args, &capacity)?;
     // Live operator settings. Rails price at the base rate and the
     // controlled pricer adds the markup, so the GUI can change it.
     let controls = Arc::new(MintControls::with_capacity(
@@ -963,6 +929,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             started_ms,
             checkout: checkout.clone(),
             waitlist: waitlist.clone(),
+            mrr: mrr_sync.clone(),
         });
         let listener = tokio::net::TcpListener::bind(bind)
             .await
