@@ -106,7 +106,7 @@ is a supplier rig with no home pool.
 ### Sign up
 
 Open `https://mint.hashu.io/join/`, pick a name, and enter your Lightning
-address, your ask (sats per THH) and your horizon. The page checks the
+address, your ask (sats per THH, to the millisat) and your horizon. The page checks the
 address can be invoiced and supports payment verification (LUD-21
 `verify`; not every provider has it, and the page says so if yours
 doesn't), then shows your
