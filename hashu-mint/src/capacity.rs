@@ -22,17 +22,24 @@
 //! turn the limit off explicitly (`limit: false`) to sell uncapped.
 //!
 //! The operator can also count the mint's own connected rigs (a Bitaxe at
-//! home, say) by setting a live horizon: their measured hashrate × that
-//! horizon is added, the same rule supplier mints sell by. To avoid counting
-//! rented rigs twice (they mine on the proxy too), only measured hashrate
-//! above the running rentals' declared TH/s is counted:
+//! home, say) by setting a live horizon. They back a stock of TiH, the same
+//! rule supplier mints sell by ([`crate::stock`], #92): once per horizon it
+//! is restocked to what the rigs produce within it, and in between it only
+//! goes down as buyers take it, so the quantity holds still while the
+//! hashrate moves. To avoid counting rented rigs twice (they mine on the
+//! proxy too), only measured hashrate above the running rentals' declared
+//! TH/s is averaged:
 //!
 //! ```text
-//! live_tih = max(0, measured TH/s − rented TH/s) × live horizon (in TiH)
+//! restock:  live batch = max(left, EWMA(max(0, measured − rented)) × horizon
+//!                                  − owed the rentals do not cover)
+//! headroom  = max(0, rentals' TiH left − (owed − sold from the live batch))
+//!             + live batch left
 //! ```
 //!
-//! Live capacity rolls forward: it never ends, but it drops as soon as the
-//! rigs go quiet, so a mint that sold against it can end up oversold.
+//! The EWMA's half-life is horizon / 2. If the rigs go quiet the stock
+//! still stands until it sells, so a mint that sold against it can end up
+//! slow to deliver: the checkout ETA shows it.
 //!
 //! Rental `capacity_tih` is *declared* capacity (rentals × hours left), not the
 //! hashrate the proxy measures right now. Headroom below
@@ -47,6 +54,7 @@ use hashu_core::denom::tih_from_ths_hours;
 use serde::{Deserialize, Serialize};
 
 use crate::pricing::PricingError;
+use crate::stock::{Stock, StockView};
 
 /// Smallest purchase: 2^10 TiH = 1 PiH (≈ 0.31 THH), the same as the default
 /// smallest redemption (`melt::DEFAULT_MIN_TIH`), since a smaller voucher
@@ -109,6 +117,9 @@ struct Persisted {
     /// Count connected rigs' live hashrate × this many hours; `None` is off.
     #[serde(default)]
     live_horizon_hours: Option<f64>,
+    /// The stock the live rigs back (#92).
+    #[serde(default)]
+    live_stock: Stock,
 }
 
 #[derive(Debug, Default)]
@@ -118,7 +129,13 @@ struct Inner {
     mrr_error: Option<String>,
     owed_tih: f64,
     owed_ms: Option<u64>,
+    /// Running total the live stock is drawn down by; `None` until counted.
+    sold_tih: Option<f64>,
+    saved_ms: u64,
 }
+
+/// How often the hashrate average is written to disk between restocks.
+const LIVE_SAVE_EVERY_MS: u64 = 60_000;
 
 /// Rented capacity and what is already owed against it.
 #[derive(Debug, Default)]
@@ -169,10 +186,11 @@ pub struct LiveView {
     pub measured_ths: f64,
     /// Of that, TH/s already declared by running rentals.
     pub rented_ths: f64,
-    /// `max(0, measured − rented)`: what the horizon multiplies.
+    /// `max(0, measured − rented)`: what the stock is sized from.
     pub extra_ths: f64,
-    /// TiH this adds to capacity (0 while off).
+    /// TiH this adds to capacity: what is left of the stock (0 while off).
     pub tih: f64,
+    pub stock: StockView,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -286,7 +304,80 @@ impl CapacityBook {
             }
         }
         let mut g = self.inner.lock().unwrap();
+        let changed = g.p.live_horizon_hours != hours;
         g.p.live_horizon_hours = hours;
+        // A new horizon starts a new batch sized for it, once there is
+        // something to size it from; otherwise the next refresh stocks it.
+        if let (true, Some(h), Some(sold)) = (changed, hours, g.sold_tih) {
+            if g.p.live_stock.ewma.ths.is_some() {
+                let excess = self.owed_beyond_rentals(&g, now_ms());
+                g.p.live_stock.resize(h, excess, sold, now_ms());
+            }
+        }
+        self.save(&g.p);
+        Ok(())
+    }
+
+    /// Running total of TiH sold (and reserved by open quotes), from the
+    /// mint's quotes; the live stock is drawn down by it.
+    pub fn set_sold(&self, sold_tih: f64) {
+        self.inner.lock().unwrap().sold_tih = Some(sold_tih.max(0.0));
+    }
+
+    /// Owed TiH the running rentals cannot cover.
+    fn owed_beyond_rentals(&self, g: &Inner, now_ms: u64) -> f64 {
+        let rentals: f64 =
+            g.p.manual
+                .iter()
+                .chain(g.p.mrr.iter())
+                .map(|r| r.tih_left(now_ms))
+                .sum();
+        (g.owed_tih - rentals).max(0.0)
+    }
+
+    /// Sample the live rigs into the hashrate average and restock the live
+    /// stock if a horizon has passed. Call after [`Self::set_owed`] and
+    /// [`Self::set_sold`].
+    pub fn refresh_live(&self, now_ms: u64) {
+        let measured = self.live.lock().unwrap().as_ref().map(|LiveSource(f)| f());
+        let mut g = self.inner.lock().unwrap();
+        let (Some(h), Some(measured), Some(sold)) = (g.p.live_horizon_hours, measured, g.sold_tih)
+        else {
+            return;
+        };
+        let rented: f64 =
+            g.p.manual
+                .iter()
+                .chain(g.p.mrr.iter())
+                .filter(|r| r.end_ms > now_ms)
+                .map(|r| r.ths.max(0.0))
+                .sum();
+        let extra = (if measured.is_finite() { measured } else { 0.0 } - rented).max(0.0);
+        let excess = self.owed_beyond_rentals(&g, now_ms);
+        let restocked =
+            g.p.live_stock
+                .tick(Some(extra), h, excess, sold, now_ms, false);
+        if restocked {
+            tracing::info!(batch_tih = g.p.live_stock.batch_tih, "live stock restocked");
+        }
+        if restocked || now_ms.saturating_sub(g.saved_ms) >= LIVE_SAVE_EVERY_MS {
+            g.saved_ms = now_ms;
+            self.save(&g.p);
+        }
+    }
+
+    /// Restock the live stock now (the operator asked).
+    pub fn restock_live(&self, now_ms: u64) -> Result<(), String> {
+        let mut g = self.inner.lock().unwrap();
+        let Some(h) = g.p.live_horizon_hours else {
+            return Err("set a live horizon first".into());
+        };
+        let Some(sold) = g.sold_tih else {
+            return Err("still counting what the mint owes; try again in a few seconds".into());
+        };
+        let excess = self.owed_beyond_rentals(&g, now_ms);
+        g.p.live_stock.tick(None, h, excess, sold, now_ms, true);
+        g.saved_ms = now_ms;
         self.save(&g.p);
         Ok(())
     }
@@ -319,9 +410,25 @@ impl CapacityBook {
         let running = rentals.iter().filter(|r| r.rental.end_ms > now_ms);
         let rented_ths: f64 = running.clone().map(|r| r.rental.ths.max(0.0)).sum();
         let ends_ms = running.map(|r| r.rental.end_ms).max();
-        let live = live_view(measured, rented_ths, g.p.live_horizon_hours);
-        let capacity_tih: f64 = rentals.iter().map(|r| r.tih_left).sum::<f64>() + live.tih;
-        let headroom_tih = capacity_tih - g.owed_tih;
+        let sold = g.sold_tih.unwrap_or(0.0);
+        let mut live = live_view(measured, rented_ths, g.p.live_horizon_hours);
+        let rentals_tih: f64 = rentals.iter().map(|r| r.tih_left).sum();
+        let headroom_tih = if live.on {
+            let h = g.p.live_horizon_hours.unwrap_or(0.0);
+            live.stock = g.p.live_stock.view(h, sold);
+            live.tih = if g.sold_tih.is_some() {
+                live.stock.left_tih
+            } else {
+                0.0
+            };
+            // Sales from the live batch are already taken out of it; the
+            // rest of what is owed falls on the rentals.
+            let owed_rest = (g.owed_tih - live.stock.sold_tih).max(0.0);
+            (rentals_tih - owed_rest).max(0.0) + live.tih
+        } else {
+            rentals_tih - g.owed_tih
+        };
+        let capacity_tih = rentals_tih + live.tih;
         CapacitySnapshot {
             limit,
             limit_explicit: g.p.limit.is_some(),
@@ -374,11 +481,9 @@ fn live_view(measured_ths: Option<f64>, rented_ths: f64, horizon: Option<f64>) -
         measured_ths: measured,
         rented_ths: rented_ths.min(measured),
         extra_ths: extra,
-        tih: if on {
-            tih_from_ths_hours(extra, horizon.unwrap_or(0.0))
-        } else {
-            0.0
-        },
+        // Filled from the stock by the snapshot.
+        tih: 0.0,
+        stock: StockView::default(),
     }
 }
 
@@ -566,29 +671,39 @@ mod tests {
     }
 
     #[test]
-    fn live_hashrate_times_horizon_backs_sales() {
+    fn live_rigs_back_a_stock_that_holds_still() {
         let b = CapacityBook::new();
         let ths = Arc::new(Mutex::new(1.2));
         let t = ths.clone();
         b.set_live_source(Arc::new(move || *t.lock().unwrap()));
         // Measured, but off until the operator sets a horizon.
+        b.set_sold(0.0);
+        b.refresh_live(0);
         let s = b.snapshot(0);
         assert!(s.live.available && !s.live.on);
         assert_eq!(s.available_tih, Some(0));
         b.set_live_horizon(Some(24.0)).unwrap();
+        b.refresh_live(0);
         let s = b.snapshot(0);
         assert!((s.live.tih - 28.8 * T).abs() < 1e-6);
         assert_eq!(s.available_tih, Some((28.8 * T).floor() as u64));
-        b.set_owed(10.0 * T, 0);
-        assert_eq!(b.snapshot(0).available_tih, Some((18.8 * T).floor() as u64));
-        // The rig goes quiet: nothing left to sell, and the mint is oversold.
+        // A buyer takes 10 THH: owed and sold both rise, counted once.
+        b.set_owed(10.0 * T, H);
+        b.set_sold(10.0 * T);
+        b.refresh_live(H);
+        assert_eq!(b.snapshot(H).available_tih, Some((18.8 * T).floor() as u64));
+        // The rig goes quiet and the redemption fills: same stock on sale.
         *ths.lock().unwrap() = 0.0;
-        let s = b.snapshot(0);
-        assert_eq!(s.available_tih, Some(0));
-        assert!(s.headroom_tih < 0.0);
+        b.set_owed(0.0, 2 * H);
+        b.refresh_live(2 * H);
+        assert_eq!(
+            b.snapshot(2 * H).available_tih,
+            Some((18.8 * T).floor() as u64)
+        );
         // Off again.
         b.set_live_horizon(None).unwrap();
         assert!(!b.snapshot(0).live.on);
+        assert_eq!(b.snapshot(0).available_tih, Some(0));
     }
 
     #[test]
@@ -598,14 +713,42 @@ mod tests {
         b.set_manual(vec![rental(10.0, 2 * H)]);
         b.set_live_source(Arc::new(|| 11.0));
         b.set_live_horizon(Some(5.0)).unwrap();
+        b.set_sold(0.0);
+        b.refresh_live(0);
         let s = b.snapshot(0);
         assert!((s.live.extra_ths - 1.0).abs() < 1e-9);
         assert!((s.capacity_tih - 25.0 * T).abs() < 1e-6);
-        // Measuring less than rented adds nothing (and takes nothing away).
+        // Owed within what the rentals cover falls on them, not the stock.
+        b.set_owed(15.0 * T, 0);
+        let s = b.snapshot(0);
+        assert!((s.headroom_tih - 10.0 * T).abs() < 1e-6);
+        // Measuring less than rented: the stock already listed stays.
         b.set_live_source(Arc::new(|| 7.0));
+        b.refresh_live(H);
         let s = b.snapshot(0);
         assert_eq!(s.live.extra_ths, 0.0);
-        assert!((s.capacity_tih - 20.0 * T).abs() < 1e-6);
+        assert!((s.live.tih - 5.0 * T).abs() < 1e-6);
+    }
+
+    #[test]
+    fn live_stock_persists_and_restocks_on_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capacity.json");
+        let b = CapacityBook::load(path.clone()).unwrap();
+        b.set_live_source(Arc::new(|| 1.0));
+        b.set_live_horizon(Some(10.0)).unwrap();
+        assert!(b.restock_live(0).is_err());
+        b.set_sold(0.0);
+        b.refresh_live(0);
+        b.set_sold(5_000.0);
+        let left = b.snapshot(0).live.tih;
+        let again = CapacityBook::load(path).unwrap();
+        again.set_live_source(Arc::new(|| 1.0));
+        again.set_sold(5_000.0);
+        again.refresh_live(H);
+        assert!((again.snapshot(H).live.tih - left).abs() < 1e-6);
+        again.restock_live(H).unwrap();
+        assert!((again.snapshot(H).live.tih - 10.0 * T).abs() < 1e-3);
     }
 
     #[test]

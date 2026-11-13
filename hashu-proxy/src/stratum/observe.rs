@@ -93,7 +93,8 @@ pub fn observe_line(
             if let Some(id) = id {
                 if let Some(method) = pending.take(id) {
                     if method == "mining.submit" {
-                        let accepted = matches!(v.get("result").and_then(|r| r.as_bool()), Some(true));
+                        let accepted =
+                            matches!(v.get("result").and_then(|r| r.as_bool()), Some(true));
                         if accepted {
                             metrics.shares_accepted.fetch_add(1, Ordering::Relaxed);
                             tracing::info!(id, "share accepted");

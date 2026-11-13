@@ -62,7 +62,7 @@ pub struct KeysetEntry {
 pub enum Transition {
     Initial,
     NoOp,
-    Rotated { /* prior active id */ },
+    Rotated {/* prior active id */},
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

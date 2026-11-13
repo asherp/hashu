@@ -759,7 +759,10 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     mint.start().await.context("start mint")?;
     // Count what is owed before the first quote, then keep it current.
     match operator::obligations(&mint, &ledger).await {
-        Ok(o) => capacity.set_owed(o.total_owed(), hashu_mint::capacity::now_ms()),
+        Ok(o) => {
+            capacity.set_owed(o.total_owed(), hashu_mint::capacity::now_ms());
+            capacity.set_sold(o.stock_sold as f64);
+        }
         Err(e) => tracing::warn!(error = %e, "could not count obligations"),
     }
     tokio::spawn(operator::run_owed_refresher(

@@ -14,4 +14,5 @@ pub mod oracle;
 pub mod payment;
 pub mod phoenixd;
 pub mod pricing;
+pub mod stock;
 pub mod tether;

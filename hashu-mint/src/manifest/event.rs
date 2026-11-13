@@ -119,8 +119,7 @@ mod tests {
 
     fn fixed_keys() -> Keys {
         // Deterministic test key. Hex of 32 bytes.
-        Keys::parse("0000000000000000000000000000000000000000000000000000000000000001")
-            .unwrap()
+        Keys::parse("0000000000000000000000000000000000000000000000000000000000000001").unwrap()
     }
 
     #[test]
