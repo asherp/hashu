@@ -49,6 +49,7 @@ code { font:14px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-a
     <input id="horizon" type="number" min="1" step="1" value="24" required>
 
     <button id="go">Create my mint</button>
+    <p class="hint" id="waitlist" hidden>Rigs not ready yet? <a href="/waitlist/">Join the waitlist</a> instead.</p>
     <div class="err" id="err" hidden></div>
   </form>
 
@@ -72,6 +73,9 @@ code { font:14px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-a
 <script>
 const $ = (id) => document.getElementById(id);
 $('base').textContent = '.' + location.hostname;
+fetch('/waitlist/api', { cache: 'no-store' })
+  .then((r) => { if (r.ok) $('waitlist').hidden = false; })
+  .catch(() => {});
 $('join').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('err').hidden = true;
