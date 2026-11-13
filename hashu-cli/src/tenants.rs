@@ -48,7 +48,9 @@ use hashu_proxy::suppliers::{secret_hash, valid_name, Check, RegisterError, Supp
 use serde_json::json;
 use tower::ServiceExt;
 
-use crate::supplier::{HashrateFn, SupplierCapacity, SupplierPricer, SupplierSettings};
+use crate::supplier::{
+    HashrateFn, SupplierBook, SupplierCapacity, SupplierPricer, SupplierSettings,
+};
 
 /// Checks a Lightning address can be invoiced and verified.
 pub type ProbeFn =
@@ -198,6 +200,9 @@ impl Tenants {
         new.save(&self.cfg.dir.join(name))
             .map_err(|e| e.to_string())?;
         *t.settings.write().unwrap_or_else(|e| e.into_inner()) = new.clone();
+        if old.horizon_hours != new.horizon_hours {
+            t.pricer.horizon_changed(hashu_mint::capacity::now_ms());
+        }
         if rail_changed {
             if let Some(t) = self.mints.lock().await.remove(name) {
                 let name = name.to_string();
@@ -212,12 +217,12 @@ impl Tenants {
         let dir = self.cfg.dir.join(name);
         std::fs::create_dir_all(&dir).with_context(|| format!("create {dir:?}"))?;
         let settings = Arc::new(RwLock::new(SupplierSettings::load(&dir)?));
-        let owed = Arc::new(Mutex::new(0.0));
+        let book = Arc::new(Mutex::new(SupplierBook::load(&dir)?));
         let pricer = Arc::new(SupplierPricer::new(
             name,
             settings.clone(),
             self.cfg.hashrate.clone(),
-            owed.clone(),
+            book,
         ));
         let seed = crate::mint::load_or_create_seed(&dir)?;
         let db_path = dir.join("mint.sqlite");
@@ -324,7 +329,7 @@ impl Tenants {
             mint.clone(),
             self.cfg.ledger.clone(),
             name.to_string(),
-            owed,
+            pricer.clone(),
         ));
         let app = cdk_axum::create_mint_router(mint.clone(), methods)
             .await
@@ -410,21 +415,26 @@ impl Tenants {
     }
 }
 
-/// Keep `owed` current: TiH in circulation on the mint plus what its open
-/// redemptions still have to deliver.
+/// Keep the stock's inputs current: TiH in circulation on the mint plus
+/// what its open redemptions still have to deliver, the running sold total,
+/// and the rigs' hashrate; restock when a horizon has passed.
 async fn refresh_owed(
     mint: Arc<Mint>,
     ledger: Arc<RedemptionLedger>,
     name: String,
-    owed: Arc<Mutex<f64>>,
+    pricer: Arc<SupplierPricer>,
 ) {
     let mut tick = tokio::time::interval(OWED_REFRESH);
     loop {
         tick.tick().await;
         match crate::operator::obligations_for(&mint, &ledger, Some(&name)).await {
             Ok(o) => {
-                *owed.lock().unwrap_or_else(|e| e.into_inner()) =
-                    o.in_circulation as f64 + o.open_remaining_tih;
+                pricer.refresh(
+                    o.in_circulation as f64 + o.open_remaining_tih,
+                    o.stock_sold as f64,
+                    hashu_mint::capacity::now_ms(),
+                    false,
+                );
             }
             Err(e) => tracing::warn!(supplier = %name, error = %e, "could not count obligations"),
         }
@@ -449,6 +459,7 @@ fn supplier_router(ctx: SupplierCtx) -> axum::Router {
         .route("/", get(|| async { Html(SUPPLIER_PAGE) }))
         .route("/api/supplier", get(supplier_status))
         .route("/api/settings", get(get_settings).post(post_settings))
+        .route("/api/restock", axum::routing::post(post_restock))
         .with_state(ctx)
 }
 
@@ -508,6 +519,24 @@ async fn post_settings(
     match tenants.update_settings(&ctx.name, new).await {
         Ok(s) => Json(s).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+/// Restock now from the current hashrate average (the supplier asked),
+/// instead of waiting for the horizon to pass.
+async fn post_restock(State(ctx): State<SupplierCtx>, headers: HeaderMap) -> Response {
+    let Some(tenants) = ctx.tenants() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    if !authorized(&tenants, &ctx.name, &headers) {
+        return (StatusCode::UNAUTHORIZED, "wrong worker secret").into_response();
+    }
+    match tenants.get(&ctx.name).await {
+        Ok(t) => match t.pricer.restock_now(hashu_mint::capacity::now_ms()) {
+            Ok(cap) => Json(cap).into_response(),
+            Err(e) => (StatusCode::SERVICE_UNAVAILABLE, e).into_response(),
+        },
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response(),
     }
 }
 
@@ -860,8 +889,17 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::OK, "{body}");
-        // 1 TH/s × 2 h = 2 THH ≈ 6,548 TiH.
-        assert_eq!(t.capacity("alice").await.unwrap().available_tih, 6_548);
+        // 1 TH/s × 2 h = 2 THH ≈ 6,548 TiH, once the mint has counted
+        // what it owes and stocked its first batch.
+        let mut available = 0;
+        for _ in 0..100 {
+            available = t.capacity("alice").await.unwrap().available_tih;
+            if available > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(available, 6_548);
         let (s, body) = send(
             &app,
             "POST",

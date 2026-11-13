@@ -34,8 +34,11 @@
 //!   hours | null }`, every field optional. `rentals` replaces the
 //!   operator's manual list (MRR rentals sync on their own; the GUI no
 //!   longer adds manual ones); `limit: null` goes back to automatic.
-//!   `live_horizon_hours` counts the connected rigs' measured hashrate
-//!   (above what rentals declare) × that many hours; `null` turns it off.
+//!   `live_horizon_hours` sells a stock backed by the connected rigs
+//!   (above what rentals declare): restocked once per horizon to their
+//!   EWMA hashrate (half-life horizon / 2) × the horizon, drawn down by
+//!   sales in between (#92); `null` turns it off. `"restock_live": true`
+//!   restocks now instead of waiting for the horizon.
 //!
 //! `POST /api/controls` settings are saved to `operator-settings.json` in the
 //! data dir and capacity to `capacity.json`, so both survive a restart; a
@@ -485,9 +488,17 @@ async fn set_capacity(State(s): State<Arc<OperatorState>>, body: Bytes) -> Respo
             return bad(e);
         }
     }
-    // Owed may have moved since the last refresh; recount before answering.
+    // Owed may have moved since the last refresh; recount before answering
+    // (this also stocks a first live batch for a newly set horizon).
     if let Ok(o) = obligations(&s.mint, &s.control.ledger).await {
         s.controls.capacity.set_owed(o.total_owed(), now_ms());
+        s.controls.capacity.set_sold(o.stock_sold as f64);
+        s.controls.capacity.refresh_live(now_ms());
+    }
+    if v.get("restock_live").and_then(Value::as_bool) == Some(true) {
+        if let Err(e) = s.controls.capacity.restock_live(now_ms()) {
+            return bad(e);
+        }
     }
     let snap = s.controls.capacity.snapshot(now_ms());
     tracing::info!(
@@ -627,6 +638,10 @@ pub struct Obligations {
     pub test_minted: u64,
     pub open_count: u64,
     pub open_remaining_tih: f64,
+    /// Running total a stock is drawn down by (#92): TiH paid for (or
+    /// issued) over every quote, plus open quotes that have not expired,
+    /// which reserve stock until they do.
+    pub stock_sold: u64,
 }
 
 impl Obligations {
@@ -683,12 +698,21 @@ pub async fn obligations_for(
     let mut paid_not_minted = 0u64;
     let mut quotes_open = 0u64;
     let mut test_minted = 0u64;
+    let mut stock_sold = 0u64;
+    let now_s = now_ms() / 1000;
     for q in mint.mint_quotes().await? {
         if q.unit != tih_unit() {
             continue;
         }
         let issued = q.amount_issued().value();
         let paid = q.amount_paid().value();
+        stock_sold += if paid.max(issued) > 0 {
+            paid.max(issued)
+        } else if q.expiry > now_s {
+            q.amount.as_ref().map(|a| a.value()).unwrap_or(0)
+        } else {
+            0
+        };
         // Operator test mints are marked paid with an `operator-test-` id.
         if q.payments
             .iter()
@@ -730,6 +754,7 @@ pub async fn obligations_for(
         test_minted,
         open_count,
         open_remaining_tih,
+        stock_sold,
     })
 }
 
@@ -744,7 +769,11 @@ pub async fn run_owed_refresher(
     loop {
         tick.tick().await;
         match obligations(&mint, &ledger).await {
-            Ok(o) => capacity.set_owed(o.total_owed(), now_ms()),
+            Ok(o) => {
+                capacity.set_owed(o.total_owed(), now_ms());
+                capacity.set_sold(o.stock_sold as f64);
+                capacity.refresh_live(now_ms());
+            }
             Err(e) => tracing::warn!(error = %e, "could not count obligations"),
         }
     }
@@ -753,6 +782,7 @@ pub async fn run_owed_refresher(
 async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
     let o = obligations(&s.mint, &s.control.ledger).await?;
     s.controls.capacity.set_owed(o.total_owed(), now_ms());
+    s.controls.capacity.set_sold(o.stock_sold as f64);
     let sold_total: u64 = o.sold.values().sum();
 
     // ---- redemptions --------------------------------------------------

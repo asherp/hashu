@@ -183,7 +183,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
           </table>
         </div>
       </div>
-      <p class="note" id="cap-note">Capacity = MRR rentals (TH/s × hours left) + live hashrate × horizon. Allocated + available = total. Mint quotes beyond what is available are refused, so with neither nothing is sold (checkout shows Sold out). Off sells uncapped.</p>
+      <p class="note" id="cap-note">Capacity = MRR rentals (TH/s × hours left) + what is left of the live stock. Allocated + available = total. Mint quotes beyond what is available are refused, so with neither nothing is sold (checkout shows Sold out). Off sells uncapped.</p>
     </section>
 
     <section class="card" aria-labelledby="h-live">
@@ -196,9 +196,10 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
         <label for="live-hours">Horizon</label>
         <input type="number" id="live-hours" step="any" min="1" placeholder="hours" aria-label="Live horizon in hours"> <span>hours</span>
         <button class="act primary" id="btn-live">Count live hashrate</button>
+        <button class="act" id="btn-live-restock">Restock now</button>
         <button class="act" id="btn-live-off">Stop counting</button>
       </div>
-      <p class="note">Rigs mining on this proxy for this mint (your own rigs, e.g. a Bitaxe) back sales at their measured hashrate × the horizon, the same rule supplier mints sell by. Hashrate rented rigs already declare is not counted twice. Capacity follows the measurement: if the rigs go quiet, it drops and the mint can end up oversold. Rigs that only mine to their home pool, or serve a supplier's mint, are not counted.</p>
+      <p class="note">Rigs mining on this proxy for this mint (your own rigs, e.g. a Bitaxe) back a stock of TiH, the same rule supplier mints sell by. Once per horizon it is restocked to what the rigs produce within it: their average hashrate (EWMA, half-life = horizon ÷ 2) × the horizon, less what the mint owes beyond its rentals. In between, only sales take it down, so the quantity on sale holds still while the hashrate moves; the checkout's delivery ETA moves instead. A restock never takes away stock already listed; changing the horizon starts a new batch. Hashrate rented rigs already declare is not counted twice. Rigs that only mine to their home pool, or serve a supplier's mint, are not counted.</p>
     </section>
 
     <section class="card" aria-labelledby="h-mrr" id="mrr-card">
@@ -531,11 +532,12 @@ function render () {
     $('t-avail-sub').textContent = !cap.limit ? 'sales not capped'
       : cap.below_min ? `${fmtTih(cap.headroom_tih, 0)} TiH headroom, below the 1,024 TiH minimum`
       : [cap.rented_ths > 0 ? `${fmtTih(cap.rented_ths, 1)} TH/s rented${cap.ends_ms ? ` · ends in ${fmtDur((cap.ends_ms - op.now_ms) / 1000)}` : ''}` : '',
-          lv && lv.on ? `${fmtTih(lv.extra_ths, 2)} TH/s live × ${fmtTih(lv.horizon_hours, 0)} h` : ''].filter(Boolean).join(' · ') || 'no rentals or live hashrate: sold out'
-    $('cap-bar').innerHTML = capBar(cap.capacity_tih, cap.owed_tih, Math.max(cap.headroom_tih, 0), (n) => fmtTih(n, 0))
+          lv && lv.on ? `${fmtTih(lv.tih, 0)} TiH live stock` : ''].filter(Boolean).join(' · ') || 'no rentals or live hashrate: sold out'
+    // With a live stock, sales are already taken out of it: total = allocated + available.
+    $('cap-bar').innerHTML = capBar(lv && lv.on ? cap.owed_tih + Math.max(cap.headroom_tih, 0) : cap.capacity_tih, cap.owed_tih, Math.max(cap.headroom_tih, 0), (n) => fmtTih(n, 0))
     $('cap').innerHTML = kv([
       ['Rented now', `${fmtTih(cap.rented_ths, 2)} TH/s`],
-      ['Live hashrate counted', lv && lv.on ? `${fmtTih(lv.tih)} TiH` : 'off'],
+      ['Live stock left', lv && lv.on ? `${fmtTih(lv.tih)} TiH` : 'off'],
       ['Total capacity', fmtTih(cap.capacity_tih)],
       ['Allocated (sold, or still being delivered)', fmtTih(cap.owed_tih)],
       [cap.headroom_tih < 0 ? 'Oversold by' : 'Available to buy', cap.limit ? fmtTih(Math.abs(cap.headroom_tih)) + (cap.below_min ? ' (below the 1,024 TiH minimum purchase: sold out)' : '') : `${fmtTih(Math.max(cap.headroom_tih, 0))} (not enforced)`, 'total'],
@@ -563,11 +565,18 @@ function render () {
         ['Already declared by rentals', `${fmtTih(lv.rented_ths, 2)} TH/s`],
         ['Counted', `${fmtTih(lv.extra_ths, 2)} TH/s`],
         ['Horizon', lv.horizon_hours != null ? `${fmtTih(lv.horizon_hours, 1)} h` : 'not set'],
-        ['Adds to capacity', lv.on ? `${fmtTih(lv.tih)} TiH` : '0 TiH (off)', 'total']
+        ...(lv.on && lv.stock ? [
+          [`Average (half-life ${fmtTih(lv.stock.half_life_hours, 1)} h)`, `${fmtTih(lv.stock.ewma_ths, 2)} TH/s`],
+          ['Last batch', `${fmtTih(lv.stock.batch_tih)} TiH${lv.stock.restocked_ms ? `, ${fmtDur((op.now_ms - lv.stock.restocked_ms) / 1000)} ago` : ''}`],
+          ['Sold from it', `${fmtTih(lv.stock.sold_tih)} TiH`],
+          ['Next restock', lv.stock.next_restock_ms ? (lv.stock.next_restock_ms > op.now_ms ? `in ${fmtDur((lv.stock.next_restock_ms - op.now_ms) / 1000)}` : 'due') : 'when the rigs report hashrate']
+        ] : []),
+        ['Stock left for sale', lv.on ? `${fmtTih(lv.tih)} TiH` : '0 TiH (off)', 'total']
       ])
       if (!state.liveDirty && document.activeElement !== $('live-hours')) $('live-hours').value = lv.horizon_hours != null ? lv.horizon_hours : ''
       $('btn-live').textContent = lv.on ? 'Update horizon' : 'Count live hashrate'
       $('btn-live-off').disabled = lv.horizon_hours == null
+      $('btn-live-restock').disabled = !lv.on
     }
 
     // MRR: driven by the API only; greyed out without credentials.
@@ -823,6 +832,9 @@ $('btn-live').addEventListener('click', async () => {
   if (!(hours >= 1)) return alertMsg('Enter a horizon of at least 1 hour')
   state.liveDirty = false
   await setCapacity({ live_horizon_hours: hours })
+})
+$('btn-live-restock').addEventListener('click', async () => {
+  await setCapacity({ restock_live: true })
 })
 $('btn-live-off').addEventListener('click', async () => {
   state.liveDirty = false

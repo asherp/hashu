@@ -6,9 +6,11 @@
 //!   1,024 TiH; #90). Every mint quotes in the same unit, so asks compare
 //!   and orders can be matched across suppliers at Lightning's resolution.
 //!   ≈ 625 msat/PiH is ≈ 2 sats per THH;
-//! - `horizon_hours`: how far ahead they sell (Asher, 2026-11-11). TiH for
-//!   sale = measured hashrate of their verified rigs × horizon − TiH their
-//!   mint already owes;
+//! - `horizon_hours`: how far ahead they sell (Asher, 2026-11-11). Once per
+//!   horizon the mint restocks to what their verified rigs produce within
+//!   it (EWMA hashrate, half-life horizon / 2, × horizon − TiH owed); between
+//!   restocks the stock only goes down as buyers take it, so the quantity
+//!   holds still and the delivery ETA moves (#92, [`hashu_mint::stock`]);
 //! - `lightning_address`: where buyers pay (LUD-16 + LUD-21, see
 //!   [`hashu_mint::lnaddress`]).
 //!
@@ -18,10 +20,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::{Context, Result};
-use hashu_core::denom::{msat_for_tih, tih_from_ths_hours};
+use hashu_core::denom::msat_for_tih;
 use hashu_mint::capacity::MIN_PURCHASE_TIH;
 use hashu_mint::lnaddress::LightningAddress;
 use hashu_mint::pricing::{PricingError, TihPricer};
+use hashu_mint::stock::{Stock, StockView};
 use serde::{Deserialize, Serialize};
 
 /// Selling horizon until the supplier picks one.
@@ -98,14 +101,61 @@ impl SupplierSettings {
 /// Live hashrate (H/s) of a supplier's verified rigs.
 pub type HashrateFn = Arc<dyn Fn(&str) -> f64 + Send + Sync>;
 
-/// Prices a supplier's TiH at their ask, capped at what their rigs can
-/// deliver within their horizon.
+/// What a supplier mint owes and has sold, and its stock (#92).
+#[derive(Debug, Default)]
+pub struct SupplierBook {
+    /// TiH the mint already owes: in circulation plus open redemptions.
+    pub owed_tih: f64,
+    /// Running total the stock is drawn down by
+    /// ([`crate::operator::Obligations::stock_sold`]).
+    pub sold_tih: f64,
+    /// `owed`/`sold` have been counted at least once.
+    pub counted: bool,
+    pub stock: Stock,
+    path: Option<PathBuf>,
+    saved_ms: u64,
+}
+
+impl SupplierBook {
+    /// A book whose stock is kept in `<dir>/stock.json`.
+    pub fn load(dir: &Path) -> Result<Self> {
+        let path = dir.join("stock.json");
+        let stock = match std::fs::read(&path) {
+            Ok(b) => serde_json::from_slice(&b).with_context(|| format!("read {path:?}"))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Stock::default(),
+            Err(e) => return Err(e).with_context(|| format!("read {path:?}")),
+        };
+        Ok(Self {
+            stock,
+            path: Some(path),
+            ..Self::default()
+        })
+    }
+
+    fn save(&mut self, now_ms: u64) {
+        let Some(path) = &self.path else { return };
+        let tmp = path.with_extension("tmp");
+        let res = serde_json::to_vec_pretty(&self.stock)
+            .map_err(anyhow::Error::from)
+            .and_then(|b| Ok(std::fs::write(&tmp, b)?))
+            .and_then(|_| Ok(std::fs::rename(&tmp, path)?));
+        match res {
+            Ok(()) => self.saved_ms = now_ms,
+            Err(e) => tracing::warn!(?path, error = %e, "could not save stock"),
+        }
+    }
+}
+
+/// How often the hashrate average is written to disk between restocks.
+const STOCK_SAVE_EVERY_MS: u64 = 60_000;
+
+/// Prices a supplier's TiH at their ask, from a stock restocked once per
+/// horizon to what their rigs produce within it (#92).
 pub struct SupplierPricer {
     name: String,
     settings: Arc<RwLock<SupplierSettings>>,
     hashrate: HashrateFn,
-    /// TiH the mint already owes: in circulation plus open redemptions.
-    owed: Arc<Mutex<f64>>,
+    book: Arc<Mutex<SupplierBook>>,
 }
 
 impl std::fmt::Debug for SupplierPricer {
@@ -119,13 +169,16 @@ impl std::fmt::Debug for SupplierPricer {
 /// A supplier mint's capacity right now.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct SupplierCapacity {
+    /// Measured hashrate right now (the stock is sized from `stock.ewma_ths`).
     pub hashrate_ths: f64,
     pub horizon_hours: f64,
+    /// TiH stocked at the last restock.
     pub capacity_tih: f64,
     pub owed_tih: f64,
     pub available_tih: u64,
-    /// Some headroom, but under the minimum purchase.
+    /// Some stock left, but under the minimum purchase.
     pub below_min: bool,
+    pub stock: StockView,
 }
 
 impl SupplierPricer {
@@ -133,39 +186,96 @@ impl SupplierPricer {
         name: impl Into<String>,
         settings: Arc<RwLock<SupplierSettings>>,
         hashrate: HashrateFn,
-        owed: Arc<Mutex<f64>>,
+        book: Arc<Mutex<SupplierBook>>,
     ) -> Self {
         Self {
             name: name.into(),
             settings,
             hashrate,
-            owed,
+            book,
         }
     }
 
-    pub fn capacity(&self) -> SupplierCapacity {
-        let horizon_hours = self
-            .settings
+    fn horizon(&self) -> f64 {
+        self.settings
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .horizon_hours;
-        let hashrate_ths = ((self.hashrate)(&self.name) / 1e12).max(0.0);
-        let capacity_tih = tih_from_ths_hours(hashrate_ths, horizon_hours);
-        let owed_tih = *self.owed.lock().unwrap_or_else(|e| e.into_inner());
-        let headroom = capacity_tih - owed_tih;
-        let available = headroom.floor();
-        let below_min = headroom > 0.0 && headroom < MIN_PURCHASE_TIH as f64;
+            .horizon_hours
+    }
+
+    fn measured_ths(&self) -> f64 {
+        ((self.hashrate)(&self.name) / 1e12).max(0.0)
+    }
+
+    /// Record what the mint owes and has sold, sample the hashrate, and
+    /// restock if a horizon has passed (or `force`). Returns whether it
+    /// restocked.
+    pub fn refresh(&self, owed_tih: f64, sold_tih: f64, now_ms: u64, force: bool) -> bool {
+        let horizon = self.horizon();
+        let ths = self.measured_ths();
+        let mut b = self.book.lock().unwrap_or_else(|e| e.into_inner());
+        b.owed_tih = owed_tih.max(0.0);
+        b.sold_tih = sold_tih.max(0.0);
+        b.counted = true;
+        let (owed, sold) = (b.owed_tih, b.sold_tih);
+        let restocked = b.stock.tick(Some(ths), horizon, owed, sold, now_ms, force);
+        if restocked {
+            tracing::info!(supplier = %self.name, batch_tih = b.stock.batch_tih, "restocked");
+        }
+        if restocked || now_ms.saturating_sub(b.saved_ms) >= STOCK_SAVE_EVERY_MS {
+            b.save(now_ms);
+        }
+        restocked
+    }
+
+    /// Restock now, at the current average (the supplier asked).
+    /// Refused until owed and sold have been counted.
+    pub fn restock_now(&self, now_ms: u64) -> Result<SupplierCapacity, String> {
+        let (owed, sold, counted) = {
+            let b = self.book.lock().unwrap_or_else(|e| e.into_inner());
+            (b.owed_tih, b.sold_tih, b.counted)
+        };
+        if !counted {
+            return Err("still counting what this mint owes; try again in a few seconds".into());
+        }
+        self.refresh(owed, sold, now_ms, true);
+        Ok(self.capacity())
+    }
+
+    /// The horizon changed: size a new batch for it (may shrink). Before
+    /// the first count there is nothing to resize; the first refresh
+    /// stocks at the new horizon.
+    pub fn horizon_changed(&self, now_ms: u64) {
+        let horizon = self.horizon();
+        let mut b = self.book.lock().unwrap_or_else(|e| e.into_inner());
+        if !b.counted || b.stock.ewma.ths.is_none() {
+            return;
+        }
+        let (owed, sold) = (b.owed_tih, b.sold_tih);
+        b.stock.resize(horizon, owed, sold, now_ms);
+        b.save(now_ms);
+    }
+
+    pub fn capacity(&self) -> SupplierCapacity {
+        let horizon_hours = self.horizon();
+        let hashrate_ths = self.measured_ths();
+        let b = self.book.lock().unwrap_or_else(|e| e.into_inner());
+        let stock = b.stock.view(horizon_hours, b.sold_tih);
+        let left = if b.counted { stock.left_tih } else { 0.0 };
+        let below_min = left > 0.0 && left < MIN_PURCHASE_TIH as f64;
+        let available = left.floor();
         SupplierCapacity {
             hashrate_ths,
             horizon_hours,
-            capacity_tih,
-            owed_tih,
+            capacity_tih: stock.batch_tih,
+            owed_tih: b.owed_tih,
             available_tih: if available.is_finite() && !below_min && available > 0.0 {
                 available as u64
             } else {
                 0
             },
             below_min,
+            stock,
         }
     }
 }
@@ -196,7 +306,9 @@ impl TihPricer for SupplierPricer {
 mod tests {
     use super::*;
 
-    fn pricer(ths: f64, ask: Option<u64>, horizon: f64, owed: f64) -> SupplierPricer {
+    const H: u64 = 3_600_000;
+
+    fn live_pricer(ths: Arc<Mutex<f64>>, ask: Option<u64>, horizon: f64) -> SupplierPricer {
         SupplierPricer::new(
             "alice",
             Arc::new(RwLock::new(SupplierSettings {
@@ -204,9 +316,86 @@ mod tests {
                 horizon_hours: horizon,
                 lightning_address: None,
             })),
-            Arc::new(move |n: &str| if n == "alice" { ths * 1e12 } else { 0.0 }),
-            Arc::new(Mutex::new(owed)),
+            Arc::new(move |n: &str| {
+                if n == "alice" {
+                    *ths.lock().unwrap() * 1e12
+                } else {
+                    0.0
+                }
+            }),
+            Arc::new(Mutex::new(SupplierBook::default())),
         )
+    }
+
+    /// A pricer after its first count, so the first batch is stocked.
+    fn pricer(ths: f64, ask: Option<u64>, horizon: f64, owed: f64) -> SupplierPricer {
+        let p = live_pricer(Arc::new(Mutex::new(ths)), ask, horizon);
+        p.refresh(owed, 0.0, 0, false);
+        p
+    }
+
+    #[test]
+    fn nothing_for_sale_before_the_first_count() {
+        let p = live_pricer(Arc::new(Mutex::new(1.0)), Some(600), 24.0);
+        assert_eq!(p.capacity().available_tih, 0);
+        assert!(p.restock_now(0).is_err());
+    }
+
+    #[test]
+    fn stock_holds_still_while_hashrate_moves_and_restocks_per_horizon() {
+        let ths = Arc::new(Mutex::new(1.0));
+        let p = live_pricer(ths.clone(), Some(600), 24.0);
+        p.refresh(0.0, 0.0, 0, false);
+        let first = p.capacity().available_tih;
+        // 1 TH/s × 24 h ≈ 78,580 TiH.
+        assert_eq!(first, 78_580);
+        // Hashrate swings within the horizon: same quantity on sale.
+        for (h, t) in [(1, 3.0), (2, 0.1), (5, 2.0), (23, 0.0)] {
+            *ths.lock().unwrap() = t;
+            p.refresh(0.0, 0.0, h * H, false);
+            assert_eq!(p.capacity().available_tih, first);
+        }
+        // A buyer takes 10,000; a redemption delivering (owed falling) does
+        // not put it back.
+        p.refresh(10_000.0, 10_000.0, 23 * H + 1, false);
+        assert_eq!(p.capacity().available_tih, first - 10_000);
+        p.refresh(2_000.0, 10_000.0, 23 * H + 2, false);
+        assert_eq!(p.capacity().available_tih, first - 10_000);
+        // At the horizon it restocks from the average, minus what is owed.
+        *ths.lock().unwrap() = 1.0;
+        assert!(p.refresh(2_000.0, 10_000.0, 24 * H, false));
+        let c = p.capacity();
+        assert_eq!(c.stock.restocked_ms, Some(24 * H));
+        assert!(c.stock.ewma_ths > 0.0 && c.stock.ewma_ths < 3.0);
+        let fresh = hashu_core::denom::tih_from_ths_hours(c.stock.ewma_ths, 24.0) - 2_000.0;
+        let left = (first - 10_000) as f64;
+        assert_eq!(c.available_tih, fresh.max(left).floor() as u64);
+    }
+
+    #[test]
+    fn stock_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let ths = 1.0;
+        let mk = || {
+            SupplierPricer::new(
+                "alice",
+                Arc::new(RwLock::new(SupplierSettings {
+                    ask_msat_per_pih: Some(600),
+                    ..Default::default()
+                })),
+                Arc::new(move |_: &str| ths * 1e12),
+                Arc::new(Mutex::new(SupplierBook::load(dir.path()).unwrap())),
+            )
+        };
+        let p = mk();
+        p.refresh(0.0, 0.0, 0, false);
+        p.refresh(0.0, 5_000.0, H, false);
+        let left = p.capacity().available_tih;
+        drop(p);
+        let again = mk();
+        // Same running total after the restart: no refill.
+        again.refresh(0.0, 5_000.0, 2 * H, false);
+        assert_eq!(again.capacity().available_tih, left);
     }
 
     #[test]

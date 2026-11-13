@@ -467,15 +467,20 @@ Bitaxe-class rig (≈ 1.1 TiH/s) 1,024 TiH is about 15 minutes of hashing. Three
   `mrr.json` to go back to the env. The card lists the synced rentals and
   shows only the key's last 4 characters.
 - **Live hashrate of your own rigs** (a Bitaxe at home). In the operator
-  GUI's *Live hashrate* card set a horizon (at least 1 hour): the measured
-  hashrate of rigs filling this mint's orders × the horizon is added, the
-  same rule supplier mints sell by. Only hashrate above what running
+  GUI's *Live hashrate* card set a horizon (at least 1 hour): the rigs
+  filling this mint's orders back a stock of TiH, the same rule supplier
+  mints sell by (#92). Once per horizon it is restocked to their average
+  hashrate (EWMA, half-life = horizon / 2) × the horizon, less what the
+  mint owes beyond its rentals; in between only sales take it down, so the
+  quantity on sale holds still and the checkout ETA moves instead. The
+  stock is kept in `capacity.json`. Only hashrate above what running
   rentals declare counts, so rented rigs are not counted twice. Rigs count
   when they serve this mint: those mining as `HASHU_OPERATOR_WORKER.<rig>`,
   or any unregistered rig when that variable is unset. Home-pool-only and
-  supplier rigs do not. Capacity follows the measurement, so if the rigs
-  go quiet it drops and the mint can end up oversold. API:
-  `{"live_horizon_hours": 24}`, `null` turns it off.
+  supplier rigs do not. If the rigs go quiet the listed stock still
+  stands until it sells, so delivery slows rather than the stock vanishing.
+  API: `{"live_horizon_hours": 24}`, `null` turns it off,
+  `{"restock_live": true}` restocks now.
 - **By hand**, through the API only (the GUI no longer adds manual
   rentals; it lists any left over so you can remove them):
 
