@@ -170,15 +170,13 @@ impl SessionState {
     fn ingest_p2m_notification(&mut self, method: &str, v: &Value) -> SessionEvent {
         let params = v.get("params").and_then(|p| p.as_array());
         match method {
-            "mining.set_difficulty" => {
-                match params.and_then(|p| p.first()).and_then(|x| x.as_f64()) {
-                    Some(d) => {
-                        self.current_difficulty = Some(d);
-                        SessionEvent::SetDifficulty(d)
-                    }
-                    None => SessionEvent::Nothing,
+            "mining.set_difficulty" => match params.and_then(|p| p.first()).and_then(|x| x.as_f64()) {
+                Some(d) => {
+                    self.current_difficulty = Some(d);
+                    SessionEvent::SetDifficulty(d)
                 }
-            }
+                None => SessionEvent::Nothing,
+            },
             "mining.set_extranonce" => {
                 if let Some(p) = params {
                     self.absorb_extranonce(p);
@@ -351,10 +349,7 @@ mod tests {
     fn subscribe_response_populates_extranonces() {
         let mut s = SessionState::new();
         assert!(s.try_absorb_subscribe_response(&subscribe_response_line()));
-        assert_eq!(
-            s.extranonce1.as_deref(),
-            Some(&[0xab, 0xcd, 0xef, 0x01][..])
-        );
+        assert_eq!(s.extranonce1.as_deref(), Some(&[0xab, 0xcd, 0xef, 0x01][..]));
         assert_eq!(s.extranonce2_size, Some(4));
     }
 
@@ -469,10 +464,7 @@ mod tests {
         let submit = r#"{"id":1,"method":"mining.submit","params":["w","JX","11223344","60000000","deadbeef"]}"#;
         s.ingest(submit, Direction::M2P);
         let resp = r#"{"id":1,"result":true,"error":null}"#;
-        assert!(matches!(
-            s.ingest(resp, Direction::P2M),
-            SessionEvent::Nothing
-        ));
+        assert!(matches!(s.ingest(resp, Direction::P2M), SessionEvent::Nothing));
     }
 
     #[test]

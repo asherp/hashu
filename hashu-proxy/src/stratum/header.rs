@@ -86,9 +86,7 @@ pub fn parse_be_u32_hex(s: &str, field: &'static str) -> Result<u32, HeaderError
             got: bytes.len(),
         });
     }
-    let arr: [u8; 4] = bytes
-        .try_into()
-        .map_err(|_| HeaderError::BadU32 { field })?;
+    let arr: [u8; 4] = bytes.try_into().map_err(|_| HeaderError::BadU32 { field })?;
     Ok(u32::from_be_bytes(arr))
 }
 
@@ -177,8 +175,12 @@ pub fn build_block_header(
     extranonce1: &[u8],
     submit: &SubmitFields,
 ) -> [u8; 80] {
-    let coinbase_hash =
-        coinbase_tx_hash(&job.coinb1, extranonce1, &submit.extranonce2, &job.coinb2);
+    let coinbase_hash = coinbase_tx_hash(
+        &job.coinb1,
+        extranonce1,
+        &submit.extranonce2,
+        &job.coinb2,
+    );
     let merkle_root = merkle_root_from_branch(&coinbase_hash, &job.merkle_branch);
 
     let version = match submit.version_mask {

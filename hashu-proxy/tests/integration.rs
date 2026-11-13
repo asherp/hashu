@@ -53,14 +53,11 @@ async fn proxy_passes_messages_and_commits_accepted_share() {
         // mining.authorize → respond true
         let auth = read_line(&mut br).await;
         pool_received.lock().await.push(auth);
-        w.write_all(b"{\"id\":2,\"result\":true,\"error\":null}\n")
-            .await
-            .unwrap();
+        w.write_all(b"{\"id\":2,\"result\":true,\"error\":null}\n").await.unwrap();
 
         // pool-initiated set_difficulty + notify (no response expected)
         w.write_all(b"{\"id\":null,\"method\":\"mining.set_difficulty\",\"params\":[1.0]}\n")
-            .await
-            .unwrap();
+            .await.unwrap();
         let notify = format!(
             "{{\"id\":null,\"method\":\"mining.notify\",\"params\":[\"job1\",\"{HASH32_HEX}\",\"aabbccdd\",\"11223344\",[],\"20000000\",\"1d00ffff\",\"60000000\",true]}}\n"
         );
@@ -69,16 +66,13 @@ async fn proxy_passes_messages_and_commits_accepted_share() {
         // mining.submit → accept
         let sub1 = read_line(&mut br).await;
         pool_received.lock().await.push(sub1);
-        w.write_all(b"{\"id\":3,\"result\":true,\"error\":null}\n")
-            .await
-            .unwrap();
+        w.write_all(b"{\"id\":3,\"result\":true,\"error\":null}\n").await.unwrap();
 
         // mining.submit → reject
         let sub2 = read_line(&mut br).await;
         pool_received.lock().await.push(sub2);
         w.write_all(b"{\"id\":4,\"result\":false,\"error\":[23,\"Low difficulty share\",null]}\n")
-            .await
-            .unwrap();
+            .await.unwrap();
     });
 
     // ---- proxy ----
@@ -103,14 +97,12 @@ async fn proxy_passes_messages_and_commits_accepted_share() {
     let mut br = BufReader::new(r);
 
     w.write_all(b"{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"hashu-test/0.1\"]}\n")
-        .await
-        .unwrap();
+        .await.unwrap();
     let sub_resp = read_line(&mut br).await;
     assert!(sub_resp.contains("\"abcdef01\""), "got {sub_resp}");
 
     w.write_all(b"{\"id\":2,\"method\":\"mining.authorize\",\"params\":[\"worker.1\",\"x\"]}\n")
-        .await
-        .unwrap();
+        .await.unwrap();
     let auth_resp = read_line(&mut br).await;
     assert!(auth_resp.contains("\"result\":true"), "got {auth_resp}");
 
