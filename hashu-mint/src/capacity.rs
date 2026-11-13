@@ -242,6 +242,17 @@ impl CapacityBook {
         self.inner.lock().unwrap().mrr_enabled = true;
     }
 
+    /// MRR sync stopped or switched account: forget its rentals, so they
+    /// stop counting. `enabled` says whether a new sync is starting.
+    pub fn reset_mrr(&self, enabled: bool) {
+        let mut g = self.inner.lock().unwrap();
+        g.mrr_enabled = enabled;
+        g.mrr_error = None;
+        g.p.mrr.clear();
+        g.p.mrr_synced_ms = None;
+        self.save(&g.p);
+    }
+
     /// Result of one MRR sync. On error the last good list is kept.
     pub fn set_mrr(&self, result: Result<Vec<Rental>, String>, now_ms: u64) {
         let mut g = self.inner.lock().unwrap();
@@ -511,6 +522,18 @@ mod tests {
         assert_eq!(s.rented_ths, 40.0);
         assert_eq!(s.mrr_error.as_deref(), Some("Bad Nonce"));
         assert_eq!(s.mrr_synced_ms, Some(0));
+    }
+
+    #[test]
+    fn reset_mrr_drops_its_rentals() {
+        let b = CapacityBook::new();
+        b.enable_mrr();
+        b.set_mrr(Ok(vec![rental(40.0, 2 * H)]), 0);
+        b.reset_mrr(false);
+        let s = b.snapshot(0);
+        assert!(!s.mrr_enabled);
+        assert_eq!(s.rented_ths, 0.0);
+        assert_eq!(s.mrr_synced_ms, None);
     }
 
     #[test]

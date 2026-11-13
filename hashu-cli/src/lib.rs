@@ -17,6 +17,7 @@ pub mod landing;
 pub mod manifest;
 pub mod mine;
 pub mod mint;
+pub mod mrr_sync;
 pub mod network;
 pub mod operator;
 pub mod oracle;

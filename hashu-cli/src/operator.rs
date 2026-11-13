@@ -23,6 +23,12 @@
 //!   owed and THH available to sell (see `hashu_mint::capacity`).
 //! - `GET /api/operator` also carries `heat`: the heat the hashrate turned
 //!   into, estimated as work × J/TH (see `hashu_mint::heat`).
+//! - `GET /api/mrr`: whether MRR rental sync is connected, from env or the
+//!   GUI, the key's last 4 characters and the rental filter (never the
+//!   secret). `POST /api/mrr`: `{ "key", "secret", "rental_ids"? }`
+//!   connects after one test call to MRR, `{ "rental_ids" }` changes the
+//!   filter, `{ "disconnect": true }` stops. Saved to `mrr.json` (0600) and
+//!   preferred over `MRR_API_KEY` on restart (see `crate::mrr_sync`).
 //! - `POST /api/capacity`: `{ "rentals": [{ "ths", "hours" | "end_ms",
 //!   "label"?, "id"? }], "limit": bool | null, "live_horizon_hours":
 //!   hours | null }`, every field optional. `rentals` replaces the
@@ -284,6 +290,8 @@ pub struct OperatorState {
     pub checkout: Arc<CheckoutState>,
     /// Hosted-mint waitlist (`--waitlist`), listed at `/waitlist`.
     pub waitlist: Option<Arc<crate::waitlist::Waitlist>>,
+    /// MRR rental sync, whose credentials the GUI can change.
+    pub mrr: Arc<crate::mrr_sync::MrrSync>,
 }
 
 /// Largest test mint in one go.
@@ -303,6 +311,7 @@ pub fn router(state: Arc<OperatorState>) -> axum::Router {
         .route("/api/test-mint", post(test_mint))
         .route("/api/test-redeem", post(test_redeem))
         .route("/api/capacity", get(capacity).post(set_capacity))
+        .route("/api/mrr", get(mrr_status).post(set_mrr))
         .fallback(proxy_control)
         .with_state(state)
 }
@@ -473,6 +482,88 @@ async fn set_capacity(State(s): State<Arc<OperatorState>>, body: Bytes) -> Respo
         "operator changed capacity"
     );
     Json(json!(snap)).into_response()
+}
+
+async fn mrr_status(State(s): State<Arc<OperatorState>>) -> Json<Value> {
+    Json(json!(s.mrr.status()))
+}
+
+/// `{ "key", "secret", "rental_ids"? }` connects (checked against the MRR
+/// API first), `{ "rental_ids" }` alone changes the filter on the running
+/// key, `{ "disconnect": true }` stops syncing.
+async fn set_mrr(State(s): State<Arc<OperatorState>>, body: Bytes) -> Response {
+    use crate::mrr_sync::MrrCredentials;
+    let v: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return bad(format!("invalid JSON: {e}")),
+    };
+    if v.get("disconnect").and_then(Value::as_bool) == Some(true) {
+        if let Err(e) = s.mrr.set(None) {
+            return server_error(e.to_string());
+        }
+        tracing::info!("operator disconnected MRR");
+        return Json(json!(s.mrr.status())).into_response();
+    }
+    let ids: Option<Vec<String>> = match v.get("rental_ids") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(t)) => Some(t.split(',').map(str::to_string).collect()),
+        Some(Value::Array(a)) => {
+            let mut out = Vec::new();
+            for x in a {
+                match x {
+                    Value::String(t) => out.push(t.clone()),
+                    Value::Number(n) => out.push(n.to_string()),
+                    _ => return bad("rental_ids must be ids".into()),
+                }
+            }
+            Some(out)
+        }
+        _ => return bad("rental_ids must be a list or a comma-separated string".into()),
+    };
+    let text = |k: &str| {
+        v.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    let (key, secret) = (text("key"), text("secret"));
+    let creds = if key.is_empty() && secret.is_empty() {
+        // Only the rental filter changes; keep the running key.
+        let Some(cur) = s.mrr.current() else {
+            return bad("enter the MRR API key and secret".into());
+        };
+        let Some(ids) = ids else {
+            return bad("nothing to change".into());
+        };
+        match MrrCredentials::new(&cur.key, &cur.secret, &ids) {
+            Some(c) => c,
+            None => return bad("enter the MRR API key and secret".into()),
+        }
+    } else {
+        let Some(c) = MrrCredentials::new(&key, &secret, &ids.unwrap_or_default()) else {
+            return bad("enter both the MRR API key and secret".into());
+        };
+        // Check them before they replace working ones.
+        if let Err(e) = s.mrr.account(&c).active_rentals().await {
+            return bad(format!("MRR rejected these credentials: {e}"));
+        }
+        c
+    };
+    if let Err(e) = s.mrr.set(Some(creds)) {
+        return server_error(e.to_string());
+    }
+    let st = s.mrr.status();
+    tracing::info!(key = ?st.key_hint, rental_ids = ?st.rental_ids, "operator set MRR credentials");
+    Json(json!(st)).into_response()
+}
+
+fn server_error(msg: String) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({ "error": msg })),
+    )
+        .into_response()
 }
 
 fn bad(msg: String) -> Response {
@@ -731,6 +822,7 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
             "melting_thh": o.melting,
         },
         "capacity": capacity,
+        "mrr": s.mrr.status(),
         "heat": heat,
         "proxy": {
             "stratum_bind": s.info.stratum_bind,
