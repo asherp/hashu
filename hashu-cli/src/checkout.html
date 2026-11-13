@@ -34,7 +34,7 @@ h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacin
 .steps span.on { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
 .steps span.done { color: var(--good); border-color: var(--good); }
 label.f { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink-2); }
-input[type=number], input[type=text], textarea { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; }
+input[type=number], input[type=text], textarea, select { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; }
 textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; resize: vertical; min-height: 84px; word-break: break-all; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
@@ -175,9 +175,14 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
       <div class="row"><button class="act" type="button" id="btn-scan">Scan token QR</button><span class="note">From Cashu.me's send screen, or any Cashu wallet.</span></div>
     </div>
     <label class="f">Your pool
+      <select id="r-pool-pick">
+        <option value="">Pick a pool, or choose Other to type its URL</option>
+      </select>
+    </label>
+    <label class="f">Pool URL
       <input type="text" id="r-pool" placeholder="stratum+tcp://pool.example:3333">
     </label>
-    <p class="note">Not sure what to enter? <a href="/redeem/" target="_blank" rel="noopener">Setup guides for popular pools</a> list the pool URL and worker name for each.</p>
+    <p class="note" id="r-pool-note">Not sure what to enter? <a href="/redeem/" target="_blank" rel="noopener">Setup guides for popular pools</a> list the pool URL and worker name for each.</p>
     <label class="f">Worker name on that pool
       <input type="text" id="r-worker" placeholder="you.worker1">
     </label>
@@ -465,9 +470,44 @@ $('btn-dl-words').addEventListener('click', () => {
   a.click()
   setTimeout(() => URL.revokeObjectURL(a.href), 1000)
 })
-$('btn-goto-redeem').addEventListener('click', () => { step('redeem'); $('s-redeem').scrollIntoView({ behavior: 'smooth' }); $('r-pool').focus() })
+$('btn-goto-redeem').addEventListener('click', () => { step('redeem'); $('s-redeem').scrollIntoView({ behavior: 'smooth' }); $('r-pool-pick').focus() })
 
 // ---- 4. redeem ----------------------------------------------------------
+// Pools from the /redeem/ setup guides (docs/redeem/*.md); a test in
+// checkout.rs checks each URL here still appears in its guide.
+const POOLS = [
+  { id: 'ocean', name: 'OCEAN', url: 'stratum+tcp://mine.ocean.xyz:3334', worker: 'bc1q….hashu', hint: 'Your BTC address, plus an optional .label. No account needed.' },
+  { id: 'braiins', name: 'Braiins Pool', url: 'stratum+tcp://stratum.braiins.com:3333', worker: 'username.hashu', hint: 'Your Braiins account username, then .hashu (any label).' },
+  { id: 'viabtc', name: 'ViaBTC', url: 'stratum+tcp://btc.viabtc.io:3333', worker: 'subaccount.hashu', hint: 'Your ViaBTC sub-account, then .hashu. Check the spelling: ViaBTC accepts unknown names.' },
+  { id: 'f2pool', name: 'F2Pool', url: 'stratum+tcp://btc.f2pool.com:1314', worker: 'account.hashu', hint: 'Your F2Pool account name, then .hashu. Check the spelling: F2Pool accepts unknown names.' },
+  { id: 'foundry', name: 'Foundry USA', url: 'stratum+tcp://btc.foundryusapool.com:3333', worker: 'account.hashu', hint: 'Your Foundry account, then .hashu. Take the exact URL from your Foundry portal.' },
+  { id: 'ckpool-solo', name: 'solo.ckpool.org (solo, lottery)', url: 'stratum+tcp://solo.ckpool.org:3333', worker: 'bc1q….hashu', hint: 'Your BTC address, plus an optional .label. Pays only if a block is found.' },
+  { id: 'public-pool', name: 'public-pool.io (solo, lottery)', url: 'stratum+tcp://public-pool.io:21496', worker: 'bc1q….hashu', hint: 'Your BTC address, plus an optional .label. Pays only if a block is found.' },
+]
+const POOL_NOTE = $('r-pool-note').innerHTML
+for (const p of POOLS) $('r-pool-pick').add(new Option(p.name, p.id))
+$('r-pool-pick').add(new Option('Other pool (type its URL)', 'other'))
+function poolHint (p) {
+  $('r-worker').placeholder = p ? p.worker : 'you.worker1'
+  $('r-pool-note').innerHTML = p
+    ? `Worker name: ${esc(p.hint)} <a href="/redeem/${p.id}.html" target="_blank" rel="noopener">${esc(p.name.replace(/ \(.*\)$/, ''))} setup guide</a>.`
+    : POOL_NOTE
+}
+$('r-pool-pick').addEventListener('change', () => {
+  const v = $('r-pool-pick').value
+  const p = POOLS.find((x) => x.id === v)
+  if (p) $('r-pool').value = p.url
+  else if (v === 'other' && POOLS.some((x) => x.url === $('r-pool').value.trim())) $('r-pool').value = ''
+  poolHint(p)
+  if (v === 'other') $('r-pool').focus()
+  else if (p) $('r-worker').focus()
+})
+$('r-pool').addEventListener('input', () => {
+  const u = $('r-pool').value.trim()
+  const p = POOLS.find((x) => x.url === u)
+  $('r-pool-pick').value = p ? p.id : (u ? 'other' : '')
+  poolHint(p)
+})
 // Reads a token from a QR code (plain or animated) with the camera. The
 // scanner script is bundled with the mint and loaded on first use.
 function scanToken (into) {

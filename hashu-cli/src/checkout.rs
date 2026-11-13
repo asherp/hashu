@@ -1419,6 +1419,33 @@ mod tests {
         assert_eq!(extract_token("hello"), None);
     }
 
+    /// The checkout's pool drop-down mirrors the /redeem/ guides: every
+    /// entry links to a guide that exists and still lists that URL.
+    #[test]
+    fn pool_picker_matches_redeem_guides() {
+        let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/redeem");
+        let pools = PAGE
+            .split("const POOLS = [")
+            .nth(1)
+            .and_then(|r| r.split("\n]\n").next())
+            .expect("POOLS list in checkout.html");
+        let mut n = 0;
+        for line in pools.lines().filter(|l| l.contains("id: '")) {
+            let field = |k: &str| {
+                line.split(&format!("{k}: '"))
+                    .nth(1)
+                    .and_then(|r| r.split('\'').next())
+                    .unwrap_or_else(|| panic!("{k} in {line}"))
+            };
+            let (id, url) = (field("id"), field("url"));
+            let guide = std::fs::read_to_string(docs.join(format!("{id}.md")))
+                .unwrap_or_else(|e| panic!("docs/redeem/{id}.md: {e}"));
+            assert!(guide.contains(url), "docs/redeem/{id}.md no longer lists {url}");
+            n += 1;
+        }
+        assert!(n >= 5, "only {n} pools parsed");
+    }
+
     #[test]
     fn thh_unit_any_case() {
         assert!(is_thh(&CurrencyUnit::Custom("thh".into())));
