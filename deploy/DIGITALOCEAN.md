@@ -134,7 +134,7 @@ Three volumes hold state. Copy all three:
 | Volume | Contents | If lost |
 |---|---|---|
 | `hashu_phoenixd_data` | `seed.dat` (wallet words) **and** the channel database `phoenix.mainnet.*.db` | Seed alone recovers funds, but copying the db keeps the channel and fee credit intact without a restore |
-| `hashu_hashu_data` | `seed.hex` (mint signing key), `mint.sqlite` (keysets, quotes, spent proofs), `redemptions.jsonl`, `share-audit.jsonl`, `capacity.json`, `operator-settings.json` | Outstanding THH ecash can no longer be verified, spent proofs could be double-spent. **Must be copied** |
+| `hashu_hashu_data` | `seed.hex` (mint signing key), `mint.sqlite` (keysets, quotes, spent proofs), `redemptions.jsonl`, `share-audit.jsonl`, `capacity.json`, `operator-settings.json` | Outstanding TiH vouchers can no longer be verified, spent proofs could be double-spent. **Must be copied** |
 | `hashu_caddy_data` | Let's Encrypt certificates and account | Nothing serious: Caddy re-issues once DNS points at the droplet. Copying it gives HTTPS immediately |
 
 Best time: no open redemption (`curl -s https://mint.hashu.io/control/status`).

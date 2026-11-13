@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hashu · Chaumian hashrate vouchers</title>
-<meta name="description" content="Hashu sells terahash-hours of real mining hashrate as Chaumian vouchers on Cashu. Pay with Lightning or USDT, redeem by pointing hashrate at any pool.">
+<meta name="description" content="Hashu sells real mining hashes as Chaumian vouchers on Cashu. Pay with Lightning or USDT, redeem by pointing hashrate at any pool.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f7931a'/%3E%3Cpath d='M10 7v18M22 7v18M10 16h12' stroke='%23111' stroke-width='3.4' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
 :root {
@@ -91,7 +91,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
 
   <header class="hero">
     <h1>Chaumian vouchers for <span>hashrate</span>.</h1>
-    <p>Hashu is a Cashu mint fused with a mining proxy. It sells terahash-hours of real hashrate as Chaumian hashrate vouchers. Pay with Lightning or USDT, hold the tokens in any Cashu wallet, and redeem them whenever you like by pointing hashrate at your own pool.</p>
+    <p>Hashu is a Cashu mint fused with a mining proxy. It sells real hashes, counted in TiH (tebihash, 2<sup>40</sup> hashes), as Chaumian hashrate vouchers. Pay with Lightning or USDT, hold the tokens in any Cashu wallet, and redeem them whenever you like by pointing hashrate at your own pool.</p>
     <div class="cta">
       <a class="btn primary" href="/checkout/" data-buy>Buy hashrate</a>
       <a class="btn" href="/v1/info">Mint API · /v1/info</a>
@@ -103,18 +103,18 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       <div class="stat"><div class="k">Price in USDT</div><div class="v" id="s-usdt">—</div></div>
       <div class="stat"><div class="k">Pay with</div><div class="v" id="s-rails">—</div></div>
       <div class="stat"><div class="k">Sales</div><div class="v" id="s-sales">—</div></div>
-      <div class="stat"><div class="k">THH available</div><div class="v" id="s-avail">—</div></div>
+      <div class="stat"><div class="k">TiH available</div><div class="v" id="s-avail">—</div></div>
     </div>
   </header>
 
   <section id="how">
     <h2>How it works</h2>
     <div class="grid3">
-      <div class="card"><div class="num">1</div><h3>Buy</h3><p>Choose how many terahash-hours you want and pay a mainnet Lightning invoice, or send USDT. The mint is priced live from the hashrate rental market.</p></div>
-      <div class="card"><div class="num">2</div><h3>Hold</h3><p>You receive THH as Chaumian vouchers: blind-signed Cashu tokens in the <span class="mono">thh</span> unit. Keep them, send them to a friend, or redeem them right away.</p></div>
+      <div class="card"><div class="num">1</div><h3>Buy</h3><p>Choose how many hashes you want and pay a mainnet Lightning invoice, or send USDT. The mint is priced live from the hashrate rental market.</p></div>
+      <div class="card"><div class="num">2</div><h3>Hold</h3><p>You receive TiH as Chaumian vouchers: blind-signed Cashu tokens in the <span class="mono">tih</span> unit. Keep them, send them to a friend, or redeem them right away.</p></div>
       <div class="card"><div class="num">3</div><h3>Redeem</h3><p>Melt the tokens with your pool URL and worker name. The mint's proxy redirects its miners to your pool until the work you paid for has been delivered, share by share.</p></div>
     </div>
-    <p class="unit" style="margin-top:20px"><b>1 THH</b> = 1 TH/s for one hour = 3.6 × 10<sup>15</sup> hashes. Redeem to any Stratum V1 pool that gives you a worker name.</p>
+    <p class="unit" style="margin-top:20px"><b>1 TiH</b> (tebihash) = 2<sup>40</sup> hashes = 256 difficulty-1 shares. 1 TH/s for one hour ≈ 3,274 TiH. Prices are per PiH (1,024 TiH). Redeem to any Stratum V1 pool that gives you a worker name.</p>
   </section>
 
   <section id="why">
@@ -125,7 +125,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       <div class="card">
         <h3>Dollars to bitcoin, no exchange</h3>
         <p>Pay in USDT, receive hashrate, mine bitcoin into your own pool account.</p>
-        <div class="flow" style="margin-top:12px"><span>USD₮</span><i>→</i><span>THH</span><i>→</i><span>₿</span></div>
+        <div class="flow" style="margin-top:12px"><span>USD₮</span><i>→</i><span>TiH</span><i>→</i><span>₿</span></div>
       </div>
       <div class="card"><h3>Verifiable delivery</h3><p>Each redemption gets its own Merkle tree of the shares it was credited, with audit endpoints so a holder can check the work that reached their pool.</p></div>
     </div>
@@ -136,7 +136,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     <div class="grid2">
       <div class="card">
         <h3>Use any Cashu wallet</h3>
-        <p>Add this mint and use the <span class="mono">thh</span> unit. Minting is over <span class="mono">bolt11</span> or <span class="mono">usdt</span>; melting is only over the <span class="mono">hashrate</span> method.</p>
+        <p>Add this mint and use the <span class="mono">tih</span> unit. Minting is over <span class="mono">bolt11</span> or <span class="mono">usdt</span>; melting is only over the <span class="mono">hashrate</span> method.</p>
         <div class="copy"><code class="mono" id="mint-url">—</code><button id="copy-url" type="button">Copy</button></div>
       </div>
       <div class="card">
@@ -197,18 +197,18 @@ async function load() {
     const r = await fetch('/checkout/api/info', { cache: 'no-store' });
     if (!r.ok) throw new Error(r.status);
     const i = await r.json();
-    $('s-price').innerHTML = i.sats_per_thh != null ? fmt(i.sats_per_thh) + ' <small>sats / THH</small>' : '—';
-    $('s-usdt').innerHTML = i.usdt_per_thh != null ? fmt(i.usdt_per_thh, 4) + ' <small>USDT / THH</small>' : '<small>not offered</small>';
+    $('s-price').innerHTML = i.msat_per_pih != null ? fmt(i.msat_per_pih) + ' <small>msat / PiH' + (i.sats_per_th_day != null ? ` · ${fmt(i.sats_per_th_day, 1)} sats / TH/s / day` : '') + '</small>' : '—';
+    $('s-usdt').innerHTML = i.usdt_per_pih != null ? fmt(i.usdt_per_pih, 6) + ' <small>USDT / PiH</small>' : '<small>not offered</small>';
     const rails = (i.methods || []).map((m) => RAILS[m] || m);
     $('s-rails').textContent = rails.length ? rails.join(' · ') : 'none';
-    $('s-avail').innerHTML = i.available_thh == null ? '<small>uncapped</small>'
-      : fmt(i.available_thh) + ` <small>THH of ${fmt(i.capacity_thh || 0)} · ${fmt(i.allocated_thh || 0)} allocated · ${fmt(i.rented_ths || 0, 1)} TH/s rented</small>`;
-    const soldOut = i.available_thh === 0;
+    $('s-avail').innerHTML = i.available_tih == null ? '<small>uncapped</small>'
+      : fmt(i.available_tih) + ` <small>TiH of ${fmt(i.capacity_tih || 0)} · ${fmt(i.allocated_tih || 0)} allocated · ${fmt(i.rented_ths || 0, 1)} TH/s rented</small>`;
+    const soldOut = i.available_tih === 0;
     $('s-sales').innerHTML = i.issuance_paused ? '<span class="pill no">paused</span>'
       : soldOut ? '<span class="pill no">sold out</span>' : '<span class="pill ok">open</span>';
     if (soldOut) $('s-avail').innerHTML = i.below_min
-      ? `0 <small>THH · ${fmt(i.headroom_thh, 2)} THH headroom, below the ${fmt(i.min_buy_thh || 1)} THH minimum</small>`
-      : `0 <small>THH · no hashrate available${i.capacity_thh > 0 ? ` (all ${fmt(i.capacity_thh)} allocated)` : ''}</small>`;
+      ? `0 <small>TiH · ${fmt(i.headroom_tih, 0)} TiH headroom, below the ${fmt(i.min_buy_tih || 1)} TiH minimum</small>`
+      : `0 <small>TiH · no hashrate available${i.capacity_tih > 0 ? ` (all ${fmt(i.capacity_tih)} allocated)` : ''}</small>`;
     markSoldOut(soldOut || !!i.issuance_paused);
     if (i.mint_url && /^https?:\/\//.test(i.mint_url)) { mintUrl = i.mint_url.replace(/\/+$/, ''); showUrl(); }
   } catch (e) {

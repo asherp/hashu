@@ -8,7 +8,7 @@
 //! - `GET /status`: redemptions (oldest first, completed included), the
 //!   default upstream and the proxy's share counters.
 //! - `POST /redemptions`: open a redemption from a JSON body
-//!   `{ "amount_thh": 1, "pool_url": "stratum+tcp://…", "worker_name": "…" }`.
+//!   `{ "amount_tih": 1, "pool_url": "stratum+tcp://…", "worker_name": "…" }`.
 //!   Only served when the listener is started with `allow_open`. It is a
 //!   stand-in for the mint's `hashrate` melt until the mint daemon runs in
 //!   this process (issue #3); anyone who can reach it can redirect the
@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hashu_core::redemption::{Redemption, RedemptionId, RedemptionLedger, HASHES_PER_THH};
+use hashu_core::redemption::{Redemption, RedemptionId, RedemptionLedger, HASHES_PER_TIH};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -230,8 +230,8 @@ fn settle(path: &str, state: &ControlState) -> (u16, Value) {
                 "id": id.to_string(),
                 "state": o.state.as_str(),
                 "newly_settled": o.newly_settled,
-                "spent_thh": o.spent_thh,
-                "change_thh": o.change_thh,
+                "spent_tih": o.spent_tih,
+                "change_tih": o.change_tih,
             }),
         ),
         Err(e) => (404, json!({ "error": e.to_string() })),
@@ -263,7 +263,7 @@ fn status(state: &ControlState) -> Value {
 }
 
 /// Miners by supplier key (Bitcoin address or account name, from the
-/// authorize user): live connections, hashrate, home pool, and THH
+/// authorize user): live connections, hashrate, home pool, and TiH
 /// delivered to redemptions since the proxy started.
 fn suppliers(state: &ControlState) -> Vec<Value> {
     let Some(router) = &state.router else {
@@ -278,7 +278,7 @@ fn suppliers(state: &ControlState) -> Vec<Value> {
                 "connections": s.connections,
                 "hashrate_ths": s.hashrate / 1e12,
                 "home_upstream": s.home_upstream,
-                "delivered_thh": s.delivered_hashes / HASHES_PER_THH as f64,
+                "delivered_tih": s.delivered_hashes / HASHES_PER_TIH as f64,
                 "verified": s.verified,
             })
         })
@@ -296,8 +296,8 @@ fn redemption_json(r: &Redemption) -> Value {
         "id": r.id.to_string(),
         "pool_url": r.pool_url,
         "worker_name": r.worker_name,
-        "amount_thh": r.amount_thh,
-        "filled_thh": r.accumulated_hashes as f64 / HASHES_PER_THH as f64,
+        "amount_tih": r.amount_tih,
+        "filled_tih": r.accumulated_hashes as f64 / HASHES_PER_TIH as f64,
         // u128 does not fit a JSON number; send exact values as strings.
         "accumulated_hashes": r.accumulated_hashes.to_string(),
         "target_hashes": r.target_hashes.to_string(),
@@ -312,10 +312,10 @@ fn open(body: &[u8], state: &ControlState) -> (u16, Value) {
         Ok(v) => v,
         Err(e) => return (400, json!({ "error": format!("invalid JSON: {e}") })),
     };
-    let Some(amount_thh) = v["amount_thh"].as_u64().filter(|a| *a > 0) else {
+    let Some(amount_tih) = v["amount_tih"].as_u64().filter(|a| *a > 0) else {
         return (
             400,
-            json!({ "error": "amount_thh must be a positive integer" }),
+            json!({ "error": "amount_tih must be a positive integer" }),
         );
     };
     let Some(pool_url) = v["pool_url"].as_str().filter(|s| !s.is_empty()) else {
@@ -332,7 +332,7 @@ fn open(body: &[u8], state: &ControlState) -> (u16, Value) {
     };
     let r = Redemption::new(
         fresh_id(),
-        amount_thh,
+        amount_tih,
         pool_url.to_string(),
         worker_name.to_string(),
     )
@@ -343,7 +343,7 @@ fn open(body: &[u8], state: &ControlState) -> (u16, Value) {
     let out = redemption_json(&r);
     match state.ledger.open(r) {
         Ok(()) => {
-            tracing::info!(id = %out["id"], amount_thh, pool_url, "redemption opened over control API");
+            tracing::info!(id = %out["id"], amount_tih, pool_url, "redemption opened over control API");
             (201, out)
         }
         Err(e) => (400, json!({ "error": e.to_string() })),
@@ -401,10 +401,8 @@ mod tests {
         s.ledger
             .open(Redemption::new(id, 2, "pool:3333".into(), "bob.1".into()))
             .unwrap();
-        // One share worth half a THH: 1.8e15 hashes / 2^32.
-        s.ledger
-            .credit_share(&id, 1.8e15 / (1u64 << 32) as f64)
-            .unwrap();
+        // One share worth half a TiH: difficulty 128.
+        s.ledger.credit_share(&id, 128.0).unwrap();
         let (code, v) = route("GET", "/status", b"", &s);
         assert_eq!(code, 200);
         assert_eq!(v["active_redemptions"], 1);
@@ -413,7 +411,7 @@ mod tests {
         assert_eq!(r["state"], "active");
         assert_eq!(r["worker_name"], "bob.1");
         assert!((r["progress"].as_f64().unwrap() - 0.25).abs() < 1e-6);
-        assert_eq!(r["target_hashes"], "7200000000000000");
+        assert_eq!(r["target_hashes"], (2u128 << 40).to_string());
     }
 
     #[test]
@@ -437,17 +435,15 @@ mod tests {
         s.ledger
             .open(Redemption::new(id, 5, "pool:3333".into(), "w".into()).with_floor(1))
             .unwrap();
-        // 1.8e15 hashes: half a THH, charged as 1.
-        s.ledger
-            .credit_share(&id, 1.8e15 / (1u64 << 32) as f64)
-            .unwrap();
+        // Half a TiH (difficulty 128), charged as 1.
+        s.ledger.credit_share(&id, 128.0).unwrap();
         let path = format!("/redemptions/{id}/settle");
         let (code, v) = route("POST", &path, b"", &s);
         assert_eq!(code, 200, "{v}");
         assert_eq!(v["state"], "settled");
         assert_eq!(v["newly_settled"], true);
         assert_eq!(
-            (v["spent_thh"].as_u64(), v["change_thh"].as_u64()),
+            (v["spent_tih"].as_u64(), v["change_tih"].as_u64()),
             (Some(1), Some(4))
         );
         assert_eq!(s.ledger.active().len(), 0);
@@ -464,7 +460,7 @@ mod tests {
     #[test]
     fn open_is_refused_unless_allowed() {
         let s = state(false);
-        let body = br#"{"amount_thh":1,"pool_url":"stratum+tcp://p:3333","worker_name":"w"}"#;
+        let body = br#"{"amount_tih":1,"pool_url":"stratum+tcp://p:3333","worker_name":"w"}"#;
         assert_eq!(route("POST", "/redemptions", body, &s).0, 404);
         assert!(s.ledger.all().is_empty());
     }
@@ -472,11 +468,11 @@ mod tests {
     #[test]
     fn open_creates_a_pending_redemption() {
         let s = state(true);
-        let body = br#"{"amount_thh":3,"pool_url":"stratum+tcp://p:3333","worker_name":"w.1"}"#;
+        let body = br#"{"amount_tih":3,"pool_url":"stratum+tcp://p:3333","worker_name":"w.1"}"#;
         let (code, v) = route("POST", "/redemptions", body, &s);
         assert_eq!(code, 201, "{v}");
         assert_eq!(v["state"], "pending");
-        assert_eq!(v["amount_thh"], 3);
+        assert_eq!(v["amount_tih"], 3);
         assert_eq!(s.ledger.active().len(), 1);
         // A second open gets a different id.
         let (_, v2) = route("POST", "/redemptions", body, &s);
@@ -488,10 +484,10 @@ mod tests {
         let s = state(true);
         for body in [
             &b"nope"[..],
-            br#"{"amount_thh":0,"pool_url":"p:1","worker_name":"w"}"#,
-            br#"{"amount_thh":1,"pool_url":"","worker_name":"w"}"#,
-            br#"{"amount_thh":1,"pool_url":"no-port","worker_name":"w"}"#,
-            br#"{"amount_thh":1,"pool_url":"p:1"}"#,
+            br#"{"amount_tih":0,"pool_url":"p:1","worker_name":"w"}"#,
+            br#"{"amount_tih":1,"pool_url":"","worker_name":"w"}"#,
+            br#"{"amount_tih":1,"pool_url":"no-port","worker_name":"w"}"#,
+            br#"{"amount_tih":1,"pool_url":"p:1"}"#,
         ] {
             assert_eq!(route("POST", "/redemptions", body, &s).0, 400);
         }
@@ -569,7 +565,7 @@ mod tests {
         let addr = l.local_addr().unwrap();
         tokio::spawn(serve(l, s.clone()));
         let mut c = TcpStream::connect(addr).await.unwrap();
-        let body = r#"{"amount_thh":1,"pool_url":"p:3333","worker_name":"w"}"#;
+        let body = r#"{"amount_tih":1,"pool_url":"p:3333","worker_name":"w"}"#;
         c.write_all(
             format!(
                 "POST /redemptions HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}",

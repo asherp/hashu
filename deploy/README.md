@@ -64,9 +64,9 @@ again at startup, so running them without compose fails the same way.
 | `HASHU_HOME_SOLO_UPSTREAM`, `HASHU_HOME_POOLS`, `HASHU_HOME_POOLS_OFF` | no | Home pools for Bitaxes ([docs/mine/bitaxe.md](../docs/mine/bitaxe.md)): default solo pool `solo.ckpool.org:3333`, allowed `pool=` hosts (public pools), or `true` to turn home pools off. |
 | `HASHU_WAITLIST` | no | `true` serves the hosted-mint waitlist for miners at `/waitlist/` (contact plus optional mint name, hashrate, commitment horizon, payout preference and note; no IPs stored; rate limited). Sign-ups go to `waitlist.jsonl` in the data volume and are listed, exported as CSV and deleted at `/operator/waitlist`. Default `false`. |
 | `HASHU_STRATUM_PORT` | no | Host port for miners, default `3335`. |
-| `HASHU_PRICE`, `HASHU_SATS_PER_THH`, `HASHU_NETWORK` | no | Pricing: `mrr` (default), `esplora` or `fixed`; fallback 40 sats/THH. |
+| `HASHU_PRICE`, `HASHU_MSAT_PER_PIH`, `HASHU_NETWORK` | no | Pricing: `mrr` (default), `esplora` or `fixed`; fallback 12,500 msat per PiH (≈ 40 sats per TH-hour). |
 | `HASHU_LIGHTNING`, `PHOENIXD_CHAIN` | no | `phoenixd` (default), `fake`, `off`; `mainnet`. |
-| `HASHU_USDT_DEPOSIT`, `HASHU_USDC_DEPOSIT` + `HASHU_USDT_PER_THH` or `HASHU_USD_PER_BTC` | no | Stablecoin rails, each on when its deposit address is set. Token, RPC, chain id and confirmations default to the canonical USDT (Ethereum) and USDC (Base) contracts and public RPCs. |
+| `HASHU_USDT_DEPOSIT`, `HASHU_USDC_DEPOSIT` + `HASHU_USDT_PER_PIH` or `HASHU_USD_PER_BTC` | no | Stablecoin rails, each on when its deposit address is set. Token, RPC, chain id and confirmations default to the canonical USDT (Ethereum) and USDC (Base) contracts and public RPCs. |
 | `MRR_API_KEY`, `MRR_API_SECRET`, `HASHU_MRR_RENTAL_IDS` | no | Capacity from your MiningRigRentals rentals (or set them in the operator GUI). |
 | `HASHU_HEAT_J_PER_TH` | no | Heat estimate default, 30 J/TH. |
 | `COMPOSE_PROFILES=mdk` + `HASHU_MDK_DOMAIN`, `MDK_DEMO_USER`, `MDK_DEMO_PASSWORD` | no | The mock MDK dashboard demo. Off by default; when on, all three are required. |
@@ -181,7 +181,7 @@ docker compose exec phoenixd cat /phoenix/.phoenix/seed.dat; echo
 ```
 
 Write them down offline. Also keep the mint's own seed, which signs the
-issued `THH` vouchers (losing it means outstanding tokens cannot be verified):
+issued `TiH` vouchers (losing it means outstanding tokens cannot be verified):
 
 ```bash
 docker compose exec hashu cat /data/seed.hex; echo
@@ -198,7 +198,7 @@ same seed in two phoenixd instances at once is unsafe; stop the other one.
 ## 5. First payments, fee credit and the channel
 
 **The mint absorbs its LSP's fees.** A buyer who pays the advertised
-invoice always gets the full THH: the mint credits the invoiced amount,
+invoice always gets the full TiH: the mint credits the invoiced amount,
 never what phoenixd netted after channel fees (`hashu-mint/src/phoenixd.rs`).
 
 A new phoenixd has no channel. What happens to incoming payments
@@ -207,7 +207,7 @@ A new phoenixd has no channel. What happens to incoming payments
 - **Small payments are accepted as fee credit.** While the running total
   is below what a channel open would cost, each payment settles normally
   (the payer's wallet shows success, phoenixd marks it paid, the mint
-  issues THH) but the sats go into phoenixd's *fee credit*, not its
+  issues TiH) but the sats go into phoenixd's *fee credit*, not its
   balance. `getinfo`/`getbalance` show them as `feeCreditSat`; they can't
   be withdrawn, only spent on the channel open. Demo-size buys (tens to
   hundreds of sats) all land here, which is fine: the mint never pays out.
@@ -257,9 +257,9 @@ From any machine:
 D=https://mint.hashu.io
 
 curl -s $D/v1/info | jq '{name, nuts: (.nuts|keys)}'          # mint is up, TLS works
-curl -s $D/v1/keysets | jq '.keysets[] | {id, unit, active}'  # unit "thh"
+curl -s $D/v1/keysets | jq '.keysets[] | {id, unit, active}'  # unit "tih"
 curl -s -X POST $D/v1/mint/quote/bolt11 -H 'content-type: application/json' \
-  -d '{"amount": 1, "unit": "thh"}' | jq                      # real mainnet invoice
+  -d '{"amount": 1, "unit": "tih"}' | jq                      # real mainnet invoice
 curl -s -o /dev/null -w '%{http_code}\n' $D/checkout/       # 200, public buyer page
 curl -s $D/control/status | jq                                # redemptions (read-only)
 curl -s -o /dev/null -w '%{http_code}\n' $D/operator/         # 401 without login
@@ -314,7 +314,7 @@ the mdk container refuses to start without the last two. Open
 **https://$HASHU_DOMAIN/mdk** (redirects to `https://$HASHU_MDK_DOMAIN/`),
 sign in with `MDK_DEMO_USER` / `MDK_DEMO_PASSWORD`, open
 **Hashu Heater** and press **Redeem**. The heater switches to the demo
-proxy, the 1 THH fills in about 90 s, and it switches back.
+proxy, the ≈ 1 TH-hour (3,274 TiH) fills in about 90 s, and it switches back.
 
 The dashboard needs its own host because the MDK shell serves from `/`.
 The demo is isolated on purpose: the mock heater's shares are fake, so it
@@ -354,9 +354,10 @@ that goes straight to the pool: MRR fails over to it whenever the proxy
 drops the rig (see below), and those shares bypass Hashu. If you want a
 backup, add the same proxy URL again.
 
-**How much to rent.** 1 TH/s for one hour is 1 THH, so a rig of R TH/s
-fills R/60 THH per minute. A 100 TH/s rental fills a 5 THH redemption in
-3 minutes; 1 PH/s fills it in 18 seconds. For a live demo, size the
+**How much to rent.** A TiH is 2^40 hashes, so 1 TH/s for one hour is
+≈ 3,274 TiH and a rig of R TH/s fills ≈ 54.6 × R TiH per minute. A 100 TH/s
+rental fills a 16,384 TiH (≈ 5 TH-hour) redemption in 3 minutes; 1 PH/s
+fills it in 18 seconds. For a live demo, size the
 redemption so it takes 2–5 minutes at the rented rate, so the judges see
 the graph climb and the melt turn `PAID`. MRR rental hashrate takes a few
 minutes to ramp up after the rental starts, so start it ~15 minutes early.
@@ -369,8 +370,8 @@ proxy, one upstream connection per miner connection):
   can be moved between pools in place. So
   difficulty is whatever the upstream pool's vardiff sets (Braiins handles
   big rigs fine). Crediting is by
-  share difficulty (`difficulty × 2^32` hashes), so a THH is a THH at any
-  difficulty.
+  share difficulty (`difficulty × 2^32` hashes, so 256 difficulty-1 shares
+  make a TiH), so a TiH is a TiH at any difficulty.
 - When a redemption opens or fills, the proxy **switches the rig's pool
   in place**: the rig's connection stays up and gets the new pool's
   difficulty and a clean job, with the worker name rewritten to the
@@ -395,21 +396,22 @@ proxy, one upstream connection per miner connection):
 4. Operator GUI at `https://mint.hashu.io/operator/`: the live hashrate
    graph tracks the rented TH/s (averaged over `--hashrate-window`,
    default 60 s). Open a redemption (e.g. `buy_and_redeem` above): the
-   rig switches pools, `shares_credited` starts rising and the cumulative THH
+   rig switches pools, `shares_credited` starts rising and the cumulative TiH
    graph climbs to the target, then the rig goes back to the idle route.
 
 ## 9. Demo script (mainnet)
 
 Price check: the MRR floor is about 0.00045 BTC/PH/day, i.e. ~2 sats per
-THH. Check the live price with a 1 THH quote:
+TH-hour, ≈ 625 msat per PiH. Check the live price with a 4,096 TiH (4 PiH,
+≈ 1.25 TH-hour) quote:
 
 ```bash
 curl -s -X POST https://mint.hashu.io/v1/mint/quote/bolt11 \
-  -H 'content-type: application/json' -d '{"amount":1,"unit":"thh"}' | jq .request
+  -H 'content-type: application/json' -d '{"amount":4096,"unit":"tih"}' | jq .request
 ```
 
-(decode the invoice amount in any wallet). Sizes below assume a 100 TH/s rental; scale with R/60 THH
-per minute.
+(decode the invoice amount in any wallet). Sizes below assume a 100 TH/s
+rental; scale with ≈ 54.6 × R TiH per minute.
 
 Before going on stage (~15 min early):
 
@@ -422,36 +424,36 @@ Before going on stage (~15 min early):
 On stage:
 
 1. **Buy.** Open `https://mint.hashu.io/checkout/` (or run the wallet
-   example) for **5 THH**; pay the ~10 sat invoice from a phone wallet.
-   The tokens appear.
-2. **Redeem.** Melt 5 THH with method `hashrate` to
+   example) for **16,384 TiH** (≈ 5 TH-hours); pay the ~10 sat invoice
+   from a phone wallet. The tokens appear.
+2. **Redeem.** Melt 16,384 TiH with method `hashrate` to
    `stratum+tcp://stratum.braiins.com:3333`, worker `<braiins-user>.redeem`:
 
    ```bash
    cargo run -p hashu --example buy_and_redeem -- \
-     https://mint.hashu.io bolt11 5 stratum+tcp://stratum.braiins.com:3333 <braiins-user>.redeem
+     https://mint.hashu.io bolt11 16384 stratum+tcp://stratum.braiins.com:3333 <braiins-user>.redeem
    ```
 
    (does buy + redeem in one go: it prints the invoice, waits for payment,
    then redeems).
 3. **Watch it fill.** Operator GUI: the rig switches to the redemption pool, the
-   cumulative THH graph climbs to 5 over ~3 minutes, the melt turns
+   cumulative TiH graph climbs to 16,384 over ~3 minutes, the melt turns
    `PAID`, and the rig goes back to the idle route. On Braiins the
    `redeem` worker appears with ~100 TH/s for those minutes.
 
-**Tell the mint how much it can sell.** The mint can only sell THH the
-rentals will still deliver: `rented TH/s × hours left − THH owed` (vouchers
+**Tell the mint how much it can sell.** The mint can only sell TiH the
+rentals will still deliver: `rented TH/s × hours left − TiH owed` (vouchers
 held by users, paid-but-unminted quotes and the rest of open
 redemptions). Once a capacity source is set, mint quotes beyond that are
-refused on every rail, the checkout shows "N THH available" and the
+refused on every rail, the checkout shows "N TiH available" and the
 landing page shows the same number. Rental capacity is *declared*, from the
 rentals MRR reports, not the hashrate the proxy measures. Your own rigs can
-add live capacity too (below). THH is
-sold in whole units (1 THH minimum), so headroom under 1 THH cannot be
-sold: a 1 TH/s rental with 55 minutes left is 0.92 THH of capacity and 0
-available. The checkout, landing page and operator GUI then say so ("0.92
-THH headroom, below the 1 THH minimum") instead of a bare 0. For a
-Bitaxe-class rig 1 THH is roughly 100 minutes of hashing. Three sources:
+add live capacity too (below). The smallest purchase is 1,024 TiH
+(2^10 = 1 PiH, ≈ 0.31 TH-hours), so headroom under that cannot be sold: a 1 TH/s
+rental with 15 minutes left is ≈ 820 TiH of capacity and 0 available.
+The checkout, landing page and operator GUI then say so ("819 TiH
+headroom, below the 1,024 TiH minimum") instead of a bare 0. For a
+Bitaxe-class rig (≈ 1.1 TiH/s) 1,024 TiH is about 15 minutes of hashing. Three sources:
 
 - **Automatic, from MRR.** Put `MRR_API_KEY` / `MRR_API_SECRET` (the same
   key `btc-rent.py` uses) in `.env`. The mint reads `GET /rental?type=active`

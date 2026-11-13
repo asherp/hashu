@@ -108,12 +108,16 @@ async fn fetch_esplora(args: &PingArgs) -> Result<(HashpriceSample, String)> {
             None => break,
         }
     }
-    let sample = esplora::compute_hashprice(&window)
-        .context("compute hashprice from empty window")?;
+    let sample =
+        esplora::compute_hashprice(&window).context("compute hashprice from empty window")?;
     if let Some(diff) = esplora::real_difficulty(&window) {
         let thh = esplora::thh_per_expected_block(diff);
+        let tih = esplora::tih_per_expected_block(diff);
         println!("real difficulty:  {diff:.3e}");
-        println!("THH per block:    {thh:.0} ({:.2} PH-hours)", thh / 1000.0);
+        println!(
+            "work per block:   {tih:.0} TiH ({:.2} PH-hours)",
+            thh / 1000.0
+        );
     }
     Ok((sample, base_url))
 }
@@ -126,7 +130,10 @@ async fn fetch_luxor(args: &PingArgs) -> Result<(HashpriceSample, String)> {
         .clone()
         .unwrap_or_else(|| luxor::DEFAULT_BASE_URL.to_string());
     let client = luxor::LuxorClient::with_base(key, base_url.clone());
-    let sample = client.fetch_latest().await.context("fetch luxor hashprice")?;
+    let sample = client
+        .fetch_latest()
+        .await
+        .context("fetch luxor hashprice")?;
     Ok((sample, base_url))
 }
 
@@ -158,9 +165,13 @@ async fn fetch_mrr(args: &PingArgs) -> Result<(HashpriceSample, String)> {
         match esplora::fetch_real_difficulty(&esplora, 500).await {
             Ok(Some((diff, height))) => {
                 let thh = esplora::thh_per_expected_block(diff);
+                let tih = esplora::tih_per_expected_block(diff);
                 let btc = f.btc_per_ph_day * (thh / 1000.0) / 24.0;
                 println!("{network} real difficulty: {diff:.3e} (height {height})");
-                println!("THH per block:    {thh:.0} ({:.2} PH-hours)", thh / 1000.0);
+                println!(
+                    "work per block:   {tih:.0} TiH ({:.2} PH-hours)",
+                    thh / 1000.0
+                );
                 println!("BTC per block:    {btc:.8} at the floor");
             }
             Ok(None) => eprintln!("no real-difficulty block found on {network}"),

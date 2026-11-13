@@ -2,7 +2,7 @@
 
 Any Bitaxe (or NerdQaxe, or other AxeOS / ESP-Miner device) can mine
 through Hashu with one fixed endpoint. You keep mining for yourself on
-your usual pool; while someone redeems THH, the proxy borrows your
+your usual pool; while someone redeems TiH, the proxy borrows your
 hashrate for them and then sends it straight back.
 
 ## AxeOS settings
@@ -44,7 +44,7 @@ to the operator's default pool, as before.
 1. **Idle.** Your shares go to your home pool, under your user. Anything
    you find there is yours.
 2. **Borrowed** (only on a proxy without `HASHU_OPERATOR_WORKER`, or
-   once you have your own mint). When a THH redemption needs hashrate, the proxy moves your
+   once you have your own mint). When a TiH redemption needs hashrate, the proxy moves your
    connection to the redeemer's pool without reconnecting the Bitaxe
    (same socket, a new clean job). Your shares there count towards the
    redemption, and the work is tallied under your address.
@@ -52,13 +52,13 @@ to the operator's default pool, as before.
    unreachable), you go straight back to your home pool.
 
 Small miners get small orders first (size matching, PR #60), so a 1 TH/s
-Bitaxe is not parked on a 1,000 THH order.
+Bitaxe is not parked on a 3,000,000 TiH order.
 
 ## Checking your contribution
 
 The operator sees `GET https://mint.hashu.io/operator/suppliers` (behind
 the operator password; not on the public `/control/status`): per address,
-the live connections, hashrate, home pool and `delivered_thh` (work
+the live connections, hashrate, home pool and `delivered_tih` (work
 delivered to redemptions since the proxy started).
 
 ## For operators
@@ -82,7 +82,7 @@ trip in practice. Firmware that waits for the subscribe answer first is
 placed on the default pool after 2 s (which may refuse an address user);
 its home pool is used from its next redemption on.
 
-Not done yet: paying suppliers for borrowed work. `delivered_thh` is the
+Not done yet: paying suppliers for borrowed work. `delivered_tih` is the
 number a payout would be based on.
 
 ## Registered suppliers (your own mint)
@@ -106,7 +106,8 @@ is a supplier rig with no home pool.
 ### Sign up
 
 Open `https://mint.hashu.io/join/`, pick a name, and enter your Lightning
-address, your ask (sats per THH, to the millisat) and your horizon. The page checks the
+address, your ask (msat per PiH, i.e. per 1,024 TiH; about 625 is 2 sats per
+TH-hour, and the page shows the sats per TH/s per day equivalent) and your horizon. The page checks the
 address can be invoiced and supports payment verification (LUD-21
 `verify`; not every provider has it, and the page says so if yours
 doesn't), then shows your
@@ -115,17 +116,19 @@ worker secret once and the AxeOS settings above. Your mint is live at
 
 ### Selling
 
-- Buyers mint THH from your mint over Lightning with any Cashu wallet.
+- Buyers mint TiH from your mint over Lightning with any Cashu wallet.
   Each sale is an invoice from **your** wallet (LNURL-pay), and your mint
-  issues THH once your wallet's `verify` URL reports it paid. Hashu never
+  issues TiH once your wallet's `verify` URL reports it paid. Hashu never
   holds the payment.
 - What's for sale: `measured hashrate of your verified rigs × horizon −
-  THH your mint already owes` (in circulation plus open redemptions). The
-  horizon is yours to choose, 1 hour or more (default 24). With no rigs
+  TiH your mint already owes`, in TiH (a 1.2 TH/s Bitaxe over 24 h is
+  ≈ 94,000 TiH). The smallest sale is 1,024 TiH (1 PiH), so a Bitaxe sells
+  something even at the shortest horizon ("owes" counts TiH in circulation
+  plus open redemptions). The horizon is yours to choose, 1 hour or more (default 24). With no rigs
   online your mint is sold out.
-- Melting THH on your mint (method `hashrate`) opens a redemption only your
+- Melting TiH on your mint (method `hashrate`) opens a redemption only your
   rigs fill.
-- Your mint's page (`/`) shows ask, THH for sale and TH/s online; open
+- Your mint's page (`/`) shows ask, TiH for sale and TH/s online; open
   **Supplier settings** with your worker secret to change ask, horizon or
   Lightning address (`GET`/`POST /api/settings`, header `X-Hashu-Secret`).
 

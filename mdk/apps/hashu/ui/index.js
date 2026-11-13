@@ -6,7 +6,7 @@ import { useQueryClient as R } from "@tanstack/react-query";
 import { mdkFetch as C } from "@tetherto/mdk-ui-foundation";
 const o = (e, h = 1) => e == null || !Number.isFinite(e) ? "—" : e.toFixed(h), H = (e) => (e || "").replace(/^stratum\+tcp:\/\//, ""), A = { sleep: "Off (sleep)", eco: "Eco", normal: "Normal", high: "Boost" };
 function _({ d: e, s: h, onOverride: c }) {
-  const d = e.onHashu ? "Hashu proxy (selling THH)" : "Home pool";
+  const d = e.onHashu ? "Hashu proxy (selling TiH)" : "Home pool";
   return /* @__PURE__ */ s("div", { className: "hashu-card", children: [
     /* @__PURE__ */ s("div", { className: "hashu-card-head", children: [
       /* @__PURE__ */ a("strong", { children: e.deviceId }),
@@ -68,7 +68,7 @@ function _({ d: e, s: h, onOverride: c }) {
   ] });
 }
 function k({ view: e, setSettings: h, redeem: c, compact: d }) {
-  const [n, v] = b(1), [i, f] = b(null);
+  const [n, v] = b(3274), [i, f] = b(null);
   if (e.status === "loading") return /* @__PURE__ */ a(E, {});
   if (e.status === "error") return /* @__PURE__ */ a(K, { title: "Could not load Hashu", error: e.message });
   const t = e.data;
@@ -77,7 +77,7 @@ function k({ view: e, setSettings: h, redeem: c, compact: d }) {
     /* @__PURE__ */ a(p, { name: "Sats per kWh of heat", value: Math.round(u.satsPerKwh) }),
     /* @__PURE__ */ a(p, { name: "Electric heater", value: 0 }),
     /* @__PURE__ */ a(p, { name: "Heating bill paid back", value: `${o(u.billOffsetPct, 0)}%` }),
-    /* @__PURE__ */ a(p, { name: "THH sold", value: o(t.totals.thhSold, 2) }),
+    /* @__PURE__ */ a(p, { name: "TiH sold", value: o(t.totals.tihSold, 0) }),
     /* @__PURE__ */ a(p, { name: "Heat delivered (kWh)", value: o(t.totals.heatKwh, 3) })
   ] });
   return d ? y : /* @__PURE__ */ s("div", { className: "hashu-stack", children: [
@@ -92,12 +92,12 @@ function k({ view: e, setSettings: h, redeem: c, compact: d }) {
     y,
     /* @__PURE__ */ s("p", { className: "hashu-note", children: [
       "Every watt a miner draws ends up as heat, exactly like an electric heater. This one also earns ",
-      t.prices.satsPerThh,
-      " sats per THH it sells: ",
+      t.prices.msatPerPih,
+      " msat per PiH (1,024 TiH) it sells: ",
       o(u.joulesPerTh, 1),
       " J/TH means ",
-      o(u.kwhPerThh, 4),
-      " kWh per THH, so about ",
+      o(u.kwhPerTih * 1024, 4),
+      " kWh per PiH, so about ",
       Math.round(u.satsPerKwh),
       " sats per kWh, against electricity at ",
       t.prices.electricitySatsPerKwh,
@@ -126,7 +126,7 @@ function k({ view: e, setSettings: h, redeem: c, compact: d }) {
     ] }),
     /* @__PURE__ */ s("div", { className: "hashu-card", children: [
       /* @__PURE__ */ s("div", { className: "hashu-card-head", children: [
-        /* @__PURE__ */ a("strong", { children: "THH redemptions" }),
+        /* @__PURE__ */ a("strong", { children: "TiH redemptions" }),
         /* @__PURE__ */ s("span", { children: [
           t.hashu.activeRedemptions,
           " open"
@@ -136,8 +136,8 @@ function k({ view: e, setSettings: h, redeem: c, compact: d }) {
       t.hashu.redemptions.map((r) => /* @__PURE__ */ s("div", { className: "hashu-redemption", children: [
         /* @__PURE__ */ a("span", { children: r.id.slice(0, 8) }),
         /* @__PURE__ */ s("span", { children: [
-          r.amount_thh,
-          " THH → ",
+          r.amount_tih,
+          " TiH → ",
           r.worker_name,
           " @ ",
           H(r.pool_url)
@@ -147,14 +147,14 @@ function k({ view: e, setSettings: h, redeem: c, compact: d }) {
       ] }, r.id)),
       t.allowDemoRedeem && /* @__PURE__ */ s("div", { className: "hashu-row", children: [
         /* @__PURE__ */ a("span", { children: "Demo: redeem" }),
-        /* @__PURE__ */ a("input", { type: "number", min: 1, max: 100, value: n, onChange: (r) => v(Number(r.target.value) || 1) }),
+        /* @__PURE__ */ a("input", { type: "number", min: 1, max: 4194304, step: 1024, value: n, onChange: (r) => v(Number(r.target.value) || 3274) }),
         /* @__PURE__ */ s("span", { children: [
-          "THH to ",
+          "TiH to ",
           t.pools.redeem.user,
           " @ ",
           H(t.pools.redeem.url)
         ] }),
-        /* @__PURE__ */ a("button", { onClick: () => m(c({ amountThh: n })), children: "Redeem" })
+        /* @__PURE__ */ a("button", { onClick: () => m(c({ amountTih: n })), children: "Redeem" })
       ] })
     ] }),
     /* @__PURE__ */ s("div", { className: "hashu-card", children: [
@@ -184,7 +184,7 @@ const g = (e) => ["hashu", "state", e], D = (e) => C(e), w = (e, h) => C(e, { me
   const e = T();
   return /* @__PURE__ */ s("section", { className: "hashu-page", children: [
     /* @__PURE__ */ a(N, { variant: "heading1", children: "Hashu Heater" }),
-    /* @__PURE__ */ a(N, { variant: "secondary", children: "Your miner heats the room and sells its hashrate as THH vouchers. When someone redeems THH, the heater switches to the Hashu proxy until the order is filled, then comes back to your pool." }),
+    /* @__PURE__ */ a(N, { variant: "secondary", children: "Your miner heats the room and sells its hashrate as TiH vouchers. When someone redeems TiH, the heater switches to the Hashu proxy until the order is filled, then comes back to your pool." }),
     /* @__PURE__ */ a(k, { ...e })
   ] });
 }, j = () => {

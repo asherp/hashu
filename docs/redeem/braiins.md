@@ -28,4 +28,4 @@ Lightning is better for small redemptions.
 To try for a whole block instead, use
 `stratum+tcp://solo.stratum.braiins.com:3333` with your BTC address as the
 worker name **(unverified: username format, from D-Central's survey)**. See
-[ckpool-solo.md](ckpool-solo.md) for why solo is a lottery at THH scale.
+[ckpool-solo.md](ckpool-solo.md) for why solo is a lottery at TiH scale.

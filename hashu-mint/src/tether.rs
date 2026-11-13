@@ -1,4 +1,4 @@
-//! Stablecoin payment rail: buy `THH` with dollars, as USDT (Tether) or
+//! Stablecoin payment rail: buy `TiH` with dollars, as USDT (Tether) or
 //! USDC (Circle) on an EVM chain. ARCHITECTURE.md §4.5.1.
 //!
 //! Each coin is its own backend instance and its own NUT-04 method
@@ -6,15 +6,15 @@
 //! means the token's base unit for either coin.
 //!
 //! The pitch is USD -> hashrate -> BTC without an exchange: a buyer pays
-//! USDT, receives `THH` ecash, and redeems it as hashrate pointed at their
+//! USDT, receives `TiH` ecash, and redeems it as hashrate pointed at their
 //! own pool, which pays them in bitcoin. The mint only ever *receives*
 //! USDT. Nothing on this rail pays out, so every outgoing call is refused.
 //!
 //! cdk sees this as a payment backend registered for
-//! `(THH, PaymentMethod::Custom("usdt"))` (or `"usdc"`):
+//! `(TiH, PaymentMethod::Custom("usdt"))` (or `"usdc"`):
 //!
 //! - **mint quote** (`create_incoming_payment_request`): the wallet asks for
-//!   N `THH`. A [`ThhPricer`] prices that in micro-USDT (USDT has 6
+//!   N `TiH`. A [`TihPricer`] prices that in micro-USDT (USDT has 6
 //!   decimals). The price is rounded up to whole cents and a random tag in
 //!   the sub-cent digits (1..=9999 micro-USDT, under one cent) makes the
 //!   amount unique among open quotes. The quote's `request` is an EIP-681
@@ -24,8 +24,8 @@
 //! - **payment**: a [`UsdtSource`] reports confirmed ERC-20 `Transfer`
 //!   logs into the operator's deposit address. A transfer whose value
 //!   equals an open quote's amount settles it, and the backend emits
-//!   `Event::PaymentReceived` with the amount **in THH**, so cdk issues
-//!   the quoted `THH`.
+//!   `Event::PaymentReceived` with the amount **in TiH**, so cdk issues
+//!   the quoted `TiH`.
 //!
 //! Matching by exact amount means one deposit address serves every quote
 //! and no per-quote key derivation is needed. A transfer that matches no
@@ -58,7 +58,7 @@ use futures::stream::{self, BoxStream};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Notify};
 
-use crate::pricing::{PricingError, ThhPricer};
+use crate::pricing::{PricingError, TihPricer};
 
 /// Method name as it appears in mint requests and NUT-04 settings.
 pub const METHOD: &str = "usdt";
@@ -128,12 +128,12 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(10);
 /// still settles instead of needing a manual refund.
 const GRACE_AFTER_EXPIRY: Duration = Duration::from_secs(24 * 60 * 60);
 
-const THH: &str = hashu_core::denom::UNIT_THH;
+const TIH: &str = hashu_core::denom::UNIT_TIH;
 
 /// cdk lowercases custom units whenever it serialises them (mint info,
 /// database, wire), so the in-memory unit must be lowercase to compare
 /// equal with what comes back.
-fn thh_unit() -> CurrencyUnit {
+fn tih_unit() -> CurrencyUnit {
     crate::melt::HashrateMelter::unit()
 }
 
@@ -209,14 +209,14 @@ pub struct UsdtPaymentRequest {
     /// Exact amount to send, as a decimal string of the coin (the name
     /// says USDT for compatibility; it is USDC on the USDC rail). Serialized as
     /// `amount_usdt`: cdk flattens `extra_json` into the NUT-04 quote,
-    /// whose own `amount` is the THH amount, and a second `amount` key made
+    /// whose own `amount` is the TiH amount, and a second `amount` key made
     /// cdk wallets fail to parse the quote.
     #[serde(rename = "amount_usdt", alias = "amount")]
     pub amount: String,
     /// Exact amount to send, in micro-USDT (the token's base unit).
     pub amount_micro: u64,
-    /// `THH` issued once the transfer confirms.
-    pub amount_thh: u64,
+    /// `TiH` issued once the transfer confirms.
+    pub amount_tih: u64,
     /// Unix time after which the quote is no longer offered.
     pub expiry: u64,
 }
@@ -373,40 +373,41 @@ impl UsdtSource for EvmRpcSource {
     }
 }
 
-/// Prices `THH` at a fixed number of micro-USDT each. Handy for a demo.
+/// Prices `TiH` at a fixed number of micro-USDT per PiH (1,024 TiH),
+/// rounded up. Handy for a demo.
 #[derive(Debug, Clone, Copy)]
 pub struct FixedUsdtPrice {
-    pub micro_per_thh: u64,
+    pub micro_per_pih: u64,
 }
 
-impl ThhPricer for FixedUsdtPrice {
-    fn price(&self, amount_thh: u64) -> Result<u64, PricingError> {
-        amount_thh
-            .checked_mul(self.micro_per_thh)
-            .ok_or(PricingError::Overflow(amount_thh))
+impl TihPricer for FixedUsdtPrice {
+    fn price(&self, amount_tih: u64) -> Result<u64, PricingError> {
+        // Same rounding as msat: the unit cost per PiH, pro rata, rounded up.
+        hashu_core::denom::msat_for_tih(amount_tih, self.micro_per_pih)
+            .ok_or(PricingError::Overflow(amount_tih))
     }
 }
 
-/// Prices `THH` in micro-USDT from a sats pricer (normally the hashprice
+/// Prices `TiH` in micro-USDT from a sats pricer (normally the hashprice
 /// one the Lightning rail uses) and a BTC/USD rate, so both rails quote
 /// the same hashrate at the same price.
 #[derive(Debug, Clone)]
 pub struct SatsToUsdt {
-    pub sats: Arc<dyn ThhPricer>,
+    pub sats: Arc<dyn TihPricer>,
     /// USD per BTC.
     pub usd_per_btc: f64,
 }
 
-impl ThhPricer for SatsToUsdt {
-    fn price(&self, amount_thh: u64) -> Result<u64, PricingError> {
+impl TihPricer for SatsToUsdt {
+    fn price(&self, amount_tih: u64) -> Result<u64, PricingError> {
         if !self.usd_per_btc.is_finite() || self.usd_per_btc <= 0.0 {
             return Err(PricingError::InvalidPrice(self.usd_per_btc));
         }
-        let sats = self.sats.price(amount_thh)?;
+        let sats = self.sats.price(amount_tih)?;
         // micro-USD = sats / 1e8 BTC * usd_per_btc * 1e6
         let micro = (sats as f64 * self.usd_per_btc / 100.0).ceil();
         if !micro.is_finite() || micro >= u64::MAX as f64 {
-            return Err(PricingError::Overflow(amount_thh));
+            return Err(PricingError::Overflow(amount_tih));
         }
         Ok((micro as u64).max(1))
     }
@@ -415,14 +416,14 @@ impl ThhPricer for SatsToUsdt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct OpenQuote {
     id: String,
-    amount_thh: u64,
+    amount_tih: u64,
     expires_at: u64,
 }
 
 /// A settled quote: what cdk is told was paid.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Paid {
-    amount_thh: u64,
+    amount_tih: u64,
     /// `tx_hash:log_index` of the paying transfer.
     payment_id: String,
 }
@@ -431,7 +432,7 @@ impl Paid {
     fn response(&self, id: &str) -> WaitPaymentResponse {
         WaitPaymentResponse {
             payment_identifier: PaymentIdentifier::CustomId(id.to_string()),
-            payment_amount: Amount::new(self.amount_thh, thh_unit()),
+            payment_amount: Amount::new(self.amount_tih, tih_unit()),
             payment_id: self.payment_id.clone(),
         }
     }
@@ -470,7 +471,7 @@ impl State {
 #[derive(Debug)]
 struct Inner {
     rail: UsdtRail,
-    pricer: Arc<dyn ThhPricer>,
+    pricer: Arc<dyn TihPricer>,
     source: Arc<dyn UsdtSource>,
     quote_ttl: Duration,
     poll_interval: Duration,
@@ -491,7 +492,7 @@ pub struct TetherPayments {
 }
 
 impl TetherPayments {
-    pub fn new(rail: UsdtRail, pricer: Arc<dyn ThhPricer>, source: Arc<dyn UsdtSource>) -> Self {
+    pub fn new(rail: UsdtRail, pricer: Arc<dyn TihPricer>, source: Arc<dyn UsdtSource>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 rail,
@@ -547,22 +548,22 @@ impl TetherPayments {
 
     /// The unit this backend issues.
     pub fn unit() -> CurrencyUnit {
-        thh_unit()
+        tih_unit()
     }
 
     pub fn rail(&self) -> &UsdtRail {
         &self.inner.rail
     }
 
-    /// Price `amount_thh` and reserve a unique amount for it.
-    fn open_quote(&self, amount_thh: u64) -> Result<(String, UsdtPaymentRequest), Error> {
-        if amount_thh == 0 {
+    /// Price `amount_tih` and reserve a unique amount for it.
+    fn open_quote(&self, amount_tih: u64) -> Result<(String, UsdtPaymentRequest), Error> {
+        if amount_tih == 0 {
             return Err(Error::Custom(PricingError::ZeroAmount.to_string()));
         }
         let price = self
             .inner
             .pricer
-            .price(amount_thh)
+            .price(amount_tih)
             .map_err(|e| Error::Custom(format!("pricing: {e}")))?;
         let base = price
             .div_ceil(MICRO_PER_CENT)
@@ -582,7 +583,7 @@ impl TetherPayments {
             amount_micro,
             OpenQuote {
                 id: id.clone(),
-                amount_thh,
+                amount_tih,
                 expires_at: expiry,
             },
         );
@@ -598,7 +599,7 @@ impl TetherPayments {
                 to: self.inner.rail.deposit_address.clone(),
                 amount: format_usdt(amount_micro),
                 amount_micro,
-                amount_thh,
+                amount_tih,
                 expiry,
             },
         ))
@@ -627,11 +628,11 @@ impl TetherPayments {
                 continue;
             };
             let paid = Paid {
-                amount_thh: quote.amount_thh,
+                amount_tih: quote.amount_tih,
                 payment_id: format!("{}:{}", t.tx_hash, t.log_index),
             };
             let resp = paid.response(&quote.id);
-            tracing::info!(quote = %quote.id, thh = quote.amount_thh, tx = %t.tx_hash, coin = self.inner.rail.coin.symbol(), "stablecoin quote paid");
+            tracing::info!(quote = %quote.id, tih = quote.amount_tih, tx = %t.tx_hash, coin = self.inner.rail.coin.symbol(), "stablecoin quote paid");
             state.paid.insert(quote.id, paid);
             settled.push(resp);
         }
@@ -677,7 +678,7 @@ impl MintPayment for TetherPayments {
             .to_string(),
         );
         Ok(SettingsResponse {
-            unit: THH.to_string(),
+            unit: TIH.to_string(),
             bolt11: None,
             bolt12: None,
             custom,
@@ -694,7 +695,7 @@ impl MintPayment for TetherPayments {
         if custom.method != self.inner.rail.coin.method() {
             return Err(Error::UnsupportedPaymentOption);
         }
-        if *custom.amount.unit() != thh_unit() {
+        if *custom.amount.unit() != tih_unit() {
             return Err(Error::UnsupportedUnit);
         }
         let (id, req) = self.open_quote(custom.amount.value())?;
@@ -827,9 +828,9 @@ mod tests {
     }
 
     #[test]
-    fn quote_extra_does_not_shadow_the_thh_amount() {
+    fn quote_extra_does_not_shadow_the_tih_amount() {
         // cdk flattens extra_json into the NUT-04 response, which has its
-        // own `amount` (THH); a second `amount` broke wallets.
+        // own `amount` (TiH); a second `amount` broke wallets.
         let req = UsdtPaymentRequest {
             symbol: "USDT".into(),
             chain_id: 1,
@@ -837,7 +838,7 @@ mod tests {
             to: "a".into(),
             amount: "0.050000".into(),
             amount_micro: 50_000,
-            amount_thh: 1,
+            amount_tih: 1,
             expiry: 0,
         };
         let v = serde_json::to_value(&req).unwrap();
@@ -851,24 +852,32 @@ mod tests {
         UsdtRail::new(Stablecoin::Usdt, 11_155_111, TOKEN, DEPOSIT).unwrap()
     }
 
-    /// $2.50 per THH.
+    #[test]
+    fn fixed_price_is_per_pih_rounded_up() {
+        // $0.0006 per PiH: 2 PiH = 1,200 micro-USDT; one TiH rounds up to 1.
+        let p = FixedUsdtPrice { micro_per_pih: 600 };
+        assert_eq!(p.price(2 * 1024).unwrap(), 1_200);
+        assert_eq!(p.price(1).unwrap(), 1);
+    }
+
+    /// $2.50 per TiH ($2,560 per PiH), so amounts stay readable.
     fn backend() -> (TetherPayments, Arc<FakeSource>) {
         let src = Arc::new(FakeSource::default());
         let p = TetherPayments::new(
             rail(),
             Arc::new(FixedUsdtPrice {
-                micro_per_thh: 2_500_000,
+                micro_per_pih: 2_560_000_000,
             }),
             src.clone(),
         );
         (p, src)
     }
 
-    fn mint_opts(thh: u64) -> IncomingPaymentOptions {
+    fn mint_opts(tih: u64) -> IncomingPaymentOptions {
         IncomingPaymentOptions::Custom(Box::new(CustomIncomingPaymentOptions {
             method: METHOD.to_string(),
             description: None,
-            amount: Amount::new(thh, thh_unit()),
+            amount: Amount::new(tih, tih_unit()),
             unix_expiry: None,
             extra_json: None,
         }))
@@ -908,12 +917,12 @@ mod tests {
     fn sats_to_usdt_converts_and_rounds_up() {
         #[derive(Debug)]
         struct Sats(u64);
-        impl ThhPricer for Sats {
-            fn price(&self, thh: u64) -> Result<u64, PricingError> {
-                Ok(self.0 * thh)
+        impl TihPricer for Sats {
+            fn price(&self, tih: u64) -> Result<u64, PricingError> {
+                Ok(self.0 * tih)
             }
         }
-        // 3 sats/THH at $100k/BTC = $0.003 = 3000 micro-USDT per THH.
+        // 3 sats/TiH at $100k/BTC = $0.003 = 3000 micro-USDT per TiH.
         let p = SatsToUsdt {
             sats: Arc::new(Sats(3)),
             usd_per_btc: 100_000.0,
@@ -927,7 +936,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quote_prices_thh_with_unique_sub_cent_tag() {
+    async fn quote_prices_tih_with_unique_sub_cent_tag() {
         let (p, _) = backend();
         let mut amounts = HashSet::new();
         for _ in 0..50 {
@@ -938,7 +947,7 @@ mod tests {
             let d = details(&r);
             // $10.00 base plus a 0.000001..0.009999 tag.
             assert!(d.amount_micro > 10_000_000 && d.amount_micro < 10_010_000);
-            assert_eq!(d.amount_thh, 4);
+            assert_eq!(d.amount_tih, 4);
             assert_eq!(d.to, rail().deposit_address);
             assert_eq!(r.request, rail().payment_uri(d.amount_micro));
             assert!(amounts.insert(d.amount_micro), "amounts must be unique");
@@ -965,7 +974,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exact_transfer_settles_quote_in_thh() {
+    async fn exact_transfer_settles_quote_in_tih() {
         let (p, src) = backend();
         let r = p
             .create_incoming_payment_request(mint_opts(3))
@@ -992,7 +1001,7 @@ mod tests {
         let settled = p.poll_once().await.unwrap();
         assert_eq!(settled.len(), 1);
         assert_eq!(settled[0].payment_identifier, r.request_lookup_id);
-        assert_eq!(settled[0].payment_amount, Amount::new(3, thh_unit()));
+        assert_eq!(settled[0].payment_amount, Amount::new(3, tih_unit()));
         assert_eq!(settled[0].payment_id, "0xcc:0");
 
         let status = p
@@ -1018,7 +1027,7 @@ mod tests {
         let p = TetherPayments::new(
             rail(),
             Arc::new(FixedUsdtPrice {
-                micro_per_thh: 1_000_000,
+                micro_per_pih: 1_024_000_000,
             }),
             src.clone(),
         )
@@ -1037,7 +1046,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(got.payment_identifier, r.request_lookup_id);
-        assert_eq!(got.payment_amount, Amount::new(1, thh_unit()));
+        assert_eq!(got.payment_amount, Amount::new(1, tih_unit()));
 
         p.cancel_wait_invoice();
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -1063,12 +1072,12 @@ mod tests {
             },
         ));
         assert!(p
-            .get_payment_quote(&thh_unit(), opts.clone())
+            .get_payment_quote(&tih_unit(), opts.clone())
             .await
             .is_err());
-        assert!(p.make_payment(&thh_unit(), opts).await.is_err());
+        assert!(p.make_payment(&tih_unit(), opts).await.is_err());
         let s = p.get_settings().await.unwrap();
-        assert_eq!(s.unit, "THH");
+        assert_eq!(s.unit, "TiH");
         assert!(s.custom.contains_key(METHOD));
     }
 
@@ -1078,7 +1087,7 @@ mod tests {
         let p = TetherPayments::new(
             rail,
             Arc::new(FixedUsdtPrice {
-                micro_per_thh: 1_000_000,
+                micro_per_pih: 1_024_000_000,
             }),
             Arc::new(FakeSource::default()),
         );
@@ -1108,7 +1117,7 @@ mod tests {
             TetherPayments::new(
                 rail(),
                 Arc::new(FixedUsdtPrice {
-                    micro_per_thh: 2_500_000,
+                    micro_per_pih: 2_560_000_000,
                 }),
                 src,
             )
@@ -1143,7 +1152,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status.len(), 1);
-        assert_eq!(status[0].payment_amount, Amount::new(3, thh_unit()));
+        assert_eq!(status[0].payment_amount, Amount::new(3, tih_unit()));
         // Replaying the transfer after a restart pays nothing twice.
         let src = Arc::new(FakeSource::default());
         let p = open(src.clone());
@@ -1186,7 +1195,7 @@ mod tests {
         let mut builder = MintBuilder::new(localstore.clone());
         builder
             .configure_unit(
-                thh_unit(),
+                tih_unit(),
                 UnitConfig {
                     amounts: vec![1, 2, 4, 8, 16, 32],
                     input_fee_ppk: 0,
@@ -1196,7 +1205,7 @@ mod tests {
         let (p, src) = backend();
         builder
             .add_payment_processor(
-                thh_unit(),
+                tih_unit(),
                 PaymentMethod::Custom(METHOD.to_string()),
                 MintMeltLimits::new(1, 1000),
                 Arc::new(p.clone()),
@@ -1217,7 +1226,7 @@ mod tests {
                 method: METHOD.to_string(),
                 request: cdk::nuts::MintQuoteCustomRequest {
                     amount: cdk::Amount::from(2),
-                    unit: thh_unit(),
+                    unit: tih_unit(),
                     description: None,
                     pubkey: None,
                     extra: serde_json::Value::Null,
@@ -1229,7 +1238,7 @@ mod tests {
             panic!("expected a custom quote");
         };
         assert_eq!(response.state, cdk::nuts::nut23::QuoteState::Unpaid);
-        // $5.00 for 2 THH at $2.50, plus the sub-cent tag.
+        // $5.00 for 2 TiH at $2.50, plus the sub-cent tag.
         let amount_micro: u64 = response
             .request
             .rsplit_once("uint256=")

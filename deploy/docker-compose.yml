@@ -97,7 +97,7 @@ services:
       # /data/waitlist.jsonl, listed at /operator/waitlist). Off unless set.
       HASHU_WAITLIST: ${HASHU_WAITLIST:-false}
       # Fallback price while the live (MRR) source has no fresh sample.
-      HASHU_SATS_PER_THH: ${HASHU_SATS_PER_THH:-40}
+      HASHU_MSAT_PER_PIH: ${HASHU_MSAT_PER_PIH:-12500}
       # Lightning: mainnet phoenixd, limited-access password (can create
       # invoices and read payments, cannot send).
       PHOENIXD_URL: http://phoenixd:9740
@@ -117,7 +117,7 @@ services:
       HASHU_USDC_CHAIN_ID: ${HASHU_USDC_CHAIN_ID:-8453}
       HASHU_USDC_CONFIRMATIONS: ${HASHU_USDC_CONFIRMATIONS:-30}
       HASHU_USD_PER_BTC: ${HASHU_USD_PER_BTC:-}
-      HASHU_USDT_PER_THH: ${HASHU_USDT_PER_THH:-}
+      HASHU_USDT_PER_PIH: ${HASHU_USDT_PER_PIH:-}
       # Capacity from MRR active rentals (optional; see .env.example).
       MRR_API_KEY: ${MRR_API_KEY:-}
       MRR_API_SECRET: ${MRR_API_SECRET:-}
@@ -177,7 +177,7 @@ services:
       - --data-dir=/tmp/mdk-demo-mint
       - --lightning=fake
       - --price=fixed
-      - --sats-per-thh=40
+      - --msat-per-pih=12500
       - --stratum-bind=0.0.0.0:3333
       - --upstream=mdk:3340
       - --control-bind=0.0.0.0:3334

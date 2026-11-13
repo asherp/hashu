@@ -20,7 +20,7 @@ function choosePool ({ redemptionOpen, override }) {
     return { pool: 'home', reason: 'Hashu proxy unreachable, mining for the home pool' }
   }
   return redemptionOpen
-    ? { pool: 'hashu', reason: 'THH redemption open, selling hashrate through Hashu' }
+    ? { pool: 'hashu', reason: 'TiH redemption open, selling hashrate through Hashu' }
     : { pool: 'home', reason: 'no open redemption, mining for the home pool' }
 }
 
@@ -68,21 +68,26 @@ function chooseHeat ({ roomC, current, redemptionOpen, override, thermostat }) {
  * Every joule a miner draws becomes heat, the same as a resistive heater,
  * so the comparison is sats earned per kWh of heat.
  */
-function economics ({ powerW, hashrateThs, satsPerThh, electricitySatsPerKwh, joulesPerTh: ratedJPerTh }) {
+// Vouchers count TiH (2^40 hashes); prices are msat per PiH (1,024 TiH).
+const HASHES_PER_TIH = 2 ** 40
+const TIH_PER_TH_HOUR = 3600e12 / HASHES_PER_TIH // ≈ 3,274.18
+
+function economics ({ powerW, hashrateThs, msatPerPih, electricitySatsPerKwh, joulesPerTh: ratedJPerTh }) {
   const live = powerW > 0 && hashrateThs > 0
   // While the heater sleeps, quote its last measured efficiency.
   const joulesPerTh = live ? powerW / hashrateThs : ratedJPerTh
   if (!(joulesPerTh > 0)) {
-    return { joulesPerTh: null, kwhPerThh: null, satsPerKwh: 0, billOffsetPct: 0, satsPerHour: 0 }
+    return { joulesPerTh: null, kwhPerTih: null, satsPerKwh: 0, billOffsetPct: 0, satsPerHour: 0 }
   }
-  const kwhPerThh = joulesPerTh / 1000 // (J/TH * 3600 s) / 3.6e6 J/kWh
-  const satsPerKwh = satsPerThh / kwhPerThh
+  const kwhPerTih = (joulesPerTh * HASHES_PER_TIH / 1e12) / 3.6e6 // J per TiH / J per kWh
+  const satsPerTih = msatPerPih / 1024 / 1000
+  const satsPerKwh = satsPerTih / kwhPerTih
   return {
     joulesPerTh,
-    kwhPerThh,
+    kwhPerTih,
     satsPerKwh,
     billOffsetPct: electricitySatsPerKwh > 0 ? (100 * satsPerKwh) / electricitySatsPerKwh : 0,
-    satsPerHour: live ? hashrateThs * satsPerThh : 0
+    satsPerHour: live ? hashrateThs * TIH_PER_TH_HOUR * satsPerTih : 0
   }
 }
 
@@ -92,4 +97,4 @@ function samePool (a, b) {
   return norm(a && a.url) === norm(b && b.url) && String((a && a.user) || '') === String((b && b.user) || '')
 }
 
-module.exports = { HEAT_LEVELS, choosePool, chooseHeat, economics, samePool }
+module.exports = { HEAT_LEVELS, TIH_PER_TH_HOUR, choosePool, chooseHeat, economics, samePool }

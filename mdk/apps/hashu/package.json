@@ -2,7 +2,7 @@
   "name": "hashu-heater-app",
   "version": "0.1.0",
   "private": true,
-  "description": "Hashu Heater MDK app: sells a home miner's hashrate as THH, switching its pool through MDK while a redemption fills, with a thermostat.",
+  "description": "Hashu Heater MDK app: sells a home miner's hashrate as TiH, switching its pool through MDK while a redemption fills, with a thermostat.",
   "keywords": [
     "mdk",
     "mdk-app"

@@ -58,8 +58,9 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(300);
 /// Expected hashes per block = `2^256 / (Target + 1) ≈ Diff × 2^48 / 65_535`.
 pub const HASHES_PER_DIFFICULTY: f64 = 4_295_032_833.0;
 
-/// Hashes in one terahash-hour (`THH`): 1 TH/s × 3,600 s.
-pub const HASHES_PER_THH: f64 = 3.6e15;
+/// Hashes in one terahash-hour (THH): 1 TH/s × 3,600 s. Hashrate-time,
+/// which is how hashrate markets price; vouchers count TiH (#90).
+pub const HASHES_PER_THH: f64 = hashu_core::denom::HASHES_PER_THH;
 
 /// Difficulty of a BIP 94 / testnet min-difficulty block (target = powLimit).
 /// Blocks at or below this are excluded when measuring real difficulty.
@@ -91,10 +92,15 @@ pub fn real_difficulty(window: &[BlockSummary]) -> Option<f64> {
         .map(|b| b.difficulty)
 }
 
-/// Expected work to find one block at `difficulty`, in `THH`
-/// (terahash-hours). E.g. Testnet4 at 1.04e9 ≈ 1,240 THH (1.24 PH-hours).
+/// Expected work to find one block at `difficulty`, in terahash-hours.
+/// E.g. Testnet4 at 1.04e9 ≈ 1,240 THH (1.24 PH-hours).
 pub fn thh_per_expected_block(difficulty: f64) -> f64 {
     difficulty * HASHES_PER_DIFFICULTY / HASHES_PER_THH
+}
+
+/// Expected work to find one block at `difficulty`, in TiH (2^40 hashes).
+pub fn tih_per_expected_block(difficulty: f64) -> f64 {
+    difficulty * HASHES_PER_DIFFICULTY / hashu_core::denom::HASHES_PER_TIH as f64
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -245,7 +251,10 @@ pub fn compute_hashprice(window: &[BlockSummary]) -> Option<HashpriceSample> {
     let sats_per_ph_day = 86_400.0 * 1e15 * (total_rev as f64) / total_work;
     let latest = window.iter().max_by_key(|b| b.height)?;
     let t = UNIX_EPOCH + Duration::from_secs(latest.timestamp as u64);
-    Some(HashpriceSample::from_sats_per_ph_per_day(t, sats_per_ph_day))
+    Some(HashpriceSample::from_sats_per_ph_per_day(
+        t,
+        sats_per_ph_day,
+    ))
 }
 
 /// Hashprice oracle backed by an Esplora poller.
@@ -419,6 +428,9 @@ mod tests {
         // Matches the 2026-11-05 live read: 1.04e9 → 1.24 PH-hours.
         let thh = thh_per_expected_block(1.04e9);
         assert!((1_235.0..1_245.0).contains(&thh), "got {thh}");
+        // ≈ 4.06M TiH.
+        let tih = tih_per_expected_block(1.04e9);
+        assert!((tih / thh - hashu_core::denom::TIH_PER_THH).abs() < 1e-6);
     }
 
     #[test]
@@ -454,10 +466,7 @@ mod tests {
             block(102, 1_700_001_200, 1e10, 312_500_000),
         ];
         let sample = compute_hashprice(&blocks).unwrap();
-        assert_eq!(
-            sample.t,
-            UNIX_EPOCH + Duration::from_secs(1_700_001_200)
-        );
+        assert_eq!(sample.t, UNIX_EPOCH + Duration::from_secs(1_700_001_200));
     }
 
     #[test]
@@ -485,7 +494,14 @@ mod tests {
         // Hashprice should be identical because dt cancels.
         let make = |spacing: u32| {
             (0..10u32)
-                .map(|i| block(2_000_000 + i, 1_700_000_000 + i * spacing, 1e13, 312_500_000))
+                .map(|i| {
+                    block(
+                        2_000_000 + i,
+                        1_700_000_000 + i * spacing,
+                        1e13,
+                        312_500_000,
+                    )
+                })
                 .collect::<Vec<_>>()
         };
         let fast = compute_hashprice(&make(60)).unwrap(); // 1-min spacing
@@ -551,8 +567,9 @@ mod tests {
         assert!(oracle.latest().is_none());
         let blocks = vec![block(870_000, 1_700_000_000, 110e12, 323_000_000)];
         oracle.push(compute_hashprice(&blocks).unwrap());
-        let v = HashpriceOracle::sample_at(&oracle, UNIX_EPOCH + Duration::from_secs(1_700_000_000))
-            .unwrap();
+        let v =
+            HashpriceOracle::sample_at(&oracle, UNIX_EPOCH + Duration::from_secs(1_700_000_000))
+                .unwrap();
         // Same magnitude as the realistic test.
         let sats_per_ph_day = v * 1000.0 * 86_400.0;
         assert!((50_000.0..70_000.0).contains(&sats_per_ph_day));

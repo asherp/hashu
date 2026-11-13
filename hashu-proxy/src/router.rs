@@ -1340,11 +1340,14 @@ mod tests {
         }
     }
 
+    /// Open an order of `thh` terahash-hours' worth of TiH, so the rig
+    /// sizes below (TH/s) read naturally.
     fn open_thh(ledger: &RedemptionLedger, n: u8, thh: u64) {
+        let tih = (thh as f64 * hashu_core::denom::TIH_PER_THH).round() as u64;
         ledger
             .open(Redemption::new(
                 rid(n),
-                thh,
+                tih,
                 format!("stratum+tcp://pool{n}:3333"),
                 format!("w{n}"),
             ))
@@ -1397,7 +1400,7 @@ mod tests {
         let small = router.assign(ConnectionId::next());
         warm(&router, big.conn, 200.0, now);
         warm(&router, small.conn, 0.5, now);
-        // Small order first (older), large order second. 1 THH over a
+        // Small order first (older), large order second. 1 TiH over a
         // minute absorbs 60 TH/s, too little for the 200 TH/s rig.
         open_thh(&ledger, 1, 1);
         open_thh(&ledger, 2, 1000);
@@ -1411,7 +1414,7 @@ mod tests {
         let ledger = Arc::new(RedemptionLedger::new());
         let router = Router::new("default:3333", ledger.clone());
         let now = Instant::now();
-        // Four 50 TH/s rigs; 1 THH needs 60 TH/s to finish in a minute.
+        // Four 50 TH/s rigs; 1 TiH needs 60 TH/s to finish in a minute.
         let rigs: Vec<_> = (0..4)
             .map(|_| router.assign(ConnectionId::next()))
             .collect();
@@ -1439,7 +1442,7 @@ mod tests {
         let a = router.assign(ConnectionId::next());
         assert_eq!(a.route.redemption_id(), Some(rid(1)));
         warm(&router, a.conn, 100.0, now);
-        // The 100 TH/s rig alone finishes 1 THH in 36 s: the order is
+        // The 100 TH/s rig alone finishes 1 TiH in 36 s: the order is
         // capped, so a new rig goes to the default pool.
         let b = router.assign(ConnectionId::next());
         assert_eq!(b.route.redemption_id(), None);
@@ -1484,7 +1487,7 @@ mod tests {
         assert_eq!(on_big.route.redemption_id(), Some(rid(1)));
         warm(&router, on_big.conn, 1.0, now);
         warm(&router, a.conn, 100.0, now);
-        // The 100 TH/s rig fits the 1000 THH order, but the new 10 THH
+        // The 100 TH/s rig fits the 1000 TiH order, but the new 10 TiH
         // order has no rig, so it is served first.
         open_thh(&ledger, 2, 10);
         assert_eq!(router.reconcile_at(now), 1);
@@ -1505,7 +1508,7 @@ mod tests {
         router.lock().conns.get_mut(&a.conn).unwrap().fell_back_at = Some(t0);
         assert_eq!(router.reconcile_at(t0), 0);
         router.lock().conns.get_mut(&a.conn).unwrap().fell_back_at = None;
-        // Fresh, the 1 TH/s rig would pick the 3 THH order (best fit).
+        // Fresh, the 1 TH/s rig would pick the 3 TiH order (best fit).
         let idle = Route::Default {
             upstream: "d:1".into(),
         };

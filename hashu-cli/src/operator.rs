@@ -15,12 +15,12 @@
 //!   "heat_j_per_th": number }`, every field optional. Pausing makes every
 //!   rail refuse new mint quotes; redemptions and the proxy keep running.
 //!   `heat_j_per_th` is the J/TH assumed for rigs not named after a model.
-//! - `POST /api/test-mint` `{ "amount_thh": n }`: mint test THH without a
+//! - `POST /api/test-mint` `{ "amount_tih": n }`: mint test TiH without a
 //!   payment and return the token, to rehearse a redemption on a live mint.
-//!   It counts as issued ecash (an obligation) like any other THH.
+//!   It counts as issued ecash (an obligation) like any other TiH.
 //! - `POST /api/test-redeem` `{ token, pool_url, worker_name }`: redeem it.
-//! - `GET /api/capacity`: rented hashrate, THH it can still deliver, THH
-//!   owed and THH available to sell (see `hashu_mint::capacity`).
+//! - `GET /api/capacity`: rented hashrate, TiH it can still deliver, TiH
+//!   owed and TiH available to sell (see `hashu_mint::capacity`).
 //! - `GET /api/operator` also carries `heat`: the heat the hashrate turned
 //!   into, estimated as work × J/TH (see `hashu_mint::heat`).
 //! - `GET /api/mrr`: whether MRR rental sync is connected, from env or the
@@ -58,11 +58,12 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Json;
 use cdk::mint::Mint;
-use hashu_core::redemption::{RedemptionLedger, HASHES_PER_THH};
+use hashu_core::denom::{sats_per_th_day, TIH_PER_PIH};
+use hashu_core::redemption::{RedemptionLedger, HASHES_PER_TIH};
 use hashu_mint::capacity::{rental_from_json, CapacityBook};
 use hashu_mint::heat;
-use hashu_mint::payment::thh_unit;
-use hashu_mint::pricing::{PricingError, ThhPricer};
+use hashu_mint::payment::tih_unit;
+use hashu_mint::pricing::{PricingError, TihPricer};
 use hashu_proxy::control::{route as control_route, ControlState};
 use hashu_proxy::meter::HashrateMeter;
 use serde_json::{json, Value};
@@ -218,10 +219,10 @@ impl MintControls {
 }
 
 /// A rail's pricer under operator control: refuses while issuance is
-/// paused or the amount exceeds the THH the rented hashrate can still
+/// paused or the amount exceeds the TiH the rented hashrate can still
 /// deliver, and applies the live markup on top of the base price.
 pub struct ControlledPricer {
-    inner: Arc<dyn ThhPricer>,
+    inner: Arc<dyn TihPricer>,
     controls: Arc<MintControls>,
 }
 
@@ -235,31 +236,46 @@ impl fmt::Debug for ControlledPricer {
 }
 
 impl ControlledPricer {
-    pub fn new(inner: Arc<dyn ThhPricer>, controls: Arc<MintControls>) -> Self {
+    pub fn new(inner: Arc<dyn TihPricer>, controls: Arc<MintControls>) -> Self {
         Self { inner, controls }
     }
 
-    /// What `amount_thh` would cost now, ignoring a pause.
-    pub fn quote(&self, amount_thh: u64) -> Result<u64, PricingError> {
-        let base = self.inner.price(amount_thh)?;
+    /// What `amount_tih` would cost now, ignoring a pause.
+    pub fn quote(&self, amount_tih: u64) -> Result<u64, PricingError> {
+        let base = self.inner.price(amount_tih)?;
         let factor = 1.0 + self.controls.markup_bps() as f64 / 10_000.0;
         let price = (base as f64 * factor).ceil();
         if !price.is_finite() || price >= u64::MAX as f64 {
-            return Err(PricingError::Overflow(amount_thh));
+            return Err(PricingError::Overflow(amount_tih));
         }
         // Never bill zero: that would mint for free.
         Ok((price as u64).max(1))
     }
 }
 
-impl ThhPricer for ControlledPricer {
-    fn price(&self, amount_thh: u64) -> Result<u64, PricingError> {
+impl TihPricer for ControlledPricer {
+    fn price(&self, amount_tih: u64) -> Result<u64, PricingError> {
         if self.controls.issuance_paused() {
             return Err(PricingError::Paused);
         }
-        self.controls.capacity.check(amount_thh, now_ms())?;
-        self.quote(amount_thh)
+        self.controls.capacity.check(amount_tih, now_ms())?;
+        self.quote(amount_tih)
     }
+}
+
+/// Current Lightning price in msat per PiH, from a pricer that bills sats:
+/// the sats for 1,000 PiH are the msat for one (#90).
+pub fn msat_per_pih(sats: &ControlledPricer) -> Option<u64> {
+    sats.quote(1_000 * TIH_PER_PIH).ok()
+}
+
+/// Current stablecoin price in dollars per PiH, from a pricer that bills
+/// micro-dollars (priced over a million PiH to keep the precision).
+pub fn usdt_per_pih(micro: &ControlledPricer) -> Option<f64> {
+    micro
+        .quote(1_000_000 * TIH_PER_PIH)
+        .ok()
+        .map(|m| m as f64 / 1e12)
 }
 
 /// Facts about the daemon that do not change while it runs.
@@ -270,8 +286,8 @@ pub struct DaemonInfo {
     pub mint_url: Option<String>,
     pub stratum_bind: String,
     pub rails: Vec<String>,
-    pub min_redeem_thh: u64,
-    pub max_thh: u64,
+    pub min_redeem_tih: u64,
+    pub max_tih: u64,
 }
 
 /// Everything the operator API reads.
@@ -294,8 +310,8 @@ pub struct OperatorState {
     pub mrr: Arc<crate::mrr_sync::MrrSync>,
 }
 
-/// Largest test mint in one go.
-pub const MAX_TEST_MINT_THH: u64 = 1_000;
+/// Largest test mint in one go: 2^22 TiH (≈ 1,281 THH).
+pub const MAX_TEST_MINT_TIH: u64 = 1 << 22;
 
 pub fn router(state: Arc<OperatorState>) -> axum::Router {
     let mut r = axum::Router::new();
@@ -405,20 +421,20 @@ async fn set_controls(State(s): State<Arc<OperatorState>>, body: Bytes) -> Respo
     Json(controls_json(&s)).into_response()
 }
 
-/// `POST /api/test-mint` `{ "amount_thh": n }`: mint THH without payment
+/// `POST /api/test-mint` `{ "amount_tih": n }`: mint TiH without payment
 /// and return the token. Operator-only, like everything on this port.
 async fn test_mint(State(s): State<Arc<OperatorState>>, body: Bytes) -> Response {
     let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-    let Some(amount) = v["amount_thh"]
+    let Some(amount) = v["amount_tih"]
         .as_u64()
-        .filter(|a| (1..=MAX_TEST_MINT_THH).contains(a))
+        .filter(|a| (1..=MAX_TEST_MINT_TIH).contains(a))
     else {
-        return bad(format!("amount_thh must be 1 to {MAX_TEST_MINT_THH}"));
+        return bad(format!("amount_tih must be 1 to {MAX_TEST_MINT_TIH}"));
     };
     match checkout::operator_test_mint(&s.checkout, &s.mint, amount).await {
         Ok((token, quote)) => {
             let token_qr = crate::checkout::token_qr_frames(&token);
-            Json(json!({ "token": token, "token_qr": token_qr, "amount_thh": amount, "quote": quote }))
+            Json(json!({ "token": token, "token_qr": token_qr, "amount_tih": amount, "quote": quote }))
                 .into_response()
         }
         Err((code, msg)) => (code, Json(json!({ "error": msg }))).into_response(),
@@ -477,8 +493,8 @@ async fn set_capacity(State(s): State<Arc<OperatorState>>, body: Bytes) -> Respo
     tracing::info!(
         rented_ths = snap.rented_ths,
         live_horizon_hours = ?snap.live.horizon_hours,
-        capacity_thh = snap.capacity_thh,
-        available_thh = ?snap.available_thh,
+        capacity_tih = snap.capacity_tih,
+        available_tih = ?snap.available_tih,
         "operator changed capacity"
     );
     Json(json!(snap)).into_response()
@@ -596,7 +612,7 @@ async fn operator(State(s): State<Arc<OperatorState>>) -> Response {
     }
 }
 
-/// THH the mint owes: ecash out, paid-but-unminted quotes, and the
+/// TiH the mint owes: ecash out, paid-but-unminted quotes, and the
 /// undelivered rest of open redemptions.
 #[derive(Debug, Default)]
 pub struct Obligations {
@@ -607,15 +623,15 @@ pub struct Obligations {
     pub sold: BTreeMap<String, u64>,
     pub paid_not_minted: u64,
     pub quotes_open: u64,
-    /// THH minted by the operator's test mint, all time.
+    /// TiH minted by the operator's test mint, all time.
     pub test_minted: u64,
     pub open_count: u64,
-    pub open_remaining_thh: f64,
+    pub open_remaining_tih: f64,
 }
 
 impl Obligations {
     pub fn total_owed(&self) -> f64 {
-        self.in_circulation as f64 + self.paid_not_minted as f64 + self.open_remaining_thh
+        self.in_circulation as f64 + self.paid_not_minted as f64 + self.open_remaining_tih
     }
 }
 
@@ -631,19 +647,19 @@ pub async fn obligations_for(
     supplier: Option<&str>,
 ) -> anyhow::Result<Obligations> {
     // keyset_amounts counts every signature and every spent proof, swaps
-    // included; swaps add equally to both, so the difference is the THH
+    // included; swaps add equally to both, so the difference is the TiH
     // ecash still in holders' hands.
-    let thh_keysets: Vec<_> = mint
+    let tih_keysets: Vec<_> = mint
         .keysets()
         .keysets
         .into_iter()
-        .filter(|k| k.unit == thh_unit())
+        .filter(|k| k.unit == tih_unit())
         .map(|k| k.id)
         .collect();
     let issued = mint.total_issued().await?;
     let redeemed = mint.total_redeemed().await?;
     let sum = |m: &std::collections::HashMap<_, cdk::Amount>| -> u64 {
-        thh_keysets
+        tih_keysets
             .iter()
             .filter_map(|id| m.get(id))
             .map(|a| u64::from(*a))
@@ -651,24 +667,24 @@ pub async fn obligations_for(
     };
     let (signed, spent) = (sum(&issued), sum(&redeemed));
     // A hashrate melt stays pending until its redemption is filled, and its
-    // inputs only count as spent then. Those THH are owed as an open
+    // inputs only count as spent then. Those TiH are owed as an open
     // redemption, so take them out of circulation to avoid counting twice.
     let melting: u64 = mint
         .melt_quotes()
         .await?
         .iter()
-        .filter(|q| q.unit == thh_unit() && q.state == cdk::nuts::MeltQuoteState::Pending)
+        .filter(|q| q.unit == tih_unit() && q.state == cdk::nuts::MeltQuoteState::Pending)
         .map(|q| q.amount().value())
         .sum();
     let in_circulation = signed.saturating_sub(spent).saturating_sub(melting);
 
-    // THH sold over each rail, from the mint quotes.
+    // TiH sold over each rail, from the mint quotes.
     let mut sold: BTreeMap<String, u64> = BTreeMap::new();
     let mut paid_not_minted = 0u64;
     let mut quotes_open = 0u64;
     let mut test_minted = 0u64;
     for q in mint.mint_quotes().await? {
-        if q.unit != thh_unit() {
+        if q.unit != tih_unit() {
             continue;
         }
         let issued = q.amount_issued().value();
@@ -690,7 +706,7 @@ pub async fn obligations_for(
     }
 
     let mut open_count = 0;
-    let mut open_remaining_thh = 0.0;
+    let mut open_remaining_tih = 0.0;
     // Each mint owes only its own redemptions.
     for r in ledger
         .all()
@@ -698,8 +714,8 @@ pub async fn obligations_for(
         .filter(|r| r.supplier.as_deref() == supplier)
     {
         if !r.state.is_finished() {
-            let filled = r.accumulated_hashes as f64 / HASHES_PER_THH as f64;
-            open_remaining_thh += (r.amount_thh as f64 - filled).max(0.0);
+            let filled = r.accumulated_hashes as f64 / HASHES_PER_TIH as f64;
+            open_remaining_tih += (r.amount_tih as f64 - filled).max(0.0);
             open_count += 1;
         }
     }
@@ -713,7 +729,7 @@ pub async fn obligations_for(
         quotes_open,
         test_minted,
         open_count,
-        open_remaining_thh,
+        open_remaining_tih,
     })
 }
 
@@ -748,24 +764,24 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
         .iter()
         .map(|r| {
             let id = r.id.to_string();
-            let filled = r.accumulated_hashes as f64 / HASHES_PER_THH as f64;
-            let remaining = (r.amount_thh as f64 - filled).max(0.0);
+            let filled = r.accumulated_hashes as f64 / HASHES_PER_TIH as f64;
+            let remaining = (r.amount_tih as f64 - filled).max(0.0);
             let t = tracks.iter().find(|t| t.id == id);
             json!({
                 "id": id,
                 "pool_url": r.pool_url,
                 "worker_name": r.worker_name,
-                "amount_thh": r.amount_thh,
-                "filled_thh": filled,
-                "remaining_thh": remaining,
-                "stop_charge_thh": r.settle_preview().map(|(c, _)| c),
-                "stop_change_thh": r.settle_preview().map(|(_, m)| m),
+                "amount_tih": r.amount_tih,
+                "filled_tih": filled,
+                "remaining_tih": remaining,
+                "stop_charge_tih": r.settle_preview().map(|(c, _)| c),
+                "stop_change_tih": r.settle_preview().map(|(_, m)| m),
                 "progress": if r.target_hashes == 0 { 1.0 } else {
                     (r.accumulated_hashes as f64 / r.target_hashes as f64).min(1.0)
                 },
                 "state": r.state.as_str(),
-                "spent_thh": r.is_finished().then(|| r.spent_thh()),
-                "change_thh": r.is_finished().then(|| r.change_thh()),
+                "spent_tih": r.is_finished().then(|| r.spent_tih()),
+                "change_tih": r.is_finished().then(|| r.change_tih()),
                 "opened_ms": t.map(|t| t.opened_ms),
                 "completed_ms": t.and_then(|t| t.completed_ms),
             })
@@ -773,12 +789,8 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
         .collect();
 
     // ---- price --------------------------------------------------------
-    let sats_per_thh = s.sats.as_ref().and_then(|p| p.quote(1).ok());
-    let usdt_per_thh = s
-        .usdt
-        .as_ref()
-        .and_then(|p| p.quote(1_000_000).ok())
-        .map(|micro_per_million_thh| micro_per_million_thh as f64 / 1e12);
+    let msat_per_pih = s.sats.as_deref().and_then(msat_per_pih);
+    let usdt_per_pih = s.usdt.as_deref().and_then(usdt_per_pih);
 
     let m = s.control.metrics.snapshot();
     let latest = s.meter.latest();
@@ -799,27 +811,28 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
             "listen": s.info.mint_listen,
             "url": s.info.mint_url,
             "rails": s.info.rails,
-            "min_redeem_thh": s.info.min_redeem_thh,
-            "max_thh": s.info.max_thh,
+            "min_redeem_tih": s.info.min_redeem_tih,
+            "max_tih": s.info.max_tih,
             "controls": controls_json(s),
             "price": {
-                "sats_per_thh": sats_per_thh,
-                "usdt_per_thh": usdt_per_thh,
+                "msat_per_pih": msat_per_pih,
+                "usdt_per_pih": usdt_per_pih,
+                "sats_per_th_day": msat_per_pih.map(|m| sats_per_th_day(m as f64)),
             },
         },
         "obligations": {
-            "thh_sold": sold_total,
-            "test_minted_thh": o.test_minted,
+            "tih_sold": sold_total,
+            "test_minted_tih": o.test_minted,
             "sold_by_rail": o.sold,
-            "paid_not_minted_thh": o.paid_not_minted,
+            "paid_not_minted_tih": o.paid_not_minted,
             "unpaid_quotes": o.quotes_open,
-            "thh_in_circulation": o.in_circulation,
+            "tih_in_circulation": o.in_circulation,
             "open_redemptions": o.open_count,
-            "open_redemption_remaining_thh": o.open_remaining_thh,
-            "total_thh_owed": o.total_owed(),
-            "signed_thh": o.signed,
-            "spent_thh": o.spent,
-            "melting_thh": o.melting,
+            "open_redemption_remaining_tih": o.open_remaining_tih,
+            "total_tih_owed": o.total_owed(),
+            "signed_tih": o.signed,
+            "spent_tih": o.spent,
+            "melting_tih": o.melting,
         },
         "capacity": capacity,
         "mrr": s.mrr.status(),
@@ -857,32 +870,32 @@ fn heat_json(
     let eff = heat::fleet_efficiency(&capacity.rentals, s.controls.heat_j_per_th(), now);
     let j = eff.j_per_th;
     // Every accepted share since the daemon started, default pool included.
-    let proxy_thh = total_hashes / HASHES_PER_THH as f64;
+    let proxy_tih = total_hashes / HASHES_PER_TIH as f64;
     // Work delivered to redeemers, all time (the ledger is persisted).
-    let redeemed_thh: f64 = s
+    let redeemed_tih: f64 = s
         .control
         .ledger
         .all()
         .iter()
-        .map(|r| r.accumulated_hashes as f64 / HASHES_PER_THH as f64)
+        .map(|r| r.accumulated_hashes as f64 / HASHES_PER_TIH as f64)
         .fold(0.0, |a, b| a + b);
     let now_ths = hashrate_hs / 1e12;
-    let kwh = |thh: f64| heat::kwh(thh, j);
+    let kwh = |tih: f64| heat::kwh(tih, j);
     json!({
         "efficiency": eff,
-        "kwh_per_thh": kwh(1.0),
+        "kwh_per_tih": kwh(1.0),
         "now_kw": heat::kw(now_ths, j),
         "now_btu_per_h": heat::kw(now_ths, j) * heat::BTU_PER_KWH,
         "rented_kw": heat::kw(capacity.rented_ths, j),
         "proxy_since_start": {
-            "thh": proxy_thh,
-            "kwh": kwh(proxy_thh),
-            "btu": kwh(proxy_thh) * heat::BTU_PER_KWH,
+            "tih": proxy_tih,
+            "kwh": kwh(proxy_tih),
+            "btu": kwh(proxy_tih) * heat::BTU_PER_KWH,
         },
         "redeemed": {
-            "thh": redeemed_thh,
-            "kwh": kwh(redeemed_thh),
-            "btu": kwh(redeemed_thh) * heat::BTU_PER_KWH,
+            "tih": redeemed_tih,
+            "kwh": kwh(redeemed_tih),
+            "btu": kwh(redeemed_tih) * heat::BTU_PER_KWH,
         },
     })
 }
@@ -893,9 +906,9 @@ mod tests {
 
     #[derive(Debug)]
     struct Flat(u64);
-    impl ThhPricer for Flat {
-        fn price(&self, thh: u64) -> Result<u64, PricingError> {
-            Ok(self.0 * thh)
+    impl TihPricer for Flat {
+        fn price(&self, tih: u64) -> Result<u64, PricingError> {
+            Ok(self.0 * tih)
         }
     }
 
@@ -934,14 +947,19 @@ mod tests {
             ths: 10.0,
             end_ms: now_ms() + 3 * 3_600_000 + 60_000,
         }]);
-        book.set_owed(5.0, now_ms());
-        assert_eq!(p.price(25).unwrap(), 1_000);
+        // 10 TH/s for ~3 h ≈ 30.2 THH, 5 THH owed: ≈ 25.2 THH ≈ 82,400 TiH.
+        // The rental burns ≈ 9 TiH per ms, so leave some slack.
+        let thh = hashu_core::denom::TIH_PER_THH;
+        book.set_owed(5.0 * thh, now_ms());
+        let avail = book.snapshot(now_ms()).available_tih.unwrap();
+        assert!(
+            (25.0 * thh..25.2 * thh).contains(&(avail as f64)),
+            "{avail}"
+        );
+        assert_eq!(p.price(80_000).unwrap(), 3_200_000);
         assert!(matches!(
-            p.price(26),
-            Err(PricingError::SoldOut {
-                requested: 26,
-                available: 25
-            })
+            p.price(avail + 1),
+            Err(PricingError::SoldOut { requested, .. }) if requested == avail + 1
         ));
     }
 

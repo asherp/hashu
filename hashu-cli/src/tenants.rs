@@ -39,10 +39,11 @@ use cdk::mint::{Mint, MintBuilder, MintMeltLimits, UnitConfig};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use futures::future::BoxFuture;
 use hashu_core::redemption::RedemptionLedger;
+use hashu_mint::capacity::MIN_PURCHASE_TIH;
 use hashu_mint::lightning::add_lightning_issuance;
 use hashu_mint::lnaddress::{LightningAddress, LnAddressRail};
 use hashu_mint::melt::{reopen_pending_quotes_in, HashrateMelter, METHOD as HASHRATE};
-use hashu_mint::payment::{thh_unit, ThhIssuer};
+use hashu_mint::payment::{tih_unit, TihIssuer};
 use hashu_proxy::suppliers::{secret_hash, valid_name, Check, RegisterError, SupplierRegistry};
 use serde_json::json;
 use tower::ServiceExt;
@@ -77,8 +78,8 @@ pub struct TenantConfig {
     /// `<data-dir>/mints`.
     pub dir: PathBuf,
     pub ledger: Arc<RedemptionLedger>,
-    pub min_redeem_thh: u64,
-    pub max_thh: u64,
+    pub min_redeem_tih: u64,
+    pub max_tih: u64,
     /// Sell over cdk's fake wallet when a supplier has no address (testing).
     pub fake_lightning: bool,
     /// Live hashrate of a supplier's verified rigs (the proxy router).
@@ -238,28 +239,28 @@ impl Tenants {
         let mut builder = MintBuilder::new(db.clone())
             .with_name(name.to_string())
             .with_description(format!(
-                "THH backed by {name}'s own rigs, redeemed as hashrate through Hashu"
+                "TiH backed by {name}'s own rigs, redeemed as hashrate through Hashu"
             ))
             .with_urls(vec![url]);
         builder
             .configure_unit(
-                thh_unit(),
+                tih_unit(),
                 UnitConfig {
                     amounts: crate::mint::DENOMS.to_vec(),
                     input_fee_ppk: 0,
                 },
             )
-            .context("configure THH unit")?;
+            .context("configure TiH unit")?;
         builder
             .add_payment_processor(
-                thh_unit(),
+                tih_unit(),
                 PaymentMethod::Custom(HASHRATE.into()),
-                MintMeltLimits::new(self.cfg.min_redeem_thh.max(1), self.cfg.max_thh),
+                MintMeltLimits::new(self.cfg.min_redeem_tih.max(1), self.cfg.max_tih),
                 Arc::new(
                     HashrateMelter::new(self.cfg.ledger.clone())
                         .with_supplier(name)
-                        .with_min_thh(self.cfg.min_redeem_thh)
-                        .with_max_thh(self.cfg.max_thh),
+                        .with_min_tih(self.cfg.min_redeem_tih)
+                        .with_max_tih(self.cfg.max_tih),
                 ),
             )
             .await
@@ -292,11 +293,14 @@ impl Tenants {
         };
         if let Some(rail) = rail {
             // Priced in msat: suppliers' asks have Lightning's full resolution.
-            let issuer = ThhIssuer::new(pricer.clone(), rail, CurrencyUnit::Msat);
-            builder =
-                add_lightning_issuance(builder, issuer, MintMeltLimits::new(1, self.cfg.max_thh))
-                    .await
-                    .context("register Lightning rail")?;
+            let issuer = TihIssuer::new(pricer.clone(), rail, CurrencyUnit::Msat);
+            builder = add_lightning_issuance(
+                builder,
+                issuer,
+                MintMeltLimits::new(MIN_PURCHASE_TIH, self.cfg.max_tih),
+            )
+            .await
+            .context("register Lightning rail")?;
             methods.push("bolt11".into());
         }
         // Same split as the operator's mint: sell over the rails, redeem
@@ -357,8 +361,8 @@ impl Tenants {
                 "a Lightning address is required, so buyers can pay you".into(),
             ));
         };
-        if settings.ask_msat_per_thh.is_none() {
-            return Err(bad("set your ask per THH".into()));
+        if settings.ask_msat_per_pih.is_none() {
+            return Err(bad("set your ask in msat per PiH".into()));
         }
         if !valid_name(name) {
             return Err(bad(RegisterError::InvalidName.to_string()));
@@ -406,7 +410,7 @@ impl Tenants {
     }
 }
 
-/// Keep `owed` current: THH in circulation on the mint plus what its open
+/// Keep `owed` current: TiH in circulation on the mint plus what its open
 /// redemptions still have to deliver.
 async fn refresh_owed(
     mint: Arc<Mint>,
@@ -420,7 +424,7 @@ async fn refresh_owed(
         match crate::operator::obligations_for(&mint, &ledger, Some(&name)).await {
             Ok(o) => {
                 *owed.lock().unwrap_or_else(|e| e.into_inner()) =
-                    o.in_circulation as f64 + o.open_remaining_thh;
+                    o.in_circulation as f64 + o.open_remaining_tih;
             }
             Err(e) => tracing::warn!(supplier = %name, error = %e, "could not count obligations"),
         }
@@ -461,8 +465,10 @@ async fn supplier_status(State(ctx): State<SupplierCtx>) -> Response {
     Json(json!({
         "name": ctx.name,
         "mint_url": format!("https://{}", tenants.host_for(&ctx.name)),
-        "selling": s.ask_msat_per_thh.is_some() && s.lightning_address.is_some() && cap.available_thh > 0,
-        "ask_msat_per_thh": s.ask_msat_per_thh,
+        "selling": s.ask_msat_per_pih.is_some() && s.lightning_address.is_some() && cap.available_tih > 0,
+        "ask_msat_per_pih": s.ask_msat_per_pih,
+        // The same ask in sats per TH/s per day, to compare with markets.
+        "ask_sats_per_th_day": s.ask_msat_per_pih.map(|m| hashu_core::denom::sats_per_th_day(m as f64)),
         "pays_by_lightning": s.lightning_address.is_some(),
         "capacity": cap,
     }))
@@ -597,8 +603,8 @@ mod tests {
                 base: "Mint.Example.com.".into(),
                 dir: dir.join("mints"),
                 ledger: Arc::new(RedemptionLedger::new()),
-                min_redeem_thh: 1,
-                max_thh: 1_000,
+                min_redeem_tih: 1,
+                max_tih: 1 << 20,
                 fake_lightning: fake,
                 hashrate: Arc::new(move |n: &str| if n == "alice" { ths * 1e12 } else { 0.0 }),
                 stratum_port: 3335,
@@ -733,7 +739,7 @@ mod tests {
         let t = tenants(dir.path());
         let app = app(&t);
         let op = "mint.example.com";
-        let join = |name: &str, ln: &str| json!({"name": name, "lightning_address": ln, "ask_msat_per_thh": 40_000, "horizon_hours": 24});
+        let join = |name: &str, ln: &str| json!({"name": name, "lightning_address": ln, "ask_msat_per_pih": 40_000, "horizon_hours": 24});
         let (s, body) = send(
             &app,
             "POST",
@@ -783,7 +789,7 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "{body}");
         let st: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(
-            (st["name"].as_str(), st["ask_msat_per_thh"].as_u64()),
+            (st["name"].as_str(), st["ask_msat_per_pih"].as_u64()),
             (Some("bob"), Some(40_000))
         );
         assert_eq!(st["pays_by_lightning"], true);
@@ -800,7 +806,7 @@ mod tests {
         assert_eq!(s, StatusCode::UNAUTHORIZED);
         let (s, body) = send(&app, "GET", bob, "/api/settings", Some(&secret), None).await;
         assert_eq!(s, StatusCode::OK, "{body}");
-        let short = json!({"ask_msat_per_thh": 45_500, "horizon_hours": 0.5, "lightning_address": "bob@wallet.example"});
+        let short = json!({"ask_msat_per_pih": 45_500, "horizon_hours": 0.5, "lightning_address": "bob@wallet.example"});
         let (s, _) = send(
             &app,
             "POST",
@@ -811,13 +817,13 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
-        let ok = json!({"ask_msat_per_thh": 45_500, "horizon_hours": 1, "lightning_address": "bob@wallet.example"});
+        let ok = json!({"ask_msat_per_pih": 45_500, "horizon_hours": 1, "lightning_address": "bob@wallet.example"});
         let (s, body) = send(&app, "POST", bob, "/api/settings", Some(&secret), Some(ok)).await;
         assert_eq!(s, StatusCode::OK, "{body}");
         assert_eq!(
             SupplierSettings::load(&dir.path().join("mints/bob"))
                 .unwrap()
-                .ask_msat_per_thh,
+                .ask_msat_per_pih,
             Some(45_500)
         );
         t.stop_all().await;
@@ -830,7 +836,7 @@ mod tests {
         let t = tenants_with(dir.path(), 1.0, true);
         let app = app(&t);
         let alice = "alice.mint.example.com";
-        let quote = |thh: u64| json!({"amount": thh, "unit": "thh"});
+        let quote = |tih: u64| json!({"amount": tih, "unit": "tih"});
         // No ask yet: nothing to sell.
         let (s, _) = send(
             &app,
@@ -843,7 +849,7 @@ mod tests {
         .await;
         assert_ne!(s, StatusCode::OK);
 
-        let set = json!({"ask_msat_per_thh": 2_500, "horizon_hours": 2});
+        let set = json!({"ask_msat_per_pih": 2_500, "horizon_hours": 2});
         let (s, body) = send(
             &app,
             "POST",
@@ -854,14 +860,15 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::OK, "{body}");
-        assert_eq!(t.capacity("alice").await.unwrap().available_thh, 2);
+        // 1 TH/s × 2 h = 2 THH ≈ 6,548 TiH.
+        assert_eq!(t.capacity("alice").await.unwrap().available_tih, 6_548);
         let (s, body) = send(
             &app,
             "POST",
             alice,
             "/v1/mint/quote/bolt11",
             None,
-            Some(quote(2)),
+            Some(quote(6_548)),
         )
         .await;
         assert_eq!(s, StatusCode::OK, "{body}");
@@ -872,7 +879,7 @@ mod tests {
             alice,
             "/v1/mint/quote/bolt11",
             None,
-            Some(quote(3)),
+            Some(quote(6_549)),
         )
         .await;
         assert_ne!(s, StatusCode::OK, "{body}");

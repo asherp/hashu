@@ -85,7 +85,7 @@ const ICON = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewB
 
 function page({ md, title, body }) {
   const isIndex = md === 'README.md';
-  const crumb = isIndex ? '' : `<p class="crumb"><a href="./">Redeeming THH</a> / ${esc(title.replace(/^Redeem at /, ''))}</p>`;
+  const crumb = isIndex ? '' : `<p class="crumb"><a href="./">Redeeming TiH</a> / ${esc(title.replace(/^Redeem at /, ''))}</p>`;
   return `<!doctype html>
 <html lang="en">
 <head>

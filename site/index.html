@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hashu · sell hashes, earn sats</title>
-<meta name="description" content="Hashu is open-source software that turns hashrate into Chaumian vouchers on Cashu. A Hashu mint sells terahash-hours of computation, not money: buy with Lightning or USDT, redeem by pointing hashrate at your pool.">
+<meta name="description" content="Hashu is open-source software that turns hashrate into Chaumian vouchers on Cashu. A Hashu mint sells hashes of computation, not money: buy with Lightning or USDT, redeem by pointing hashrate at your pool.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f7931a'/%3E%3Cpath d='M10 7v18M22 7v18M10 16h12' stroke='%23111' stroke-width='3.4' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
 :root {
@@ -107,7 +107,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
   <header class="hero">
     <p class="kicker">Open source · Cashu · Stratum</p>
     <h1>Sell <span>hashes</span>, earn sats.</h1>
-    <p>Hashu turns hashrate into Chaumian hashrate vouchers. A Hashu mint issues terahash-hours (THH) as Cashu tokens backed only by the hashrate of its miners, and the only way to redeem them is as real work delivered to the holder's pool. No bitcoin is held for users and none is paid out.</p>
+    <p>Hashu turns hashrate into Chaumian hashrate vouchers. A Hashu mint issues hashes, counted in TiH (tebihash, 2<sup>40</sup> hashes), as Cashu tokens backed only by the hashrate of its miners, and the only way to redeem them is as real work delivered to the holder's pool. No bitcoin is held for users and none is paid out.</p>
     <p class="live" id="live-status">Demo mint on mainnet at mint.hashu.io. Run your own to sell your hashrate.</p>
     <div class="cta">
       <a class="btn primary mint-link" data-path="checkout/" data-buy href="https://mint.hashu.io/checkout/">Buy hashrate</a>
@@ -130,7 +130,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       <div class="card us">
         <h3>A Hashu mint</h3>
         <ul>
-          <li>Sells a service: terahash-hours of mining computation.</li>
+          <li>Sells a service: hashes of mining computation.</li>
           <li>Never pays out bitcoin. Tokens are redeemed only as hashrate.</li>
           <li>Tokens are backed only by the miners behind the mint.</li>
         </ul>
@@ -142,11 +142,11 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     <h2>How it works</h2>
     <div class="grid4">
       <div class="card"><div class="num">1</div><h3>Buy</h3><p>Pay a mainnet Lightning invoice, or pay in USDT. Dollars go to hashrate and on to bitcoin without an exchange.</p></div>
-      <div class="card"><div class="num">2</div><h3>Hold</h3><p>Receive THH as Chaumian vouchers (Cashu tokens). Blind signatures mean the mint can't link who bought to who redeems.</p></div>
+      <div class="card"><div class="num">2</div><h3>Hold</h3><p>Receive TiH as Chaumian vouchers (Cashu tokens). Blind signatures mean the mint can't link who bought to who redeems.</p></div>
       <div class="card"><div class="num">3</div><h3>Redeem</h3><p>Melt the tokens with a pool URL and worker name. The mint's Stratum proxy points its miners at your pool until the work is delivered.</p></div>
       <div class="card"><div class="num">4</div><h3>Audit</h3><p>Every share credited to a redemption goes into its own Merkle tree. Holders can fetch the root and inclusion proofs to check the work that reached their pool.</p></div>
     </div>
-    <p class="unit" style="margin-top:20px"><b>1 THH</b> = 1 TH/s for one hour = 3.6 × 10<sup>15</sup> hashes.</p>
+    <p class="unit" style="margin-top:20px"><b>1 TiH</b> (tebihash) = 2<sup>40</sup> hashes = 256 difficulty-1 shares. 1 TH/s for one hour ≈ 3,274 TiH. Prices are per PiH (1,024 TiH).</p>
   </section>
 
   <section id="run">
@@ -192,9 +192,9 @@ fetch('/checkout/api/info', { cache: 'no-store' })
   .then((r) => (r.ok ? r.json() : null))
   .then((i) => {
     if (!i) return;
-    markSoldOut(i.available_thh === 0 || !!i.issuance_paused);
+    markSoldOut(i.available_tih === 0 || !!i.issuance_paused);
     const live = document.getElementById('live-status');
-    if (live && (i.issuance_paused || i.available_thh === 0)) {
+    if (live && (i.issuance_paused || i.available_tih === 0)) {
       live.textContent = 'Demo mint on mainnet (' + (i.issuance_paused ? 'sales paused' : 'sold out') + '). Run your own to sell your hashrate.';
     }
     if (!/^https?:\/\//.test(i.mint_url || '')) return;

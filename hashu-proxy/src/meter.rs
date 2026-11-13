@@ -20,7 +20,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use hashu_core::redemption::{RedemptionLedger, HASHES_PER_THH};
+use hashu_core::redemption::{RedemptionLedger, HASHES_PER_TIH};
 use serde::Serialize;
 
 use crate::ProxyMetrics;
@@ -45,7 +45,7 @@ pub struct Sample {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RedemptionTrack {
     pub id: String,
-    pub amount_thh: u64,
+    pub amount_tih: u64,
     pub target_hashes: f64,
     /// When the meter first saw it (Unix ms); close to when it opened.
     pub opened_ms: u64,
@@ -55,8 +55,8 @@ pub struct RedemptionTrack {
 }
 
 impl RedemptionTrack {
-    pub fn delivered_thh(&self) -> f64 {
-        self.points.last().map(|p| p.1).unwrap_or(0.0) / HASHES_PER_THH as f64
+    pub fn delivered_tih(&self) -> f64 {
+        self.points.last().map(|p| p.1).unwrap_or(0.0) / HASHES_PER_TIH as f64
     }
 }
 
@@ -141,7 +141,7 @@ impl HashrateMeter {
                     id.clone(),
                     RedemptionTrack {
                         id: id.clone(),
-                        amount_thh: r.amount_thh,
+                        amount_tih: r.amount_tih,
                         target_hashes: r.target_hashes as f64,
                         opened_ms: t_ms,
                         completed_ms: None,
@@ -309,8 +309,8 @@ mod tests {
         l.open(Redemption::new(id, 1, "pool:1".into(), "w".into()))
             .unwrap();
         h.sample_at(1_000);
-        // Half a THH at a time; difficulty d credits d × 2^32 hashes.
-        let half = HASHES_PER_THH as f64 / 2.0 / HASHES_PER_DIFF_ONE as f64;
+        // Half a TiH at a time; difficulty d credits d × 2^32 hashes.
+        let half = HASHES_PER_TIH as f64 / 2.0 / HASHES_PER_DIFF_ONE as f64;
         l.credit_share(&id, half).unwrap();
         h.sample_at(2_000);
         l.credit_share(&id, half * 1.01).unwrap();
@@ -322,7 +322,7 @@ mod tests {
         assert_eq!(t.completed_ms, Some(3_000));
         assert_eq!(t.points.first().unwrap(), &(1_000, 0.0));
         assert_eq!(t.points.last().unwrap().0, 3_000);
-        assert!(t.delivered_thh() >= 1.0);
+        assert!(t.delivered_tih() >= 1.0);
     }
 
     #[test]

@@ -20,7 +20,7 @@ pattern)** to see your hashrate, shares and best share.
 
 ## What you're buying
 
-This is a lottery ticket. A few THH has a vanishingly small chance of
+This is a lottery ticket. A few thousand TiH has a vanishingly small chance of
 finding a mainnet block, and if it doesn't, you get nothing back. The
 expected value is the same as a pool, the variance is enormous. Pick a
 shared pool if you want a reliable payout.

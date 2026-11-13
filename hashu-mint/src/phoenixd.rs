@@ -1,4 +1,4 @@
-//! phoenixd Lightning node: receive real (mainnet) sats for `THH` quotes.
+//! phoenixd Lightning node: receive real (mainnet) sats for `TiH` quotes.
 //! ARCHITECTURE.md §4.5.
 //!
 //! [phoenixd](https://phoenix.acinq.co/server) is ACINQ's self-custodial,
@@ -7,7 +7,7 @@
 //! `PHOENIXD_URL` / `PHOENIXD_PASSWORD`), so a Hashu operator can reuse it.
 //!
 //! [`Phoenixd`] is a cdk [`MintPayment`] backend in sats. Wrap it with
-//! [`crate::lightning::lightning_issuer`] to sell `THH` over bolt11:
+//! [`crate::lightning::lightning_issuer`] to sell `TiH` over bolt11:
 //!
 //! - **invoice**: `POST /createinvoice` (form `amountSat`, `description`,
 //!   `expirySeconds`), HTTP Basic auth with an empty user and the node's
@@ -30,12 +30,12 @@
 //!   shortfall is the operator's cost, not an underpayment (same rule as
 //!   overpay's `LightningPaymentChecker`). The same holds for payments
 //!   phoenixd parks as **fee credit** before its first channel exists:
-//!   the invoice settles and the buyer gets the full `THH`. The mint
+//!   the invoice settles and the buyer gets the full `TiH`. The mint
 //!   absorbs whatever its LSP charges. See deploy/README.md §5.
 //! - **outgoing**: refused. The mint never pays out.
 //!
 //! **Payment network ≠ redemption network.** phoenixd runs on mainnet: buyers
-//! pay real sats. The pools that `THH` is later redeemed against are chosen
+//! pay real sats. The pools that `TiH` is later redeemed against are chosen
 //! per redemption and may be on any network, Testnet4 included. Nothing here
 //! looks at pool networks; [`Phoenixd::connect`] only checks the node's own
 //! chain against [`PhoenixdConfig::expect_chain`].
@@ -732,7 +732,7 @@ mod tests {
 
     fn bolt11(sats: u64) -> IncomingPaymentOptions {
         IncomingPaymentOptions::Bolt11(Bolt11IncomingPaymentOptions {
-            description: Some("Hashu: 10 THH".into()),
+            description: Some("Hashu: 10 TiH".into()),
             amount: Amount::new(sats, CurrencyUnit::Sat),
             unix_expiry: Some(unix_now() + 600),
         })

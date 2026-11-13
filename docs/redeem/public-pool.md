@@ -18,4 +18,4 @@ Open `https://web.public-pool.io/#/app/<your BTC address>`
 **(unverified URL pattern)**; the `hashu` worker shows with its hashrate
 and best difficulty.
 
-Like [solo.ckpool.org](ckpool-solo.md), this is a lottery at THH scale.
+Like [solo.ckpool.org](ckpool-solo.md), this is a lottery at TiH scale.

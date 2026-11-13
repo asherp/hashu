@@ -149,8 +149,8 @@ fn seen_auth(pool: &'static str, worker: &str) -> (&'static str, String, String)
 async fn melt_redirects_miner_to_redeemer_pool_and_back() {
     let (tx, mut seen) = mpsc::unbounded_channel();
     let default_pool = fake_pool("default", 1.0, tx.clone()).await;
-    // 1 THH is 3.6e15 hashes. At difficulty 2^19 a share is worth
-    // 2^51 ≈ 2.25e15 hashes, so the redemption fills on the second share.
+    // The order is 3,274 TiH (≈ 1 THH). At difficulty 2^19 a share is worth
+    // 2^51 hashes = 2,048 TiH, so the redemption fills on the second share.
     let redeemer_pool = fake_pool("redeemer", (1u64 << 19) as f64, tx).await;
 
     let ledger = Arc::new(RedemptionLedger::new());
@@ -163,12 +163,12 @@ async fn melt_redirects_miner_to_redeemer_pool_and_back() {
     let mut m = Miner::connect(&proxy).await;
     assert_eq!(seen.recv().await.unwrap(), seen_auth("default", "miner.1"));
 
-    // A holder melts 1 THH to their own pool.
+    // A holder melts 3,274 TiH to their own pool.
     let id = RedemptionId::from_bytes([7; 16]);
     ledger
         .open(Redemption::new(
             id,
-            1,
+            3_274,
             format!("stratum+tcp://{redeemer_pool}"),
             "alice.rig".into(),
         ))

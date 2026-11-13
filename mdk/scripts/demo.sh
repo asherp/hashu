@@ -36,7 +36,7 @@ node scripts/fake-pool.js --port 3340 --name home >"$LOGS/pool-home.log" 2>&1 & 
 node scripts/fake-pool.js --port 3341 --name redeemer >"$LOGS/pool-redeemer.log" 2>&1 & pids+=($!)
 RUST_LOG=${RUST_LOG:-info} "$HASHU" mint run \
   --listen 127.0.0.1:8085 --data-dir "$LOGS/mint-data" \
-  --lightning fake --price fixed --sats-per-thh 40 \
+  --lightning fake --price fixed --msat-per-pih 40 \
   --stratum-bind 127.0.0.1:3333 --upstream 127.0.0.1:3340 \
   --control-bind 127.0.0.1:3334 --control-allow-open \
   --metrics-interval 0 >"$LOGS/proxy.log" 2>&1 & pids+=($!)
@@ -65,8 +65,8 @@ Hashu Heater demo is running.
   Logs        $LOGS
 
 Try it:
-  1. Press "Redeem" (1 THH). The heater switches to the Hashu proxy, its shares go to the
-     redeemer's pool, and it comes back to the home pool when the 1 THH is filled (~90 s).
+  1. Press "Redeem" (3,274 TiH, about 1 TH-hour). The heater switches to the Hashu proxy, its shares go to the
+     redeemer's pool, and it comes back to the home pool when the 3,274 TiH are filled (~90 s).
   2. Raise or lower the target temperature and watch the heater sleep or heat.
   3. Failure case: kill the proxy (kill \$(cat $LOGS/proxy.pid)). The app reports Hashu unreachable
      and moves the heater back to the home pool.

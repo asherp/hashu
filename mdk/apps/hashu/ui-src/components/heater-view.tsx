@@ -8,7 +8,7 @@ const hostOf = (url?: string) => (url || '').replace(/^stratum\+tcp:\/\//, '')
 const MODE_LABEL: Record<string, string> = { sleep: 'Off (sleep)', eco: 'Eco', normal: 'Normal', high: 'Boost' }
 
 export function HeaterCard ({ d, s, onOverride }: { d: Heater; s: HashuState; onOverride: (mode: string) => void }) {
-  const poolName = d.onHashu ? 'Hashu proxy (selling THH)' : 'Home pool'
+  const poolName = d.onHashu ? 'Hashu proxy (selling TiH)' : 'Home pool'
   return (
     <div className="hashu-card">
       <div className="hashu-card-head">
@@ -40,7 +40,7 @@ export function HashuView ({ view, setSettings, redeem, compact }: {
   redeem: (b: unknown) => Promise<void>
   compact?: boolean
 }) {
-  const [amount, setAmount] = useState(1)
+  const [amount, setAmount] = useState(3274)
   const [err, setErr] = useState<string | null>(null)
   if (view.status === 'loading') return <Loader />
   if (view.status === 'error') return <ErrorCard title="Could not load Hashu" error={view.message} />
@@ -54,7 +54,7 @@ export function HashuView ({ view, setSettings, redeem, compact }: {
       <SingleStatCard name="Sats per kWh of heat" value={Math.round(e.satsPerKwh)} />
       <SingleStatCard name="Electric heater" value={0} />
       <SingleStatCard name="Heating bill paid back" value={`${fmt(e.billOffsetPct, 0)}%`} />
-      <SingleStatCard name="THH sold" value={fmt(s.totals.thhSold, 2)} />
+      <SingleStatCard name="TiH sold" value={fmt(s.totals.tihSold, 0)} />
       <SingleStatCard name="Heat delivered (kWh)" value={fmt(s.totals.heatKwh, 3)} />
     </div>
   )
@@ -68,8 +68,8 @@ export function HashuView ({ view, setSettings, redeem, compact }: {
       {err && <div className="hashu-alert">{err}</div>}
       {stats}
       <p className="hashu-note">
-        Every watt a miner draws ends up as heat, exactly like an electric heater. This one also earns {s.prices.satsPerThh} sats per THH
-        it sells: {fmt(e.joulesPerTh, 1)} J/TH means {fmt(e.kwhPerThh, 4)} kWh per THH, so about {Math.round(e.satsPerKwh)} sats per kWh,
+        Every watt a miner draws ends up as heat, exactly like an electric heater. This one also earns {s.prices.msatPerPih} msat per PiH
+        (1,024 TiH) it sells: {fmt(e.joulesPerTh, 1)} J/TH means {fmt(e.kwhPerTih * 1024, 4)} kWh per PiH, so about {Math.round(e.satsPerKwh)} sats per kWh,
         against electricity at {s.prices.electricitySatsPerKwh} sats/kWh.
       </p>
 
@@ -92,12 +92,12 @@ export function HashuView ({ view, setSettings, redeem, compact }: {
       </div>
 
       <div className="hashu-card">
-        <div className="hashu-card-head"><strong>THH redemptions</strong><span>{s.hashu.activeRedemptions} open</span></div>
+        <div className="hashu-card-head"><strong>TiH redemptions</strong><span>{s.hashu.activeRedemptions} open</span></div>
         {s.hashu.redemptions.length === 0 && <p className="hashu-why">None yet.</p>}
         {s.hashu.redemptions.map((r) => (
           <div key={r.id} className="hashu-redemption">
             <span>{r.id.slice(0, 8)}</span>
-            <span>{r.amount_thh} THH → {r.worker_name} @ {hostOf(r.pool_url)}</span>
+            <span>{r.amount_tih} TiH → {r.worker_name} @ {hostOf(r.pool_url)}</span>
             <div className="hashu-bar"><div style={{ width: `${Math.round(r.progress * 100)}%` }} /></div>
             <span>{r.state === 'completed' ? 'filled' : `${Math.round(r.progress * 100)}%`}</span>
           </div>
@@ -105,9 +105,9 @@ export function HashuView ({ view, setSettings, redeem, compact }: {
         {s.allowDemoRedeem && (
           <div className="hashu-row">
             <span>Demo: redeem</span>
-            <input type="number" min={1} max={100} value={amount} onChange={(ev) => setAmount(Number(ev.target.value) || 1)} />
-            <span>THH to {s.pools.redeem.user} @ {hostOf(s.pools.redeem.url)}</span>
-            <button onClick={() => run(redeem({ amountThh: amount }))}>Redeem</button>
+            <input type="number" min={1} max={4194304} step={1024} value={amount} onChange={(ev) => setAmount(Number(ev.target.value) || 3274)} />
+            <span>TiH to {s.pools.redeem.user} @ {hostOf(s.pools.redeem.url)}</span>
+            <button onClick={() => run(redeem({ amountTih: amount }))}>Redeem</button>
           </div>
         )}
       </div>

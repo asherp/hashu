@@ -1,17 +1,17 @@
-//! How many `THH` the mint can still sell.
+//! How many `TiH` the mint can still sell.
 //!
 //! A Hashu mint's hashrate comes from rented machines (MiningRigRentals rigs
 //! pointed at the proxy). Each rental delivers its hashrate until it ends, so
 //! what the mint can still deliver is
 //!
 //! ```text
-//! capacity_thh  = Σ rental TH/s × hours left
-//! available_thh = capacity_thh − THH already owed
+//! capacity_tih  = Σ rental TH/s × hours left × 3,274.2 TiH per THH
+//! available_tih = capacity_tih − TiH already owed
 //! ```
 //!
 //! where "owed" is ecash still in holders' hands, paid-but-unminted quotes
 //! and the undelivered rest of open redemptions (the operator API's
-//! obligations). A mint quote for more than `available_thh` is refused.
+//! obligations). A mint quote for more than `available_tih` is refused.
 //!
 //! Rentals come from the operator (control API / GUI) and, when an MRR API
 //! key is configured, from the account's active MRR rentals. Both are kept
@@ -28,28 +28,32 @@
 //! above the running rentals' declared TH/s is counted:
 //!
 //! ```text
-//! live_thh = max(0, measured TH/s − rented TH/s) × live horizon
+//! live_tih = max(0, measured TH/s − rented TH/s) × live horizon (in TiH)
 //! ```
 //!
 //! Live capacity rolls forward: it never ends, but it drops as soon as the
 //! rigs go quiet, so a mint that sold against it can end up oversold.
 //!
-//! Rental `capacity_thh` is *declared* capacity (rentals × hours left), not the
-//! hashrate the proxy measures right now. And because THH amounts are whole
-//! numbers, headroom below [`MIN_PURCHASE_THH`] cannot be sold: a 1 TH/s
-//! rental with 55 minutes left is 0.92 THH of capacity and 0 available.
+//! Rental `capacity_tih` is *declared* capacity (rentals × hours left), not the
+//! hashrate the proxy measures right now. Headroom below
+//! [`MIN_PURCHASE_TIH`] (2^10 TiH = 1 PiH ≈ 0.31 THH) cannot be sold: a 1 TH/s
+//! rental with 15 minutes left is ≈ 820 TiH of capacity and nothing to sell.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use hashu_core::denom::tih_from_ths_hours;
 use serde::{Deserialize, Serialize};
 
 use crate::pricing::PricingError;
 
-/// Smallest purchase: Cashu amounts are integers in the `THH` unit, so a
-/// buyer gets at least 1 THH and fractional headroom is unsellable.
-pub const MIN_PURCHASE_THH: u64 = 1;
+/// Smallest purchase: 2^10 TiH = 1 PiH (≈ 0.31 THH), the same as the default
+/// smallest redemption (`melt::DEFAULT_MIN_TIH`), since a smaller voucher
+/// could not be redeemed on its own. At ~625 msat/PiH it is about 1 sat,
+/// the smallest Lightning invoice the main mint issues. Headroom below it
+/// is unsellable.
+pub const MIN_PURCHASE_TIH: u64 = 1 << 10;
 
 const MS_PER_HOUR: f64 = 3_600_000.0;
 
@@ -85,9 +89,9 @@ impl Rental {
     pub fn hours_left(&self, now_ms: u64) -> f64 {
         self.end_ms.saturating_sub(now_ms) as f64 / MS_PER_HOUR
     }
-    /// THH this rental can still deliver.
-    pub fn thh_left(&self, now_ms: u64) -> f64 {
-        self.ths.max(0.0) * self.hours_left(now_ms)
+    /// TiH this rental can still deliver.
+    pub fn tih_left(&self, now_ms: u64) -> f64 {
+        tih_from_ths_hours(self.ths.max(0.0), self.hours_left(now_ms))
     }
 }
 
@@ -112,7 +116,7 @@ struct Inner {
     p: Persisted,
     mrr_enabled: bool,
     mrr_error: Option<String>,
-    owed_thh: f64,
+    owed_tih: f64,
     owed_ms: Option<u64>,
 }
 
@@ -127,7 +131,7 @@ pub struct CapacityBook {
 /// What the GUI and checkout show.
 #[derive(Debug, Clone, Serialize)]
 pub struct CapacitySnapshot {
-    /// Whether quotes beyond `available_thh` are refused.
+    /// Whether quotes beyond `available_tih` are refused.
     pub limit: bool,
     /// The operator set `limit` explicitly (otherwise it is on).
     pub limit_explicit: bool,
@@ -136,15 +140,15 @@ pub struct CapacitySnapshot {
     pub rented_ths: f64,
     /// Latest end among running rentals.
     pub ends_ms: Option<u64>,
-    pub capacity_thh: f64,
-    pub owed_thh: f64,
+    pub capacity_tih: f64,
+    pub owed_tih: f64,
     pub owed_updated_ms: Option<u64>,
     /// `capacity − owed`, negative when oversold.
-    pub headroom_thh: f64,
-    /// Whole THH a buyer can still get; `None` while the limit is off.
-    pub available_thh: Option<u64>,
-    /// Capped, with some headroom but less than [`MIN_PURCHASE_THH`]: the
-    /// mint reads sold out only because THH is sold in whole units.
+    pub headroom_tih: f64,
+    /// Whole TiH a buyer can still get; `None` while the limit is off.
+    pub available_tih: Option<u64>,
+    /// Capped, with some headroom but less than [`MIN_PURCHASE_TIH`]: the
+    /// mint reads sold out only because TiH is sold in whole units.
     pub below_min: bool,
     pub mrr_enabled: bool,
     pub mrr_synced_ms: Option<u64>,
@@ -167,8 +171,8 @@ pub struct LiveView {
     pub rented_ths: f64,
     /// `max(0, measured − rented)`: what the horizon multiplies.
     pub extra_ths: f64,
-    /// THH this adds to capacity (0 while off).
-    pub thh: f64,
+    /// TiH this adds to capacity (0 while off).
+    pub tih: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -177,7 +181,7 @@ pub struct RentalView {
     #[serde(flatten)]
     pub rental: Rental,
     pub hours_left: f64,
-    pub thh_left: f64,
+    pub tih_left: f64,
 }
 
 pub fn now_ms() -> u64 {
@@ -287,10 +291,10 @@ impl CapacityBook {
         Ok(())
     }
 
-    /// THH already owed (from the mint's obligations).
-    pub fn set_owed(&self, owed_thh: f64, now_ms: u64) {
+    /// TiH already owed (from the mint's obligations).
+    pub fn set_owed(&self, owed_tih: f64, now_ms: u64) {
         let mut g = self.inner.lock().unwrap();
-        g.owed_thh = owed_thh.max(0.0);
+        g.owed_tih = owed_tih.max(0.0);
         g.owed_ms = Some(now_ms);
     }
 
@@ -309,27 +313,34 @@ impl CapacityBook {
                     source,
                     rental: r.clone(),
                     hours_left: r.hours_left(now_ms),
-                    thh_left: r.thh_left(now_ms),
+                    tih_left: r.tih_left(now_ms),
                 })
                 .collect();
         let running = rentals.iter().filter(|r| r.rental.end_ms > now_ms);
         let rented_ths: f64 = running.clone().map(|r| r.rental.ths.max(0.0)).sum();
         let ends_ms = running.map(|r| r.rental.end_ms).max();
         let live = live_view(measured, rented_ths, g.p.live_horizon_hours);
-        let capacity_thh: f64 = rentals.iter().map(|r| r.thh_left).sum::<f64>() + live.thh;
-        let headroom_thh = capacity_thh - g.owed_thh;
+        let capacity_tih: f64 = rentals.iter().map(|r| r.tih_left).sum::<f64>() + live.tih;
+        let headroom_tih = capacity_tih - g.owed_tih;
         CapacitySnapshot {
             limit,
             limit_explicit: g.p.limit.is_some(),
             rentals,
             rented_ths,
             ends_ms,
-            capacity_thh,
-            owed_thh: g.owed_thh,
+            capacity_tih,
+            owed_tih: g.owed_tih,
             owed_updated_ms: g.owed_ms,
-            headroom_thh,
-            available_thh: limit.then(|| headroom_thh.max(0.0).floor() as u64),
-            below_min: limit && headroom_thh > 0.0 && headroom_thh < MIN_PURCHASE_THH as f64,
+            headroom_tih,
+            available_tih: limit.then(|| {
+                let a = headroom_tih.max(0.0).floor() as u64;
+                if a < MIN_PURCHASE_TIH {
+                    0
+                } else {
+                    a
+                }
+            }),
+            below_min: limit && headroom_tih > 0.0 && headroom_tih < MIN_PURCHASE_TIH as f64,
             mrr_enabled: g.mrr_enabled,
             mrr_synced_ms: g.p.mrr_synced_ms,
             mrr_error: g.mrr_error.clone(),
@@ -337,11 +348,11 @@ impl CapacityBook {
         }
     }
 
-    /// Refuse a quote for more THH than the rentals can still deliver.
-    pub fn check(&self, amount_thh: u64, now_ms: u64) -> Result<(), PricingError> {
-        match self.snapshot(now_ms).available_thh {
-            Some(available) if amount_thh > available => Err(PricingError::SoldOut {
-                requested: amount_thh,
+    /// Refuse a quote for more TiH than the rentals can still deliver.
+    pub fn check(&self, amount_tih: u64, now_ms: u64) -> Result<(), PricingError> {
+        match self.snapshot(now_ms).available_tih {
+            Some(available) if amount_tih > available => Err(PricingError::SoldOut {
+                requested: amount_tih,
                 available,
             }),
             _ => Ok(()),
@@ -363,8 +374,8 @@ fn live_view(measured_ths: Option<f64>, rented_ths: f64, horizon: Option<f64>) -
         measured_ths: measured,
         rented_ths: rented_ths.min(measured),
         extra_ths: extra,
-        thh: if on {
-            extra * horizon.unwrap_or(0.0)
+        tih: if on {
+            tih_from_ths_hours(extra, horizon.unwrap_or(0.0))
         } else {
             0.0
         },
@@ -410,6 +421,8 @@ mod tests {
     use super::*;
 
     const H: u64 = 3_600_000;
+    /// TiH in one TH/s for an hour.
+    const T: f64 = hashu_core::denom::TIH_PER_THH;
 
     fn rental(ths: f64, end_ms: u64) -> Rental {
         Rental {
@@ -421,15 +434,16 @@ mod tests {
     }
 
     #[test]
-    fn headroom_under_one_thh_is_below_min() {
-        // A 1 TH/s rental with ~56 minutes left: 0.93 THH declared, 0 to sell.
+    fn headroom_under_one_tih_is_below_min() {
+        // A 1 TH/s rental with 15 minutes left: 0.25 THH ≈ 819 TiH
+        // declared, under the 1,024 TiH minimum: 0 to sell.
         let b = CapacityBook::new();
-        b.set_manual(vec![rental(1.0, 3_344_400)]);
+        b.set_manual(vec![rental(1.0, 900_000)]);
         let s = b.snapshot(0);
-        assert!((s.headroom_thh - 0.929).abs() < 1e-9);
-        assert_eq!(s.available_thh, Some(0));
+        assert!((s.headroom_tih - 0.25 * T).abs() < 1e-6);
+        assert_eq!(s.available_tih, Some(0));
         assert!(s.below_min);
-        // Nothing rented, or a whole THH or more, is not "below the minimum".
+        // Nothing rented, or the minimum or more, is not "below the minimum".
         assert!(!CapacityBook::new().snapshot(0).below_min);
         b.set_manual(vec![rental(1.0, 2 * H)]);
         assert!(!b.snapshot(0).below_min);
@@ -444,7 +458,7 @@ mod tests {
         let b = CapacityBook::new();
         let s = b.snapshot(0);
         assert!(s.limit);
-        assert_eq!(s.available_thh, Some(0));
+        assert_eq!(s.available_tih, Some(0));
         assert_eq!(
             b.check(1, 0),
             Err(PricingError::SoldOut {
@@ -454,7 +468,7 @@ mod tests {
         );
         // Only an explicit "off" sells without rentals.
         b.set_limit(Some(false));
-        assert_eq!(b.snapshot(0).available_thh, None);
+        assert_eq!(b.snapshot(0).available_tih, None);
         assert!(b.check(1_000_000, 0).is_ok());
     }
 
@@ -467,25 +481,27 @@ mod tests {
             rental(50.0, H),
             rental(999.0, 0),
         ]);
-        b.set_owed(120.0, 0);
+        // 350 THH ≈ 1,145,963 TiH; 120 THH owed.
+        b.set_owed(120.0 * T, 0);
         let s = b.snapshot(0);
         assert!(s.limit);
         assert_eq!(s.rented_ths, 150.0);
         assert_eq!(s.ends_ms, Some(3 * H));
-        assert!((s.capacity_thh - 350.0).abs() < 1e-9);
-        assert_eq!(s.available_thh, Some(230));
-        assert!(b.check(230, 0).is_ok());
+        assert!((s.capacity_tih - 350.0 * T).abs() < 1e-6);
+        let avail = (230.0 * T).floor() as u64;
+        assert_eq!(s.available_tih, Some(avail));
+        assert!(b.check(avail, 0).is_ok());
         assert_eq!(
-            b.check(231, 0),
+            b.check(avail + 1, 0),
             Err(PricingError::SoldOut {
-                requested: 231,
-                available: 230
+                requested: avail + 1,
+                available: avail
             })
         );
         // An hour later: 200 THH left, 120 owed.
-        assert_eq!(b.snapshot(H).available_thh, Some(80));
+        assert_eq!(b.snapshot(H).available_tih, Some((80.0 * T).floor() as u64));
         // After every rental ends nothing can be sold.
-        assert_eq!(b.snapshot(4 * H).available_thh, Some(0));
+        assert_eq!(b.snapshot(4 * H).available_tih, Some(0));
         assert!(b.check(1, 4 * H).is_err());
     }
 
@@ -493,10 +509,10 @@ mod tests {
     fn oversold_shows_negative_headroom() {
         let b = CapacityBook::new();
         b.set_manual(vec![rental(10.0, H)]);
-        b.set_owed(25.0, 0);
+        b.set_owed(25.0 * T, 0);
         let s = b.snapshot(0);
-        assert!((s.headroom_thh + 15.0).abs() < 1e-9);
-        assert_eq!(s.available_thh, Some(0));
+        assert!((s.headroom_tih + 15.0 * T).abs() < 1e-6);
+        assert_eq!(s.available_tih, Some(0));
     }
 
     #[test]
@@ -504,13 +520,13 @@ mod tests {
         let b = CapacityBook::new();
         b.set_manual(vec![rental(10.0, H)]);
         b.set_limit(Some(false));
-        assert!(b.check(1_000, 0).is_ok());
+        assert!(b.check(100_000, 0).is_ok());
         b.set_limit(None);
-        assert!(b.check(1_000, 0).is_err());
+        assert!(b.check(100_000, 0).is_err());
         // MRR configured but not yet synced: limit on, nothing to sell.
         let m = CapacityBook::new();
         m.enable_mrr();
-        assert_eq!(m.snapshot(0).available_thh, Some(0));
+        assert_eq!(m.snapshot(0).available_tih, Some(0));
     }
 
     #[test]
@@ -546,7 +562,7 @@ mod tests {
         let again = CapacityBook::load(path).unwrap();
         let s = again.snapshot(0);
         assert!(s.limit_explicit);
-        assert!((s.capacity_thh - 62.5).abs() < 1e-9);
+        assert!((s.capacity_tih - 62.5 * T).abs() < 1e-6);
     }
 
     #[test]
@@ -558,18 +574,18 @@ mod tests {
         // Measured, but off until the operator sets a horizon.
         let s = b.snapshot(0);
         assert!(s.live.available && !s.live.on);
-        assert_eq!(s.available_thh, Some(0));
+        assert_eq!(s.available_tih, Some(0));
         b.set_live_horizon(Some(24.0)).unwrap();
         let s = b.snapshot(0);
-        assert!((s.live.thh - 28.8).abs() < 1e-9);
-        assert_eq!(s.available_thh, Some(28));
-        b.set_owed(10.0, 0);
-        assert_eq!(b.snapshot(0).available_thh, Some(18));
+        assert!((s.live.tih - 28.8 * T).abs() < 1e-6);
+        assert_eq!(s.available_tih, Some((28.8 * T).floor() as u64));
+        b.set_owed(10.0 * T, 0);
+        assert_eq!(b.snapshot(0).available_tih, Some((18.8 * T).floor() as u64));
         // The rig goes quiet: nothing left to sell, and the mint is oversold.
         *ths.lock().unwrap() = 0.0;
         let s = b.snapshot(0);
-        assert_eq!(s.available_thh, Some(0));
-        assert!(s.headroom_thh < 0.0);
+        assert_eq!(s.available_tih, Some(0));
+        assert!(s.headroom_tih < 0.0);
         // Off again.
         b.set_live_horizon(None).unwrap();
         assert!(!b.snapshot(0).live.on);
@@ -584,12 +600,12 @@ mod tests {
         b.set_live_horizon(Some(5.0)).unwrap();
         let s = b.snapshot(0);
         assert!((s.live.extra_ths - 1.0).abs() < 1e-9);
-        assert!((s.capacity_thh - 25.0).abs() < 1e-9);
+        assert!((s.capacity_tih - 25.0 * T).abs() < 1e-6);
         // Measuring less than rented adds nothing (and takes nothing away).
         b.set_live_source(Arc::new(|| 7.0));
         let s = b.snapshot(0);
         assert_eq!(s.live.extra_ths, 0.0);
-        assert!((s.capacity_thh - 20.0).abs() < 1e-9);
+        assert!((s.capacity_tih - 20.0 * T).abs() < 1e-6);
     }
 
     #[test]
@@ -600,7 +616,7 @@ mod tests {
         // Without a proxy the horizon is kept but nothing is counted.
         b.set_live_horizon(Some(3.0)).unwrap();
         let s = b.snapshot(0);
-        assert!(!s.live.available && !s.live.on && s.live.thh == 0.0);
+        assert!(!s.live.available && !s.live.on && s.live.tih == 0.0);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("capacity.json");

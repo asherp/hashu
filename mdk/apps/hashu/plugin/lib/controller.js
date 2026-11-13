@@ -3,7 +3,7 @@
 // The heater controller: one loop, started by main.js, read by the routes.
 //
 // Every tick it
-//   1. asks the Hashu proxy's control API whether a THH redemption is open,
+//   1. asks the Hashu proxy's control API whether a TiH redemption is open,
 //   2. reads each heater's telemetry through the MDK Kernel (pullTelemetry),
 //   3. decides pool and heat level (policy.js), and
 //   4. sends setupPools / setPowerMode through the Kernel (sendCommand)
@@ -11,7 +11,7 @@
 //
 // It never talks to a miner directly: telemetry and control go through MDK.
 
-const { choosePool, chooseHeat, economics, samePool } = require('./policy')
+const { TIH_PER_TH_HOUR, choosePool, chooseHeat, economics, samePool } = require('./policy')
 
 const DEFAULTS = {
   hashuControlUrl: 'http://127.0.0.1:3334',
@@ -19,7 +19,7 @@ const DEFAULTS = {
   homePool: { url: 'stratum+tcp://127.0.0.1:3340', user: 'home.heater', pass: 'x' },
   redeemPool: { url: 'stratum+tcp://127.0.0.1:3341', user: 'buyer.heater' },
   thermostat: { enabled: true, setpointC: 21, hysteresisC: 0.5, maxRoomC: 26 },
-  satsPerThh: 2,
+  msatPerPih: 625, // ≈ 2 sats per THH
   electricitySatsPerKwh: 150,
   tickMs: 2000,
   commandHoldMs: 8000,
@@ -32,7 +32,7 @@ const state = {
   hashu: { reachable: null, error: null, status: null, checkedAt: null },
   devices: {}, // deviceId -> view
   overrides: {}, // deviceId -> 'auto' | 'home' | 'hashu' | 'off'
-  totals: { heatKwh: 0, thhProduced: 0, thhSold: 0, since: Date.now() },
+  totals: { heatKwh: 0, tihProduced: 0, tihSold: 0, since: Date.now() },
   events: [],
   pending: {}, // `${deviceId}:${command}` -> { target, at }
   capabilityCache: {},
@@ -140,7 +140,7 @@ async function tickDevice (deviceId, redemptionOpen, dtH) {
   const onHashu = samePool(pool, cfg.proxyPool)
 
   state.totals.heatKwh += (powerW / 1000) * dtH
-  state.totals.thhProduced += hashrateThs * dtH
+  state.totals.tihProduced += hashrateThs * dtH * TIH_PER_TH_HOUR
 
   const prevDev = state.devices[deviceId]
   const joulesPerTh = hashrateThs > 0 && powerW > 0 ? powerW / hashrateThs : prevDev?.joulesPerTh ?? null
@@ -159,7 +159,7 @@ async function tickDevice (deviceId, redemptionOpen, dtH) {
     sharesAccepted: Number(pick(t, 'shares_accepted')) || 0,
     override,
     target: { pool: poolChoice.pool, poolReason: poolChoice.reason, mode: heatChoice.mode, modeReason: heatChoice.reason },
-    economics: economics({ powerW, hashrateThs, joulesPerTh, satsPerThh: cfg.satsPerThh, electricitySatsPerKwh: cfg.electricitySatsPerKwh })
+    economics: economics({ powerW, hashrateThs, joulesPerTh, msatPerPih: cfg.msatPerPih, electricitySatsPerKwh: cfg.electricitySatsPerKwh })
   }
 
   if (!samePool(pool, targetPool)) {
@@ -178,15 +178,15 @@ async function tick () {
   const st = state.hashu.status
   const redemptionOpen = state.hashu.reachable ? (st.active_redemptions || 0) > 0 : null
   if (st && Array.isArray(st.redemptions)) {
-    state.totals.thhSold = st.redemptions.reduce((s, r) => s + Math.min(r.filled_thh || 0, r.amount_thh || 0), 0)
+    state.totals.tihSold = st.redemptions.reduce((s, r) => s + Math.min(r.filled_tih || 0, r.amount_tih || 0), 0)
     for (const r of st.redemptions) {
       if (!state.pending[`open:${r.id}`]) {
         state.pending[`open:${r.id}`] = { at: now }
-        event('redemption', `redemption ${r.id.slice(0, 8)} open: ${r.amount_thh} THH for ${r.worker_name} @ ${r.pool_url}`)
+        event('redemption', `redemption ${r.id.slice(0, 8)} open: ${r.amount_tih} TiH for ${r.worker_name} @ ${r.pool_url}`)
       }
       if (r.state === 'completed' && !state.pending[`done:${r.id}`]) {
         state.pending[`done:${r.id}`] = { at: now }
-        event('redemption', `redemption ${r.id.slice(0, 8)} filled: ${r.amount_thh} THH delivered to ${r.worker_name}`)
+        event('redemption', `redemption ${r.id.slice(0, 8)} filled: ${r.amount_tih} TiH delivered to ${r.worker_name}`)
       }
     }
   }
@@ -240,10 +240,10 @@ function view () {
     },
     pools: { home: cfg.homePool, hashu: cfg.proxyPool, redeem: cfg.redeemPool },
     thermostat: cfg.thermostat,
-    prices: { satsPerThh: cfg.satsPerThh, electricitySatsPerKwh: cfg.electricitySatsPerKwh },
+    prices: { msatPerPih: cfg.msatPerPih, electricitySatsPerKwh: cfg.electricitySatsPerKwh },
     devices,
-    fleet: { powerW, hashrateThs, economics: economics({ powerW, hashrateThs, joulesPerTh, satsPerThh: cfg.satsPerThh, electricitySatsPerKwh: cfg.electricitySatsPerKwh }) },
-    totals: { ...state.totals, satsEarned: state.totals.thhSold * cfg.satsPerThh },
+    fleet: { powerW, hashrateThs, economics: economics({ powerW, hashrateThs, joulesPerTh, msatPerPih: cfg.msatPerPih, electricitySatsPerKwh: cfg.electricitySatsPerKwh }) },
+    totals: { ...state.totals, satsEarned: state.totals.tihSold * cfg.msatPerPih / 1024 / 1000 },
     events: state.events.slice(0, 25),
     allowDemoRedeem: !!cfg.allowDemoRedeem
   }
@@ -276,13 +276,14 @@ function updateSettings (body) {
 async function demoRedeem (body) {
   if (!state.config.allowDemoRedeem) throw new Error('ERR_DEMO_REDEEM_DISABLED')
   const b = body || {}
-  const amount = Number(b.amountThh || 1)
-  if (!Number.isInteger(amount) || amount < 1 || amount > 1000) throw new Error('ERR_BAD_AMOUNT')
+  // Default ≈ 1 THH (3,274 TiH); at most 2^22 TiH (≈ 1,281 THH).
+  const amount = Number(b.amountTih || 3274)
+  if (!Number.isInteger(amount) || amount < 1 || amount > 2 ** 22) throw new Error('ERR_BAD_AMOUNT')
   const res = await fetch(state.config.hashuControlUrl.replace(/\/$/, '') + '/redemptions', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      amount_thh: amount,
+      amount_tih: amount,
       pool_url: b.poolUrl || state.config.redeemPool.url,
       worker_name: b.workerName || state.config.redeemPool.user
     }),

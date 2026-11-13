@@ -2,7 +2,7 @@
 id: io.hashu.heater
 version: 0.1.0
 displayName: "Hashu Heater"
-description: "Sell your heater's hashrate as THH vouchers. Switches the miner to the Hashu proxy while a redemption is filled and back to your pool after, with a thermostat."
+description: "Sell your heater's hashrate as TiH vouchers. Switches the miner to the Hashu proxy while a redemption is filled and back to your pool after, with a thermostat."
 main: main.js
 # Reads heater telemetry and sends setupPools / setPowerMode through the Kernel.
 permissions:
@@ -14,7 +14,7 @@ config:
   homePool: { url: "stratum+tcp://127.0.0.1:3340", user: "home.heater", pass: "x" }
   redeemPool: { url: "stratum+tcp://127.0.0.1:3341", user: "buyer.heater" }
   thermostat: { enabled: true, setpointC: 21, hysteresisC: 0.5, maxRoomC: 26 }
-  satsPerThh: 2
+  msatPerPih: 625
   electricitySatsPerKwh: 150
   tickMs: 2000
   allowDemoRedeem: true

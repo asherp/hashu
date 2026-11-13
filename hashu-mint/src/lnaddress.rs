@@ -2,7 +2,7 @@
 //! through their Lightning address.
 //!
 //! A supplier mint (`alice.mint.hashu.io`) never holds buyer funds: each
-//! THH sale is an invoice from Alice's own wallet. For a Lightning address
+//! TiH sale is an invoice from Alice's own wallet. For a Lightning address
 //! `alice@wallet.example`:
 //!
 //! 1. LUD-16: `GET https://wallet.example/.well-known/lnurlp/alice` gives the
