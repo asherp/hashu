@@ -1440,7 +1440,10 @@ mod tests {
             let (id, url) = (field("id"), field("url"));
             let guide = std::fs::read_to_string(docs.join(format!("{id}.md")))
                 .unwrap_or_else(|e| panic!("docs/redeem/{id}.md: {e}"));
-            assert!(guide.contains(url), "docs/redeem/{id}.md no longer lists {url}");
+            assert!(
+                guide.contains(url),
+                "docs/redeem/{id}.md no longer lists {url}"
+            );
             n += 1;
         }
         assert!(n >= 5, "only {n} pools parsed");
