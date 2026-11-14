@@ -822,6 +822,7 @@ if (ORDER) {
   if (h.get('buy')) { st.checkout = { id: h.get('buy') }; api(`api/buy/${encodeURIComponent(h.get('buy'))}`).then((c) => { st.checkout = c; showPay(); if (c.token) showToken(); else pollBuy() }).catch((e) => alertMsg(e.message)) }
   else if (h.get('token')) { $('r-token').value = h.get('token'); history.replaceState(null, '', location.pathname); step('redeem'); checkToken(); $('s-redeem').scrollIntoView({ behavior: 'smooth' }) }
   else if (h.get('redemption')) { st.redemption = h.get('redemption'); step('redeem'); pollRedemption() }
+  else if (h.has('redeem')) { history.replaceState(null, '', location.pathname); step('redeem'); $('s-redeem').scrollIntoView({ behavior: 'smooth' }); $('r-token').focus() }
   else step('buy')
 })
 if (!ORDER) setInterval(() => { if (!st.checkout) loadInfo() }, 10000)
