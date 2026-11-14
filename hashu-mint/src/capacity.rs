@@ -23,10 +23,10 @@
 //!
 //! The operator can also count the mint's own connected rigs (a Bitaxe at
 //! home, say) by setting a live horizon. They back a stock of TiH, the same
-//! rule supplier mints sell by ([`crate::stock`], #92): once per horizon it
-//! is restocked to what the rigs produce within it, and in between it only
-//! goes down as buyers take it, so the quantity holds still while the
-//! hashrate moves. To avoid counting rented rigs twice (they mine on the
+//! rule supplier mints sell by ([`crate::stock`], #92): every hour it is
+//! topped up to what the rigs produce within the horizon, and in between
+//! it only goes down as buyers take it, so the quantity holds still while
+//! the hashrate moves. To avoid counting rented rigs twice (they mine on the
 //! proxy too), only measured hashrate above the running rentals' declared
 //! TH/s is averaged:
 //!
@@ -694,12 +694,10 @@ mod tests {
         assert_eq!(b.snapshot(H).available_tih, Some((18.8 * T).floor() as u64));
         // The rig goes quiet and the redemption fills: same stock on sale.
         *ths.lock().unwrap() = 0.0;
-        b.set_owed(0.0, 2 * H);
-        b.refresh_live(2 * H);
-        assert_eq!(
-            b.snapshot(2 * H).available_tih,
-            Some((18.8 * T).floor() as u64)
-        );
+        let m = H + H / 2;
+        b.set_owed(0.0, m);
+        b.refresh_live(m);
+        assert_eq!(b.snapshot(m).available_tih, Some((18.8 * T).floor() as u64));
         // Off again.
         b.set_live_horizon(None).unwrap();
         assert!(!b.snapshot(0).live.on);
@@ -745,8 +743,8 @@ mod tests {
         let again = CapacityBook::load(path).unwrap();
         again.set_live_source(Arc::new(|| 1.0));
         again.set_sold(5_000.0);
-        again.refresh_live(H);
-        assert!((again.snapshot(H).live.tih - left).abs() < 1e-6);
+        again.refresh_live(H / 2);
+        assert!((again.snapshot(H / 2).live.tih - left).abs() < 1e-6);
         again.restock_live(H).unwrap();
         assert!((again.snapshot(H).live.tih - 10.0 * T).abs() < 1e-3);
     }

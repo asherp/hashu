@@ -32,7 +32,7 @@ hashrate at their own pool. The mint never pays out bitcoin.
 | `hashrate` melt method via cdk (redemption ledger + `MintPayment` backend) | done | `hashu-core::redemption`, `hashu-mint::melt` |
 | Stop a redemption partway and get change back | done | `hashu-cli::orders` |
 | NUT-24 paid redeem (`POST /api/redeem` with `X-Cashu`) | done | `hashu-cli::paid` |
-| Sales capped at rented capacity (MiningRigRentals sync) + own rigs' stock, restocked per horizon from EWMA hashrate | done | `hashu-mint::capacity` |
+| Sales capped at rented capacity (MiningRigRentals sync) + own rigs' stock, topped up hourly from EWMA hashrate | done | `hashu-mint::capacity` |
 | Stratum V1 proxy: share counting, seamless pool switching, size-aware routing | done | `hashu-proxy::{stratum,router}` |
 | Per-redemption share tree + audit API (`GET /redemptions/{id}/root`, `/proof/{n}`) | done | `hashu-proxy::{audit,control}` |
 | Home pools: Bitaxes and other rigs on one endpoint | done | `hashu-proxy::home` |

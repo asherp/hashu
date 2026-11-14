@@ -35,10 +35,10 @@
 //!   operator's manual list (MRR rentals sync on their own; the GUI no
 //!   longer adds manual ones); `limit: null` goes back to automatic.
 //!   `live_horizon_hours` sells a stock backed by the connected rigs
-//!   (above what rentals declare): restocked once per horizon to their
+//!   (above what rentals declare): topped up every hour to their
 //!   EWMA hashrate (half-life horizon / 2) × the horizon, drawn down by
 //!   sales in between (#92); `null` turns it off. `"restock_live": true`
-//!   restocks now instead of waiting for the horizon.
+//!   restocks now instead of waiting for the hour.
 //!
 //! `POST /api/controls` settings are saved to `operator-settings.json` in the
 //! data dir and capacity to `capacity.json`, so both survive a restart; a

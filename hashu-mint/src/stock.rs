@@ -1,4 +1,4 @@
-//! A fixed stock of TiH for sale, restocked once per horizon (#92).
+//! A stock of TiH for sale, topped up every hour (#92, #95).
 //!
 //! Selling `measured hashrate × horizon − owed` made the quantity on sale
 //! jump with every share. A stock holds still between restocks and only
@@ -10,11 +10,16 @@
 //! between restocks: left  = batch − TiH sold since the restock
 //! ```
 //!
+//! - A restock is a top-up every [`RESTOCK_EVERY_HOURS`] (Asher,
+//!   2026-11-14; #92 first restocked once per horizon, which left sold
+//!   stock off sale for up to a whole horizon). Between top-ups only sales
+//!   take it down.
+//!
 //! - The hashrate is an EWMA with half-life = horizon / 2, so one quiet
 //!   hour does not shrink the next batch.
-//! - A restock happens once per horizon (or when the seller asks). It
-//!   never takes away stock already listed, and since the batch is sized to
-//!   one horizon's production, unsold stock cannot pile up beyond that.
+//! - A top-up (hourly, or when the seller asks) never takes away stock
+//!   already listed, and since the batch is sized to one horizon's
+//!   production, unsold stock cannot pile up beyond that.
 //! - Until a first non-empty batch has been stocked, the stock refills as
 //!   soon as there is hashrate, so a newly connected rig does not wait a
 //!   whole horizon. Before that first batch the average simply follows the
@@ -41,6 +46,13 @@ const MS_PER_HOUR: f64 = 3_600_000.0;
 /// the proxy reports a rig's rate only after a few accepted shares, so the
 /// first readings after a restart are empty even with rigs hashing.
 pub const WARMUP_MS: u64 = 3 * 60_000;
+
+/// How often the stock is topped up once its first batch is stocked.
+pub const RESTOCK_EVERY_HOURS: f64 = 1.0;
+
+fn restock_every_ms(horizon_hours: f64) -> u64 {
+    (RESTOCK_EVERY_HOURS.min(horizon_hours.max(0.0)) * MS_PER_HOUR) as u64
+}
 
 /// EWMA of hashrate with a half-life that follows the horizon.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -136,7 +148,7 @@ impl Stock {
             // Never stocked anything yet: fill as soon as there is hashrate.
             _ if !self.stocked => true,
             None => true,
-            Some(t) => now_ms >= t + (horizon_hours * MS_PER_HOUR) as u64,
+            Some(t) => now_ms >= t + restock_every_ms(horizon_hours),
         }
     }
 
@@ -233,7 +245,7 @@ impl Stock {
             restocked_ms: self.restocked_ms,
             next_restock_ms: self
                 .restocked_ms
-                .map(|t| t + (horizon_hours * MS_PER_HOUR) as u64),
+                .map(|t| t + restock_every_ms(horizon_hours)),
         }
     }
 }
@@ -265,7 +277,7 @@ mod tests {
         assert!((s.left(0.0) - batch).abs() < 1e-6);
         // Hashrate jumps around: nothing on sale changes.
         for (i, ths) in [3.0, 0.0, 0.2, 5.0].iter().enumerate() {
-            assert!(!s.tick(Some(*ths), 24.0, 0.0, 0.0, (i as u64 + 1) * H, false));
+            assert!(!s.tick(Some(*ths), 24.0, 0.0, 0.0, (i as u64 + 1) * H / 10, false));
             assert!((s.left(0.0) - batch).abs() < 1e-6);
         }
     }
@@ -285,22 +297,25 @@ mod tests {
     }
 
     #[test]
-    fn restocks_once_per_horizon_to_production_minus_owed_and_keeps_leftovers() {
+    fn tops_up_hourly_to_production_minus_owed_and_keeps_leftovers() {
         let mut s = Stock::default();
         s.tick(Some(1.0), 24.0, 0.0, 0.0, 0, false);
         let batch = s.batch_tih;
-        // Sell half, then a day passes at 1 TH/s with 1,000 TiH owed.
+        // Sell half: within the hour it stays sold.
         let sold = batch / 2.0;
-        assert!(!s.tick(Some(1.0), 24.0, 1_000.0, sold, 23 * H, false));
-        assert!(s.tick(Some(1.0), 24.0, 1_000.0, sold, 24 * H, false));
+        assert!(!s.tick(Some(1.0), 24.0, 1_000.0, sold, H - 1, false));
+        assert!((s.left(sold) - batch / 2.0).abs() < 1e-6);
+        // On the hour it is topped up to a horizon's production less owed.
+        assert!(s.tick(Some(1.0), 24.0, 1_000.0, sold, H, false));
         assert!((s.left(sold) - (batch - 1_000.0)).abs() < 1e-6);
-        // Rigs gone: the average decays, but a restock never takes away
+        assert_eq!(s.view(24.0, sold).next_restock_ms, Some(2 * H));
+        // Rigs gone: the average decays, but a top-up never takes away
         // what is still listed.
-        for h in 25..48 {
+        for h in 2..30 {
             s.tick(Some(0.0), 24.0, 0.0, sold, h * H, false);
         }
         let before = s.left(sold);
-        assert!(s.tick(Some(0.0), 24.0, 0.0, sold, 48 * H, false));
+        assert!(s.tick(Some(0.0), 24.0, 0.0, sold, 30 * H, false));
         assert!((s.left(sold) - before).abs() < 1e-6);
     }
 

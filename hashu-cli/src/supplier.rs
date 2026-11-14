@@ -6,10 +6,10 @@
 //!   1,024 TiH; #90). Every mint quotes in the same unit, so asks compare
 //!   and orders can be matched across suppliers at Lightning's resolution.
 //!   ≈ 625 msat/PiH is ≈ 2 sats per THH;
-//! - `horizon_hours`: how far ahead they sell (Asher, 2026-11-11). Once per
-//!   horizon the mint restocks to what their verified rigs produce within
-//!   it (EWMA hashrate, half-life horizon / 2, × horizon − TiH owed); between
-//!   restocks the stock only goes down as buyers take it, so the quantity
+//! - `horizon_hours`: how far ahead they sell (Asher, 2026-11-11). Every hour
+//!   the mint tops up their stock to what their verified rigs produce within
+//!   the horizon (EWMA hashrate, half-life horizon / 2, × horizon − TiH
+//!   owed); between top-ups the stock only goes down as buyers take it, so the quantity
 //!   holds still and the delivery ETA moves (#92, [`hashu_mint::stock`]);
 //! - `lightning_address`: where buyers pay (LUD-16 + LUD-21, see
 //!   [`hashu_mint::lnaddress`]).
@@ -342,30 +342,31 @@ mod tests {
     }
 
     #[test]
-    fn stock_holds_still_while_hashrate_moves_and_restocks_per_horizon() {
+    fn stock_holds_still_while_hashrate_moves_and_tops_up_hourly() {
+        const M: u64 = 60_000;
         let ths = Arc::new(Mutex::new(1.0));
         let p = live_pricer(ths.clone(), Some(600), 24.0);
         p.refresh(0.0, 0.0, 0, false);
         let first = p.capacity().available_tih;
         // 1 TH/s × 24 h ≈ 78,580 TiH.
         assert_eq!(first, 78_580);
-        // Hashrate swings within the horizon: same quantity on sale.
+        // Hashrate swings within the hour: same quantity on sale.
         for (h, t) in [(1, 3.0), (2, 0.1), (5, 2.0), (23, 0.0)] {
             *ths.lock().unwrap() = t;
-            p.refresh(0.0, 0.0, h * H, false);
+            p.refresh(0.0, 0.0, h * M, false);
             assert_eq!(p.capacity().available_tih, first);
         }
         // A buyer takes 10,000; a redemption delivering (owed falling) does
         // not put it back.
-        p.refresh(10_000.0, 10_000.0, 23 * H + 1, false);
+        p.refresh(10_000.0, 10_000.0, 23 * M + 1, false);
         assert_eq!(p.capacity().available_tih, first - 10_000);
-        p.refresh(2_000.0, 10_000.0, 23 * H + 2, false);
+        p.refresh(2_000.0, 10_000.0, 23 * M + 2, false);
         assert_eq!(p.capacity().available_tih, first - 10_000);
-        // At the horizon it restocks from the average, minus what is owed.
+        // On the hour it tops up from the average, minus what is owed.
         *ths.lock().unwrap() = 1.0;
-        assert!(p.refresh(2_000.0, 10_000.0, 24 * H, false));
+        assert!(p.refresh(2_000.0, 10_000.0, H, false));
         let c = p.capacity();
-        assert_eq!(c.stock.restocked_ms, Some(24 * H));
+        assert_eq!(c.stock.restocked_ms, Some(H));
         assert!(c.stock.ewma_ths > 0.0 && c.stock.ewma_ths < 3.0);
         let fresh = hashu_core::denom::tih_from_ths_hours(c.stock.ewma_ths, 24.0) - 2_000.0;
         let left = (first - 10_000) as f64;
