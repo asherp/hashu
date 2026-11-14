@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hashu Delivery Simulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* Layout: control strip → status line → vessel tank (hero) → timeline + order ledger */
+:root {
+  --bg: #F1F4F7;
+  --surface: #FFFFFF;
+  --ink: #14202B;
+  --muted: #5A6A79;
+  --line: #CDD6DE;
+  --vessel: #8A9AA9;
+  --water: #2F76C2;
+  --water-soft: #A9CBEE;
+  --half: #B97A12;
+  --done: #9AA8B5;
+  --done-soft: #DCE3E9;
+  --focus: #2F76C2;
+  --font-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0E151C; --surface: #151F29; --ink: #E3E9EF; --muted: #8C9DAD; --line: #2A3946;
+    --vessel: #6D8091; --water: #4A98E6; --water-soft: #234D78; --half: #E2A640;
+    --done: #5E6F7F; --done-soft: #22303C; --focus: #4A98E6; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0E151C; --surface: #151F29; --ink: #E3E9EF; --muted: #8C9DAD; --line: #2A3946;
+  --vessel: #6D8091; --water: #4A98E6; --water-soft: #234D78; --half: #E2A640;
+  --done: #5E6F7F; --done-soft: #22303C; --focus: #4A98E6; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 28px 40px; display: flex; flex-direction: column; gap: 18px; }
+header { display: flex; flex-direction: column; gap: 6px; }
+.eyebrow { margin: 0; font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: clamp(26px, 4vw, 34px); line-height: 1.15; text-wrap: balance; }
+.lede { margin: 0; max-width: 68ch; color: var(--muted); }
+h2 { margin: 0; font-family: var(--font-display); font-weight: 500; font-size: 17px; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.panel-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+.hint { margin: 0; font-size: 13px; color: var(--muted); }
+
+.controls { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: flex-end; }
+.group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.group > label, .group > .lbl { font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+button, select, input[type="number"] { font: inherit; font-size: 14px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; padding: 7px 12px; }
+button { cursor: pointer; font-weight: 500; }
+button:hover { border-color: var(--vessel); }
+button.primary { background: var(--water); border-color: var(--water); color: #fff; min-width: 84px; }
+button.primary:hover { filter: brightness(1.08); }
+input[type="number"] { width: 84px; font-family: var(--font-mono); }
+input[type="range"] { width: 140px; accent-color: var(--water); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.val { font-family: var(--font-mono); font-size: 13px; min-width: 4.5ch; font-variant-numeric: tabular-nums; }
+
+.status { display: flex; flex-wrap: wrap; gap: 6px 26px; font-size: 14px; padding: 0 2px; }
+.status div { display: flex; gap: 8px; align-items: baseline; }
+.status dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+.status dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 500; }
+dl { margin: 0; }
+
+.scroll { overflow-x: auto; min-width: 0; }
+svg text { font-family: var(--font-mono); font-size: 11px; fill: var(--muted); }
+svg .id { font-family: var(--font-body); font-weight: 600; font-size: 12.5px; fill: var(--ink); }
+svg .strong { fill: var(--ink); }
+
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 14px; height: 10px; border-radius: 2px; display: inline-block; }
+
+.grid2 { display: grid; grid-template-columns: 1fr; gap: 18px; }
+@media (min-width: 1000px) { .grid2 { grid-template-columns: 1.1fr 1fr; } }
+
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th { text-align: left; font-weight: 500; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); padding: 6px 10px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; font-variant-numeric: tabular-nums; }
+td.num { font-family: var(--font-mono); text-align: right; }
+th.num { text-align: right; }
+tr:last-child td { border-bottom: 0; }
+.bar { display: inline-block; width: 70px; height: 6px; border-radius: 3px; background: var(--done-soft); vertical-align: middle; margin-left: 8px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--water); }
+.pill { display: inline-block; font-size: 12px; padding: 1px 9px; border-radius: 999px; font-weight: 500; }
+.p-queued { border: 1px dashed var(--vessel); color: var(--muted); }
+.p-lower { background: var(--water-soft); color: var(--ink); }
+.p-upper { background: var(--water); color: #fff; }
+.p-done { background: var(--done-soft); color: var(--muted); }
+.empty { color: var(--muted); font-size: 14px; padding: 18px 4px; }
+
+footer { font-size: 13px; color: var(--muted); max-width: 80ch; display: flex; flex-direction: column; gap: 4px; }
+footer p { margin: 0; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Hashu · redemption priority</p>
+    <h1>Hashu Delivery Simulator</h1>
+    <p class="lede">Each redemption is a vessel, sized in TH/s·h. Every minute the mint's hash rate pours in and raises one shared water level. Below halfway, open orders gain equally; above halfway, their shortfalls are equalised. A newcomer's top is set so it can't finish ahead of an earlier order.</p>
+  </header>
+
+  <section class="panel" aria-label="Controls">
+    <div class="controls">
+      <div class="group">
+        <span class="lbl">Run</span>
+        <div class="row">
+          <button id="play" class="primary" type="button">Play</button>
+          <button id="step" type="button">Step</button>
+          <button id="reset" type="button">Reset</button>
+        </div>
+      </div>
+      <div class="group">
+        <label for="preset">Scenario</label>
+        <select id="preset">
+          <option value="test">Test run: 8 random orders</option>
+          <option value="equal">Two equal orders, 5 minutes apart</option>
+          <option value="whale">Whale arrives late</option>
+          <option value="empty">Empty mint</option>
+        </select>
+      </div>
+      <div class="group">
+        <label for="rate">Hash rate</label>
+        <div class="row"><input id="rate" type="range" min="60" max="3600" step="60" value="900"><span class="val" id="rateVal">900 TH/s</span></div>
+      </div>
+      <div class="group">
+        <label for="speed">Speed</label>
+        <div class="row"><input id="speed" type="range" min="1" max="12" step="1" value="4"><span class="val" id="speedVal">4 min/s</span></div>
+      </div>
+      <div class="group">
+        <label for="size">Redeem (TH/s·h)</label>
+        <div class="row">
+          <input id="size" type="number" min="1" max="2000" step="1" value="40" aria-label="Order size in TH/s·h">
+          <button id="add" type="button">Add order</button>
+          <button id="burst" type="button">Random burst</button>
+        </div>
+      </div>
+      <div class="group">
+        <label for="auto">New orders per minute</label>
+        <div class="row"><input id="auto" type="range" min="0" max="1.5" step="0.05" value="0.35"><span class="val" id="autoVal">0.35</span></div>
+      </div>
+    </div>
+  </section>
+
+  <dl class="status" aria-live="polite">
+    <div><dt>Elapsed</dt><dd id="sTick">0 min</dd></div>
+    <div><dt>Water level</dt><dd id="sLevel">0</dd></div>
+    <div><dt>Open orders</dt><dd id="sOpen">0</dd></div>
+    <div><dt>Owed</dt><dd id="sOwed">0</dd></div>
+    <div><dt>Delivered</dt><dd id="sDelivered">0</dd></div>
+    <div><dt>Idle hashes</dt><dd id="sIdle">0</dd></div>
+    <div><dt>Finished</dt><dd id="sDone">0</dd></div>
+    <div><dt>Avg wait</dt><dd id="sWait">—</dd></div>
+    <div><dt>Load</dt><dd id="sLoad">—</dd></div>
+  </dl>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Vessels</h2>
+      <p class="hint">Height is water level in TH/s·h. Each vessel: lower half, pipe, upper half.</p>
+    </div>
+    <div class="scroll" id="vesselBox"><svg id="vessels" role="img" aria-label="Order vessels filling with hashes"></svg></div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--water)"></i>Delivered hashes</span>
+      <span><i class="sw" style="background:transparent;border:1.5px solid var(--vessel)"></i>Still owed</span>
+      <span><i class="sw" style="background:var(--half);height:2px"></i>Halfway line</span>
+      <span><i class="sw" style="border-top:1.5px dashed var(--ink);height:0"></i>Shared water level</span>
+    </div>
+  </section>
+
+  <div class="grid2">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Timeline</h2>
+        <p class="hint">Minutes elapsed. Light: lower half. Dark: upper half. Dashed: ETA if no one else redeems.</p>
+      </div>
+      <div class="scroll" id="timelineBox"><svg id="timeline" role="img" aria-label="Order timeline"></svg></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Orders</h2></div>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Order</th><th class="num">Size (TH/s·h)</th><th class="num">Arrived</th><th class="num">Delivered (TH/s·h)</th><th>Phase</th><th class="num">Finish</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <p>Hash rate is in TH/s. Orders, deliveries and the water level are in TH/s·h, one terahash per second sustained for an hour (3.6 million TH). The split is recomputed once a minute, so each minute delivers hash rate ÷ 60 TH/s·h. The mint is modelled as one pooled hash rate that switches between orders instantly; rented rigs and switching delays come later.</p>
+    <p>New orders keep arriving at random, sized 5 to 100 TH/s·h. Load is average demand as a share of hash rate; above 100% the backlog grows without limit.</p>
+    <p>Rule: a lone order fills straight up. Orders arriving in the same tick share one top, set at the water level plus the largest of their sizes and every open order's remaining amount. Existing tops never move.</p>
+  </footer>
+</div>
+
+<script>
+(() => {
+  const EPS = 1e-9;
+  const PRESETS = {
+    test:  { rate: 900, start: 9, arrivals: { 1: [["C",5],["F",60]], 2: [["H",40]], 6: [["G",5]], 10: [["A",10]], 11: [["E",60]], 12: [["B",100]], 17: [["D",5]] } },
+    equal: { rate: 600, start: 0, arrivals: { 0: [["A",60]], 5: [["B",60]] } },
+    whale: { rate: 900, start: 0, arrivals: { 0: [["A",20],["B",30]], 3: [["C",40]], 6: [["D",300]], 8: [["E",10]] } },
+    empty: { rate: 900, start: 0, arrivals: {} },
+  };
+  const SIZES = [5, 10, 20, 40, 60, 100];
+  const KEEP = 120, WINDOW = 60, MAX_ROWS = 28;
+
+  const $ = (id) => document.getElementById(id);
+  let S, rate = 15, timer = null, presetKey = "test"; // rate = TH/s·h delivered per one-minute tick
+  const setRate = (ths) => { rate = ths / 60; $("rate").value = ths; $("rateVal").textContent = ths.toLocaleString() + " TH/s"; };
+
+  function filled(o, h) {
+    const x = h - o.base;
+    if (x <= 0) return 0;
+    const half = o.size / 2;
+    return Math.min(o.size, Math.min(x, half) + Math.max(0, h - (o.top - half)));
+  }
+  const total = (os, h) => os.reduce((s, o) => s + filled(o, h), 0);
+
+  function pour(orders, h, E) {
+    const open = orders.filter(o => o.doneAt == null);
+    if (!open.length) return [h, E];
+    const top = Math.max(...open.map(o => o.top));
+    const base = total(open, h);
+    const avail = total(open, top) - base;
+    if (avail <= E) return [top, E - avail];
+    let lo = h, hi = top; const target = base + E;
+    for (let i = 0; i < 64; i++) {
+      const mid = (lo + hi) / 2;
+      if (total(open, mid) < target) lo = mid; else hi = mid;
+    }
+    return [hi, 0];
+  }
+
+  function admit(state, batch) {
+    if (!batch.length) return;
+    const open = state.orders.filter(o => o.doneAt == null);
+    const T = state.h + Math.max(...batch.map(b => b[1]), ...open.map(o => o.size - filled(o, state.h)));
+    for (const [id, size] of batch) state.orders.push({ id, size, base: state.h, top: T, arrived: state.t, doneAt: null, halfAt: null });
+  }
+
+  function mark(state) {
+    for (const o of state.orders) {
+      const f = filled(o, state.h);
+      if (o.halfAt == null && f >= o.size / 2 - EPS) o.halfAt = state.t;
+      if (o.doneAt == null && f >= o.size - EPS) o.doneAt = state.t;
+    }
+  }
+
+  function step() {
+    const batch = [...(S.scheduled[S.t] || []), ...S.queued];
+    S.queued = [];
+    admit(S, batch);
+    const before = total(S.orders, S.h);
+    const [h2, idle] = pour(S.orders, S.h, rate);
+    S.h = h2; S.idle += idle;
+    S.delivered += total(S.orders, S.h) - before;
+    mark(S);
+    S.t++;
+    const lambda = Number($("auto").value);
+    for (let k = poisson(lambda); k > 0; k--) queue(SIZES[Math.floor(Math.random() * SIZES.length)]);
+    for (const o of S.orders) if (o.doneAt != null && !o.counted) { o.counted = true; S.doneCount++; S.waitSum += o.doneAt - o.arrived + 1; }
+    S.orders = S.orders.filter(o => o.doneAt == null || o.doneAt >= S.t - KEEP);
+  }
+  function poisson(l) { if (l <= 0) return 0; const L = Math.exp(-l); let k = 0, p = 1; do { k++; p *= Math.random(); } while (p > L); return k - 1; }
+
+  function eta() {
+    const sim = { t: S.t, h: S.h, orders: S.orders.filter(o => o.doneAt == null).map(o => ({ ...o })) };
+    admit(sim, S.queued.slice());
+    const out = {};
+    for (let n = 0; n < 20000 && sim.orders.some(o => o.doneAt == null); n++) {
+      [sim.h] = pour(sim.orders, sim.h, rate);
+      mark(sim);
+      sim.t++;
+    }
+    for (const o of sim.orders) out[o.id] = o.doneAt;
+    return out;
+  }
+
+  function nextId() {
+    for (let i = 0; ; i++) {
+      const id = String.fromCharCode(65 + (i % 26)) + (i >= 26 ? Math.floor(i / 26) + 1 : "");
+      if (!S.used.has(id)) { S.used.add(id); return id; }
+    }
+  }
+  function queue(size) { S.queued.push([nextId(), size]); }
+
+  function load(key, advance) {
+    presetKey = key;
+    const p = PRESETS[key];
+    const scheduled = {};
+    const used = new Set();
+    for (const [t, list] of Object.entries(p.arrivals)) { scheduled[t] = list.map(x => [...x]); list.forEach(x => used.add(x[0])); }
+    S = { t: 0, h: 0, orders: [], scheduled, queued: [], idle: 0, delivered: 0, used, doneCount: 0, waitSum: 0 };
+    setRate(p.rate);
+    if (advance) for (let i = 0; i < p.start; i++) step();
+    render();
+  }
+
+  const fmt = (n) => { const r = Math.round(n * 10) / 10; return Number.isInteger(r) ? String(r) : r.toFixed(1); };
+  const NS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs, text) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function niceTicks(min, max, count) {
+    const span = max - min || 1;
+    const raw = span / count, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const stepV = [1, 2, 5, 10].map(m => m * mag).find(s => s >= raw) || 10 * mag;
+    const out = [];
+    for (let v = Math.ceil(min / stepV) * stepV; v <= max + EPS; v += stepV) out.push(Math.round(v * 1e6) / 1e6);
+    return out;
+  }
+
+  function phase(o) {
+    if (o.queued) return ["Queued", "p-queued"];
+    if (o.doneAt != null) return ["Delivered", "p-done"];
+    if (filled(o, S.h) >= o.size / 2 - EPS) return ["Upper half", "p-upper"];
+    return ["Lower half", "p-lower"];
+  }
+
+  function renderVessels() {
+    const svg = $("vessels"); svg.replaceChildren();
+    const shown = S.orders.filter(o => o.doneAt == null || o.doneAt >= S.t - 4).slice(-16);
+    const boxW = $("vesselBox").clientWidth || 600;
+    const H = 330, left = 52, padTop = 26, padBot = 50, slot = 74;
+    const W = Math.max(boxW, left + Math.max(shown.length, 1) * slot + 16);
+    svg.setAttribute("width", W); svg.setAttribute("height", H); svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    if (!shown.length) {
+      svg.append(el("text", { x: W / 2, y: H / 2, "text-anchor": "middle", class: "strong" }, "No open redemptions. Add an order to start pouring."));
+      return;
+    }
+    let ymin = Math.min(...shown.map(o => o.base));
+    let ymax = Math.max(...shown.map(o => o.top), S.h);
+    if (ymax - ymin < 1) ymax = ymin + 1;
+    const plotH = H - padTop - padBot;
+    const y = (v) => padTop + plotH * (1 - (v - ymin) / (ymax - ymin));
+
+    for (const v of niceTicks(ymin, ymax, 5)) {
+      svg.append(el("line", { x1: left, x2: W - 8, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1 }));
+      svg.append(el("text", { x: left - 8, y: y(v) + 4, "text-anchor": "end" }, fmt(v)));
+    }
+
+    const cw = 36, pw = 7;
+    shown.forEach((o, i) => {
+      const cx = left + slot * i + slot / 2;
+      const half = o.size / 2, done = o.doneAt != null;
+      const lowTop = o.base + half, upBot = o.top - half;
+      const water = done ? "var(--done)" : "var(--water)";
+      const stroke = done ? "var(--done)" : "var(--vessel)";
+      const g = el("g", {});
+      const chamber = (a, b, w) => {
+        if (b - a <= EPS) return;
+        g.append(el("rect", { x: cx - w / 2, y: y(b), width: w, height: Math.max(0, y(a) - y(b)), fill: "var(--surface)", stroke, "stroke-width": 1.5, rx: w > 10 ? 3 : 1 }));
+      };
+      const fillRect = (a, b, w) => {
+        const top = Math.min(S.h, b);
+        if (top - a <= EPS) return;
+        g.append(el("rect", { x: cx - w / 2 + 1, y: y(top), width: w - 2, height: Math.max(0, y(a) - y(top)), fill: water, rx: w > 10 ? 2 : 0 }));
+      };
+      chamber(o.base, lowTop, cw);
+      if (upBot - lowTop > EPS) chamber(lowTop, upBot, pw);
+      chamber(upBot, o.top, cw);
+      fillRect(o.base, lowTop, cw);
+      if (upBot - lowTop > EPS) fillRect(lowTop, upBot, pw);
+      fillRect(upBot, o.top, cw);
+      g.append(el("line", { x1: cx - cw / 2 - 4, x2: cx + cw / 2 + 4, y1: y(lowTop), y2: y(lowTop), stroke: "var(--half)", "stroke-width": 2 }));
+      g.append(el("text", { x: cx, y: H - padBot + 20, "text-anchor": "middle", class: "id" }, o.id));
+      g.append(el("text", { x: cx, y: H - padBot + 36, "text-anchor": "middle" }, `${fmt(filled(o, S.h))}/${fmt(o.size)}`));
+      if (done) g.setAttribute("opacity", "0.7");
+      svg.append(g);
+    });
+
+    const wy = y(S.h);
+    svg.append(el("line", { x1: left, x2: W - 8, y1: wy, y2: wy, stroke: "var(--ink)", "stroke-width": 1.2, "stroke-dasharray": "5 4" }));
+    svg.append(el("text", { x: W - 10, y: wy - 6, "text-anchor": "end", class: "strong" }, `level ${fmt(S.h)} TH/s·h`));
+  }
+
+  function renderTimeline(etas) {
+    const svg = $("timeline"); svg.replaceChildren();
+    const t0 = Math.max(0, S.t - WINDOW);
+    const rows = [...S.orders.filter(o => o.doneAt == null || o.doneAt >= t0), ...S.queued.map(([id, size]) => ({ id, size, arrived: S.t, queued: true }))].slice(-MAX_ROWS);
+    const boxW = $("timelineBox").clientWidth || 480;
+    const W = Math.max(boxW, 420), left = 40, right = 14, rowH = 22, top = 10;
+    const H = top + Math.max(rows.length, 1) * rowH + 28;
+    svg.setAttribute("width", W); svg.setAttribute("height", H); svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    if (!rows.length) { svg.append(el("text", { x: W / 2, y: H / 2, "text-anchor": "middle" }, "No orders yet.")); return; }
+    let tmax = S.t + 1;
+    for (const o of rows) {
+      if (o.doneAt != null) tmax = Math.max(tmax, o.doneAt + 1);
+      if (etas[o.id] != null) tmax = Math.max(tmax, etas[o.id] + 1);
+    }
+    tmax = Math.min(tmax + 1, S.t + WINDOW);
+    const x = (t) => left + (W - left - right) * ((Math.min(Math.max(t, t0), tmax) - t0) / (tmax - t0));
+    const axisY = top + rows.length * rowH + 4;
+    for (const v of niceTicks(t0, tmax, 8)) {
+      svg.append(el("line", { x1: x(v), x2: x(v), y1: top - 4, y2: axisY, stroke: "var(--line)", "stroke-width": 1 }));
+      svg.append(el("text", { x: x(v), y: axisY + 16, "text-anchor": "middle" }, `${v}m`));
+    }
+    rows.forEach((o, i) => {
+      const cy = top + i * rowH + rowH / 2;
+      svg.append(el("text", { x: left - 8, y: cy + 4, "text-anchor": "end", class: "id" }, o.id));
+      const h = 10, yy = cy - h / 2;
+      const seg = (a, b, fill, extra = {}) => { if (b > a) svg.append(el("rect", { x: x(a), y: yy, width: Math.max(1, x(b) - x(a)), height: h, fill, rx: 2, ...extra })); };
+      if (o.queued) {
+        seg(o.arrived, (etas[o.id] ?? o.arrived) + 1, "none", { stroke: "var(--vessel)", "stroke-dasharray": "3 3" });
+        return;
+      }
+      const halfEnd = o.halfAt != null ? o.halfAt + 1 : null;
+      const end = o.doneAt != null ? o.doneAt + 1 : S.t;
+      if (halfEnd != null) {
+        seg(o.arrived, Math.min(halfEnd, end), "var(--water-soft)");
+        seg(Math.min(halfEnd, end), end, o.doneAt != null ? "var(--done)" : "var(--water)");
+      } else {
+        seg(o.arrived, end, "var(--water-soft)");
+      }
+      if (o.doneAt == null && etas[o.id] != null) seg(S.t, etas[o.id] + 1, "none", { stroke: "var(--water)", "stroke-dasharray": "3 3" });
+    });
+    svg.append(el("line", { x1: x(S.t), x2: x(S.t), y1: top - 6, y2: axisY, stroke: "var(--ink)", "stroke-width": 1.2 }));
+    svg.append(el("text", { x: x(S.t) + 4, y: top - 0, class: "strong" }, "now"));
+  }
+
+  function renderTable(etas) {
+    const tb = $("rows"); tb.replaceChildren();
+    const recentDone = new Set(S.orders.filter(o => o.doneAt != null).slice(-10));
+    const rows = [...S.orders.filter(o => o.doneAt == null || recentDone.has(o)), ...S.queued.map(([id, size]) => ({ id, size, arrived: S.t, queued: true }))];
+    if (!rows.length) {
+      const tr = document.createElement("tr"); const td = document.createElement("td");
+      td.colSpan = 6; td.className = "empty"; td.textContent = "No orders yet. Pick a size and press Add order.";
+      tr.append(td); tb.append(tr); return;
+    }
+    for (const o of rows.slice().reverse()) {
+      const tr = document.createElement("tr");
+      const f = o.queued ? 0 : filled(o, S.h);
+      const [ph, cls] = phase(o);
+      const fin = o.doneAt != null ? `${o.doneAt + 1} min` : (etas[o.id] != null ? `≈ ${etas[o.id] + 1} min` : "—");
+      tr.innerHTML = `<td><strong>${o.id}</strong></td><td class="num">${fmt(o.size)}</td><td class="num">${o.arrived} min</td>` +
+        `<td class="num">${fmt(f)}<span class="bar"><i style="width:${(100 * f / o.size).toFixed(1)}%"></i></span></td>` +
+        `<td><span class="pill ${cls}">${ph}</span></td><td class="num">${fin}</td>`;
+      tb.append(tr);
+    }
+  }
+
+  function render() {
+    const etas = eta();
+    const open = S.orders.filter(o => o.doneAt == null);
+    $("sTick").textContent = S.t + " min";
+    $("sLevel").textContent = fmt(S.h) + " TH/s·h";
+    $("sOpen").textContent = open.length + (S.queued.length ? ` (+${S.queued.length} queued)` : "");
+    $("sOwed").textContent = fmt(open.reduce((s, o) => s + o.size - filled(o, S.h), 0) + S.queued.reduce((s, q) => s + q[1], 0)) + " TH/s·h";
+    $("sDelivered").textContent = fmt(S.delivered) + " TH/s·h";
+    $("sIdle").textContent = fmt(S.idle) + " TH/s·h";
+    $("sDone").textContent = S.doneCount;
+    $("sWait").textContent = S.doneCount ? fmt(S.waitSum / S.doneCount) + " min" : "—";
+    const meanSize = SIZES.reduce((a, b) => a + b, 0) / SIZES.length;
+    const lam = Number($("auto").value);
+    $("sLoad").textContent = lam > 0 ? Math.round(100 * lam * meanSize / rate) + "%" : "off";
+    renderVessels(); renderTimeline(etas); renderTable(etas);
+  }
+
+  function setPlaying(on) {
+    clearInterval(timer); timer = null;
+    $("play").textContent = on ? "Pause" : "Play";
+    if (on) timer = setInterval(() => { step(); render(); }, 1000 / Number($("speed").value));
+  }
+
+  $("play").addEventListener("click", () => setPlaying(!timer));
+  $("step").addEventListener("click", () => { setPlaying(false); step(); render(); });
+  $("reset").addEventListener("click", () => { setPlaying(false); load(presetKey, false); });
+  $("preset").addEventListener("change", (e) => { setPlaying(false); load(e.target.value, false); });
+  $("rate").addEventListener("input", (e) => { setRate(Number(e.target.value)); render(); });
+  $("speed").addEventListener("input", (e) => { $("speedVal").textContent = e.target.value + " min/s"; if (timer) setPlaying(true); });
+  $("auto").addEventListener("input", (e) => { const v = Number(e.target.value); $("autoVal").textContent = v === 0 ? "off" : v.toFixed(2); render(); });
+  $("add").addEventListener("click", () => { const v = Math.max(1, Math.round(Number($("size").value) || 0)); queue(v); render(); });
+  $("burst").addEventListener("click", () => { for (let i = 0; i < 3; i++) queue(SIZES[Math.floor(Math.random() * SIZES.length)]); render(); });
+  let rz; window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(render, 120); });
+
+  load("test", true);
+  setPlaying(true);
+})();
+</script>
+</body>
+</html>
