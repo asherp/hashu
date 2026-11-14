@@ -56,7 +56,7 @@ details summary { cursor:pointer; font-weight:600; }
         <label for="s-ask">Ask <span class="hint">msat per PiH (1,024 TiH); about 625 is 2 sats per TH-hour</span></label>
         <input id="s-ask" type="number" min="1" step="1">
         <p class="hint" id="s-ask-eq"></p>
-        <label for="s-horizon">Horizon <span class="hint">hours; once per horizon your stock is restocked to your rigs' average hashrate × horizon − TiH owed, and only sales take it down in between</span></label>
+        <label for="s-horizon">Horizon <span class="hint">hours; every hour your stock is topped up to your rigs' average hashrate × horizon − TiH owed, and only sales take it down in between</span></label>
         <input id="s-horizon" type="number" min="1" step="1">
         <label for="s-ln">Lightning address <span class="hint">needs payment verification (LUD-21)</span></label>
         <input id="s-ln" autocomplete="off">

@@ -469,7 +469,7 @@ Bitaxe-class rig (≈ 1.1 TiH/s) 1,024 TiH is about 15 minutes of hashing. Three
 - **Live hashrate of your own rigs** (a Bitaxe at home). In the operator
   GUI's *Live hashrate* card set a horizon (at least 1 hour): the rigs
   filling this mint's orders back a stock of TiH, the same rule supplier
-  mints sell by (#92). Once per horizon it is restocked to their average
+  mints sell by (#92). Every hour it is topped up to their average
   hashrate (EWMA, half-life = horizon / 2) × the horizon, less what the
   mint owes beyond its rentals; in between only sales take it down, so the
   quantity on sale holds still and the checkout ETA moves instead. The

@@ -1,4 +1,4 @@
-//! A fixed stock of TiH for sale, restocked once per horizon (#92).
+//! A stock of TiH for sale, topped up every hour (#92, #95).
 //!
 //! Selling `measured hashrate × horizon − owed` made the quantity on sale
 //! jump with every share. A stock holds still between restocks and only
@@ -10,14 +10,26 @@
 //! between restocks: left  = batch − TiH sold since the restock
 //! ```
 //!
+//! - A restock is a top-up every [`RESTOCK_EVERY_HOURS`] (Asher,
+//!   2026-11-14; #92 first restocked once per horizon, which left sold
+//!   stock off sale for up to a whole horizon). Between top-ups only sales
+//!   take it down.
+//!
 //! - The hashrate is an EWMA with half-life = horizon / 2, so one quiet
 //!   hour does not shrink the next batch.
-//! - A restock happens once per horizon (or when the seller asks). It
-//!   never takes away stock already listed, and since the batch is sized to
-//!   one horizon's production, unsold stock cannot pile up beyond that.
+//! - A top-up (hourly, or when the seller asks) never takes away stock
+//!   already listed, and since the batch is sized to one horizon's
+//!   production, unsold stock cannot pile up beyond that.
 //! - Until a first non-empty batch has been stocked, the stock refills as
 //!   soon as there is hashrate, so a newly connected rig does not wait a
-//!   whole horizon.
+//!   whole horizon. Before that first batch the average simply follows the
+//!   latest non-zero measurement: there is no history worth averaging, and
+//!   a zero read while the proxy is still warming up (its rigs need a few
+//!   shares before they report a rate) must not seed it, or the first
+//!   batch waits hours for a long half-life to climb out of zero.
+//! - For [`WARMUP_MS`] after the mint starts, zero readings are ignored
+//!   too, so a restart does not fold an empty minute into an average that
+//!   was saved before it.
 //! - "Sold" counts paid quotes and open, unexpired ones (a quote reserves
 //!   stock until it expires), as a running total from the mint's quotes.
 //!   Delivering a redemption does not refill the stock.
@@ -29,6 +41,18 @@ use hashu_core::denom::tih_from_ths_hours;
 use crate::capacity::MIN_PURCHASE_TIH;
 
 const MS_PER_HOUR: f64 = 3_600_000.0;
+
+/// After the mint starts, zero hashrate readings are ignored this long:
+/// the proxy reports a rig's rate only after a few accepted shares, so the
+/// first readings after a restart are empty even with rigs hashing.
+pub const WARMUP_MS: u64 = 3 * 60_000;
+
+/// How often the stock is topped up once its first batch is stocked.
+pub const RESTOCK_EVERY_HOURS: f64 = 1.0;
+
+fn restock_every_ms(horizon_hours: f64) -> u64 {
+    (RESTOCK_EVERY_HOURS.min(horizon_hours.max(0.0)) * MS_PER_HOUR) as u64
+}
 
 /// EWMA of hashrate with a half-life that follows the horizon.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -84,6 +108,10 @@ pub struct Stock {
     /// then the stock refills as soon as there is hashrate.
     #[serde(default)]
     pub stocked: bool,
+    /// When this process first ticked the stock (not saved, so it marks
+    /// the start of the warm-up after each restart).
+    #[serde(skip)]
+    pub started_ms: Option<u64>,
 }
 
 /// What a seller and the GUI see of a stock.
@@ -120,7 +148,7 @@ impl Stock {
             // Never stocked anything yet: fill as soon as there is hashrate.
             _ if !self.stocked => true,
             None => true,
-            Some(t) => now_ms >= t + (horizon_hours * MS_PER_HOUR) as u64,
+            Some(t) => now_ms >= t + restock_every_ms(horizon_hours),
         }
     }
 
@@ -161,7 +189,10 @@ impl Stock {
     }
 
     /// Sample the hashrate and restock if due (or if `force`). Returns
-    /// whether it restocked.
+    /// whether a batch was stocked: forced, or a batch of at least the
+    /// minimum purchase. Before the first batch the stock is topped up on
+    /// every tick with hashrate, which returns `false` until it reaches
+    /// that size, so callers do not log or save every tick.
     pub fn tick(
         &mut self,
         measured_ths: Option<f64>,
@@ -171,9 +202,25 @@ impl Stock {
         now_ms: u64,
         force: bool,
     ) -> bool {
-        if let Some(ths) = measured_ths {
-            self.ewma
-                .observe(ths, half_life_hours(horizon_hours), now_ms);
+        let started = *self.started_ms.get_or_insert(now_ms);
+        let warming = now_ms.saturating_sub(started) < WARMUP_MS;
+        let measured = measured_ths
+            .map(|t| if t.is_finite() { t.max(0.0) } else { 0.0 })
+            // An empty reading before the first batch or during warm-up
+            // means "not measured yet", not "no hashrate".
+            .filter(|&t| t > 0.0 || (self.stocked && !warming));
+        if let Some(ths) = measured {
+            if self.stocked {
+                self.ewma
+                    .observe(ths, half_life_hours(horizon_hours), now_ms);
+            } else {
+                // No batch yet: size the first one from what the rigs do
+                // now rather than climbing slowly out of an empty start.
+                self.ewma = Ewma {
+                    ths: Some(ths),
+                    at_ms: now_ms.max(self.ewma.at_ms),
+                };
+            }
         }
         if self.ewma.ths.is_none() && !force {
             return false;
@@ -183,7 +230,7 @@ impl Stock {
         let empty_first = !self.stocked && self.ewma.ths() <= 0.0;
         if force || (self.due(horizon_hours, now_ms) && !empty_first) {
             self.restock(horizon_hours, owed_tih, sold_total_tih, now_ms);
-            return true;
+            return force || self.stocked;
         }
         false
     }
@@ -198,7 +245,7 @@ impl Stock {
             restocked_ms: self.restocked_ms,
             next_restock_ms: self
                 .restocked_ms
-                .map(|t| t + (horizon_hours * MS_PER_HOUR) as u64),
+                .map(|t| t + restock_every_ms(horizon_hours)),
         }
     }
 }
@@ -230,7 +277,7 @@ mod tests {
         assert!((s.left(0.0) - batch).abs() < 1e-6);
         // Hashrate jumps around: nothing on sale changes.
         for (i, ths) in [3.0, 0.0, 0.2, 5.0].iter().enumerate() {
-            assert!(!s.tick(Some(*ths), 24.0, 0.0, 0.0, (i as u64 + 1) * H, false));
+            assert!(!s.tick(Some(*ths), 24.0, 0.0, 0.0, (i as u64 + 1) * H / 10, false));
             assert!((s.left(0.0) - batch).abs() < 1e-6);
         }
     }
@@ -250,22 +297,25 @@ mod tests {
     }
 
     #[test]
-    fn restocks_once_per_horizon_to_production_minus_owed_and_keeps_leftovers() {
+    fn tops_up_hourly_to_production_minus_owed_and_keeps_leftovers() {
         let mut s = Stock::default();
         s.tick(Some(1.0), 24.0, 0.0, 0.0, 0, false);
         let batch = s.batch_tih;
-        // Sell half, then a day passes at 1 TH/s with 1,000 TiH owed.
+        // Sell half: within the hour it stays sold.
         let sold = batch / 2.0;
-        assert!(!s.tick(Some(1.0), 24.0, 1_000.0, sold, 23 * H, false));
-        assert!(s.tick(Some(1.0), 24.0, 1_000.0, sold, 24 * H, false));
+        assert!(!s.tick(Some(1.0), 24.0, 1_000.0, sold, H - 1, false));
+        assert!((s.left(sold) - batch / 2.0).abs() < 1e-6);
+        // On the hour it is topped up to a horizon's production less owed.
+        assert!(s.tick(Some(1.0), 24.0, 1_000.0, sold, H, false));
         assert!((s.left(sold) - (batch - 1_000.0)).abs() < 1e-6);
-        // Rigs gone: the average decays, but a restock never takes away
+        assert_eq!(s.view(24.0, sold).next_restock_ms, Some(2 * H));
+        // Rigs gone: the average decays, but a top-up never takes away
         // what is still listed.
-        for h in 25..48 {
+        for h in 2..30 {
             s.tick(Some(0.0), 24.0, 0.0, sold, h * H, false);
         }
         let before = s.left(sold);
-        assert!(s.tick(Some(0.0), 24.0, 0.0, sold, 48 * H, false));
+        assert!(s.tick(Some(0.0), 24.0, 0.0, sold, 30 * H, false));
         assert!((s.left(sold) - before).abs() < 1e-6);
     }
 
@@ -276,6 +326,57 @@ mod tests {
         assert_eq!(s.left(0.0), 0.0);
         assert!(s.tick(Some(2.0), 24.0, 0.0, 0.0, H, false));
         assert!(s.left(0.0) > 0.0);
+    }
+
+    #[test]
+    fn empty_warm_up_does_not_seed_the_average() {
+        // Restart: the proxy reads 0 TH/s until its rigs have a few shares.
+        let mut s = Stock::default();
+        assert!(!s.tick(Some(0.0), 12.0, 4_096.0, 0.0, 0, false));
+        assert!(!s.tick(Some(0.0), 12.0, 4_096.0, 0.0, 60_000, false));
+        assert_eq!(s.ewma.ths, None);
+        // Then the Bitaxe's 1.2 TH/s shows up: a full batch at once, not a
+        // 6 h climb out of zero.
+        assert!(s.tick(Some(1.2), 12.0, 4_096.0, 0.0, 90_000, false));
+        assert!((s.ewma.ths() - 1.2).abs() < 1e-9);
+        assert!((s.left(0.0) - (1.2 * 12.0 * TIH_PER_THH - 4_096.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_saved_zero_average_is_replaced_before_the_first_batch() {
+        // What #93 left on disk: an average seeded at 0, nothing stocked.
+        let mut s = Stock {
+            ewma: Ewma {
+                ths: Some(0.0),
+                at_ms: 0,
+            },
+            ..Default::default()
+        };
+        assert!(s.tick(Some(1.2), 12.0, 4_096.0, 0.0, H, false));
+        assert!(s.stocked);
+        assert!((s.ewma.ths() - 1.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn under_minimum_top_ups_are_quiet_and_restart_warm_up_skips_zeros() {
+        let mut s = Stock::default();
+        // A tiny rig whose horizon's worth is under the minimum purchase:
+        // topped up each tick, but not reported as a restock.
+        assert!(!s.tick(Some(0.001), 1.0, 0.0, 0.0, 0, false));
+        assert!(!s.tick(Some(0.001), 1.0, 0.0, 0.0, 5_000, false));
+        assert!(s.left(0.0) > 0.0 && !s.stocked);
+        // Once stocked, a restart's empty first minutes leave the saved
+        // average alone; zeros after the warm-up count.
+        let mut s = Stock::default();
+        s.tick(Some(1.0), 2.0, 0.0, 0.0, 0, false);
+        let mut restarted = Stock {
+            started_ms: None,
+            ..s.clone()
+        };
+        restarted.tick(Some(0.0), 2.0, 0.0, 0.0, H, false);
+        assert_eq!(restarted.ewma.ths(), 1.0);
+        restarted.tick(Some(0.0), 2.0, 0.0, 0.0, H + WARMUP_MS, false);
+        assert!(restarted.ewma.ths() < 1.0);
     }
 
     #[test]
