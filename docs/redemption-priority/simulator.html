@@ -96,6 +96,12 @@ tr:last-child td { border-bottom: 0; }
 .p-upper { background: var(--water); color: #fff; }
 .p-done { background: var(--done-soft); color: var(--muted); }
 .empty { color: var(--muted); font-size: 14px; padding: 18px 4px; }
+.rigs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.rig { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.rig .top { display: flex; justify-content: space-between; color: var(--muted); font-family: var(--font-mono); font-size: 12px; }
+.rig strong { font-size: 15px; }
+.rig.idle { border-style: dashed; color: var(--muted); }
+.rig .bar { width: 100%; margin: 0; }
 
 footer { font-size: 13px; color: var(--muted); max-width: 80ch; display: flex; flex-direction: column; gap: 4px; }
 footer p { margin: 0; }
@@ -108,7 +114,7 @@ footer p { margin: 0; }
   <header>
     <p class="eyebrow">Hashu · redemption priority</p>
     <h1>Hashu Delivery Simulator</h1>
-    <p class="lede">Each redemption is a vessel, sized in TH/s·h. A virtual water level rises as if the mint's hash rate were poured into every vessel at once (Kaminski's hydraulic Talmud rule), and the minute it would fill a vessel is that order's deadline. The real hashes go earliest deadline first, so each order is delivered in one continuous run, never paused at halfway, and finishes on or before its deadline.</p>
+    <p class="lede">Each redemption is a vessel, sized in TH/s·h. A virtual water level rises as if the mint's hash rate were poured into every vessel at once (Kaminski's hydraulic Talmud rule). When an order arrives, the minute its vessel would fill if no one else redeemed becomes its deadline, and that deadline never moves. Real hashes come from physical rigs, each serving one order at a time: orders are taken earliest deadline first and get just enough rigs to stay on pace, and spare rigs serve later orders in parallel.</p>
   </header>
 
   <section class="panel" aria-label="Controls">
@@ -133,6 +139,14 @@ footer p { margin: 0; }
       <div class="group">
         <label for="rate">Hash rate</label>
         <div class="row"><input id="rate" type="range" min="60" max="3600" step="60" value="900"><span class="val" id="rateVal">900 TH/s</span></div>
+      </div>
+      <div class="group">
+        <label for="rigs">Rigs</label>
+        <div class="row"><input id="rigs" type="range" min="1" max="12" step="1" value="4"><span class="val" id="rigsVal">4</span></div>
+      </div>
+      <div class="group">
+        <label for="quote">Quote deadlines on</label>
+        <div class="row"><input id="quote" type="range" min="50" max="100" step="5" value="80"><span class="val" id="quoteVal">80%</span></div>
       </div>
       <div class="group">
         <label for="speed">Speed</label>
@@ -168,22 +182,30 @@ footer p { margin: 0; }
   <section class="panel">
     <div class="panel-head">
       <h2>Vessels</h2>
-      <p class="hint">Height is the virtual water level in TH/s·h. Each vessel: lower half, pipe, upper half; its top is the deadline. The bar beside it is what has really been delivered.</p>
+      <p class="hint">Height is the virtual water level in TH/s·h. Each vessel: lower half, pipe, upper half. The bar beside it is what the rigs have really delivered.</p>
     </div>
     <div class="scroll" id="vesselBox"><svg id="vessels" role="img" aria-label="Order vessels filling with hashes"></svg></div>
     <div class="legend">
       <span><i class="sw" style="background:var(--water-soft)"></i>Virtual fill (sets the deadline)</span>
-      <span><i class="sw" style="background:var(--water)"></i>Really delivered (earliest deadline first)</span>
+      <span><i class="sw" style="background:var(--water)"></i>Really delivered by rigs</span>
       <span><i class="sw" style="background:var(--half);height:2px"></i>Halfway line</span>
       <span><i class="sw" style="border-top:1.5px dashed var(--ink);height:0"></i>Virtual water level</span>
     </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Rigs</h2>
+      <p class="hint">Each rig serves one order at a time. Hash rate is split evenly across rigs.</p>
+    </div>
+    <div class="rigs" id="rigBox"></div>
   </section>
 
   <div class="grid2">
     <section class="panel">
       <div class="panel-head">
         <h2>Timeline</h2>
-        <p class="hint">Minutes elapsed. Outline: waiting. Solid: receiving hashes. Dashed: ETA at the current hash rate. Tick: hydraulic deadline.</p>
+        <p class="hint">Minutes elapsed. Outline: waiting. Solid: receiving hashes. Dashed: ETA at the current hash rate. Tick: fixed deadline.</p>
       </div>
       <div class="scroll" id="timelineBox"><svg id="timeline" role="img" aria-label="Order timeline"></svg></div>
     </section>
@@ -191,7 +213,7 @@ footer p { margin: 0; }
       <div class="panel-head"><h2>Orders</h2></div>
       <div class="scroll">
         <table>
-          <thead><tr><th>Order</th><th class="num">Size (TH/s·h)</th><th class="num">Arrived</th><th class="num">Delivered (TH/s·h)</th><th>Phase</th><th class="num">Finish</th><th class="num">Deadline</th></tr></thead>
+          <thead><tr><th>Order</th><th class="num">Size (TH/s·h)</th><th class="num">Arrived</th><th class="num">Delivered (TH/s·h)</th><th>Phase</th><th>Rigs</th><th class="num">Finish</th><th class="num">Deadline</th></tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
@@ -199,9 +221,9 @@ footer p { margin: 0; }
   </div>
 
   <footer>
-    <p>Hash rate is in TH/s. Orders, deliveries and the water level are in TH/s·h, one terahash per second sustained for an hour (3.6 million TH). The split is recomputed once a minute, so each minute delivers hash rate ÷ 60 TH/s·h. The mint is modelled as one pooled hash rate that switches between orders instantly; rented rigs and switching delays come later.</p>
+    <p>Hash rate is in TH/s. Orders, deliveries and the water level are in TH/s·h, one terahash per second sustained for an hour (3.6 million TH). Rigs are reassigned once a minute, so each minute delivers hash rate ÷ 60 TH/s·h; a rig whose order finishes mid-minute passes its leftover on. Switching delays come later.</p>
     <p>New orders keep arriving at random, sized 5 to 100 TH/s·h. Load is average demand as a share of hash rate; above 100% the backlog grows without limit.</p>
-    <p>Deadline rule: a lone order fills straight up. Orders arriving in the same tick share one top, set at the water level plus the largest of their sizes and every open order's remaining amount. Existing tops never move, and a newcomer's top is never below an open order's, so earliest deadline first serves orders in arrival order. Same-minute orders share in proportion to what they still need. Because later arrivals queue behind, the ETA shown is firm unless the hash rate changes.</p>
+    <p>Deadline rule: a lone order fills straight up. Orders arriving in the same minute share one top, set at the water level plus the largest of their sizes and every open order's remaining amount. Existing tops never move, and a newcomer's top is never below an open order's, so deadlines run in arrival order. Each deadline is forecast on arrival from the quoted share of hash rate and then fixed. At 100% the deadline is exactly when first come, first served would finish, so the rigs have no slack; quoting on less leaves spare rigs for small orders to run alongside large ones. Deadlines hold as long as the hash rate does.</p>
   </footer>
 </div>
 
@@ -219,6 +241,9 @@ footer p { margin: 0; }
 
   const $ = (id) => document.getElementById(id);
   let S, rate = 15, timer = null, presetKey = "test"; // rate = TH/s·h delivered per one-minute tick
+  const nRigs = () => Number($("rigs").value);
+  const quote = () => Number($("quote").value) / 100;
+  const rigRates = () => Array(nRigs()).fill(rate / nRigs());
   const setRate = (ths) => { rate = ths / 60; $("rate").value = ths; $("rateVal").textContent = ths.toLocaleString() + " TH/s"; };
 
   function filled(o, h) {
@@ -244,26 +269,53 @@ footer p { margin: 0; }
     return [hi, 0];
   }
 
-  function admit(state, batch) {
+  function admit(state, batch, quoteRate) {
     if (!batch.length) return;
     const open = state.orders.filter(o => o.doneAt == null);
     const T = state.h + Math.max(...batch.map(b => b[1]), ...open.map(o => o.size - filled(o, state.h)));
-    for (const [id, size] of batch) state.orders.push({ id, size, base: state.h, top: T, arrived: state.t, doneAt: null, delivered: 0, startAt: null, finished: null });
+    const fresh = batch.map(([id, size]) => ({ id, size, base: state.h, top: T, arrived: state.t, doneAt: null, deadline: null, delivered: 0, startAt: null, finished: null }));
+    state.orders.push(...fresh);
+    // Fix the deadline: the minute the virtual level would reach T if no one else redeemed.
+    const sim = state.orders.filter(o => o.doneAt == null).map(o => ({ ...o }));
+    let h = state.h;
+    for (let t = state.t; t < state.t + 100000; t++) {
+      [h] = pour(sim, h, quoteRate);
+      if (h >= T - 1e-6) { for (const o of fresh) o.deadline = t; return; }
+    }
   }
 
-  // Real delivery: earliest deadline (lowest top) first; same-batch orders share pro rata.
-  function deliverEdf(state, E) {
-    const key = (o) => Math.round(o.top * 1e6) + "|" + o.arrived;
-    const q = state.orders.filter(o => o.finished == null).sort((a, b) => (a.top - b.top) || (a.arrived - b.arrived));
-    let used = 0;
-    for (let i = 0; i < q.length && E > EPS;) {
-      const k = key(q[i]); const group = [];
-      while (i < q.length && key(q[i]) === k) group.push(q[i++]);
-      const need = group.reduce((s, o) => s + o.size - o.delivered, 0);
-      const d = Math.min(E, need);
-      for (const o of group) { if (o.startAt == null) o.startAt = state.t; o.delivered += d * (o.size - o.delivered) / need; }
-      E -= d; used += d;
+  // Real delivery through rigs, each serving one order at a time. Orders are taken by
+  // fixed deadline; each gets just enough rigs to stay on pace, spare rigs serve later
+  // orders, and a rig whose order finishes mid-minute passes its leftover on.
+  function deliverRigs(state, rigs) {
+    const open = state.orders.filter(o => o.finished == null).sort((a, b) => (a.deadline - b.deadline) || (a.arrived - b.arrived) || (a.id < b.id ? -1 : 1));
+    const byId = new Map(open.map(o => [o.id, o]));
+    const prev = state.assign, next = new Map();
+    let free = rigs.map((_, i) => i);
+    for (const o of open) {
+      const need = (o.size - o.delivered) / Math.max(1, o.deadline - state.t + 1);
+      const mine = free.filter(r => prev.get(r) === o.id);
+      const others = free.filter(r => prev.get(r) !== o.id).sort((a, b) => rigs[b] - rigs[a]);
+      let have = 0;
+      for (const r of [...mine, ...others]) {
+        if (have >= need - EPS) break;
+        next.set(r, o.id); have += rigs[r]; free = free.filter(x => x !== r);
+      }
     }
+    for (const r of free) {
+      if (byId.has(prev.get(r))) next.set(r, prev.get(r));
+      else if (open.length) next.set(r, open[0].id);
+    }
+    state.assign = next;
+    let spare = 0, used = 0;
+    const give = (o, d) => { if (d > 0 && o.startAt == null) o.startAt = state.t; o.delivered += d; used += d; };
+    for (let r = 0; r < rigs.length; r++) {
+      const o = byId.get(next.get(r));
+      if (!o) { spare += rigs[r]; continue; }
+      const d = Math.min(rigs[r], o.size - o.delivered);
+      give(o, d); spare += rigs[r] - d;
+    }
+    for (const o of open) { const d = Math.min(spare, o.size - o.delivered); give(o, d); spare -= d; }
     return used;
   }
 
@@ -277,30 +329,30 @@ footer p { margin: 0; }
   function step() {
     const batch = [...(S.scheduled[S.t] || []), ...S.queued];
     S.queued = [];
-    admit(S, batch);
+    admit(S, batch, rate * quote());
     [S.h] = pour(S.orders, S.h, rate);
-    const used = deliverEdf(S, rate);
+    const used = deliverRigs(S, rigRates());
     S.delivered += used; S.idle += rate - used;
     mark(S);
     S.t++;
     const lambda = Number($("auto").value);
     for (let k = poisson(lambda); k > 0; k--) queue(SIZES[Math.floor(Math.random() * SIZES.length)]);
     for (const o of S.orders) if (o.finished != null && !o.counted) { o.counted = true; S.doneCount++; S.waitSum += o.finished - o.arrived + 1; }
-    S.orders = S.orders.filter(o => o.doneAt == null || o.doneAt >= S.t - KEEP);
+    S.orders = S.orders.filter(o => o.doneAt == null || o.finished == null || o.finished >= S.t - KEEP);
   }
   function poisson(l) { if (l <= 0) return 0; const L = Math.exp(-l); let k = 0, p = 1; do { k++; p *= Math.random(); } while (p > L); return k - 1; }
 
   function eta() {
-    const sim = { t: S.t, h: S.h, orders: S.orders.filter(o => o.doneAt == null || o.finished == null).map(o => ({ ...o })) };
-    admit(sim, S.queued.slice());
+    const sim = { t: S.t, h: S.h, assign: new Map(S.assign), orders: S.orders.filter(o => o.doneAt == null || o.finished == null).map(o => ({ ...o })) };
+    admit(sim, S.queued.slice(), rate * quote());
     const out = {};
     for (let n = 0; n < 20000 && sim.orders.some(o => o.doneAt == null || o.finished == null); n++) {
       [sim.h] = pour(sim.orders, sim.h, rate);
-      deliverEdf(sim, rate);
+      deliverRigs(sim, rigRates());
       mark(sim);
       sim.t++;
     }
-    for (const o of sim.orders) out[o.id] = { finish: o.finished, deadline: o.doneAt };
+    for (const o of sim.orders) out[o.id] = { finish: o.finished, deadline: o.deadline };
     return out;
   }
 
@@ -318,7 +370,7 @@ footer p { margin: 0; }
     const scheduled = {};
     const used = new Set();
     for (const [t, list] of Object.entries(p.arrivals)) { scheduled[t] = list.map(x => [...x]); list.forEach(x => used.add(x[0])); }
-    S = { t: 0, h: 0, orders: [], scheduled, queued: [], idle: 0, delivered: 0, used, doneCount: 0, waitSum: 0 };
+    S = { t: 0, h: 0, orders: [], scheduled, queued: [], idle: 0, delivered: 0, used, doneCount: 0, waitSum: 0, assign: new Map() };
     setRate(p.rate);
     if (advance) for (let i = 0; i < p.start; i++) step();
     render();
@@ -408,10 +460,23 @@ footer p { margin: 0; }
     svg.append(el("text", { x: W - 10, y: wy - 6, "text-anchor": "end", class: "strong" }, `level ${fmt(S.h)} TH/s·h`));
   }
 
+  function renderRigs() {
+    const box = $("rigBox"); box.replaceChildren();
+    const per = rate * 60 / nRigs();
+    for (let r = 0; r < nRigs(); r++) {
+      const o = S.orders.find(x => x.id === S.assign.get(r) && x.finished == null);
+      const d = document.createElement("div");
+      d.className = "rig" + (o ? "" : " idle");
+      d.innerHTML = `<div class="top"><span>Rig ${r + 1}</span><span>${fmt(per)} TH/s</span></div>` +
+        (o ? `<strong>${o.id}</strong><span class="bar"><i style="width:${(100 * o.delivered / o.size).toFixed(1)}%"></i></span>` : `<strong>idle</strong>`);
+      box.append(d);
+    }
+  }
+
   function renderTimeline(etas) {
     const svg = $("timeline"); svg.replaceChildren();
     const t0 = Math.max(0, S.t - WINDOW);
-    const rows = [...S.orders.filter(o => o.finished == null || o.doneAt == null || o.doneAt >= t0), ...S.queued.map(([id, size]) => ({ id, size, arrived: S.t, queued: true }))].slice(-MAX_ROWS);
+    const rows = [...S.orders.filter(o => o.finished == null || o.finished >= t0), ...S.queued.map(([id, size]) => ({ id, size, arrived: S.t, queued: true }))].slice(-MAX_ROWS);
     const boxW = $("timelineBox").clientWidth || 480;
     const W = Math.max(boxW, 420), left = 40, right = 14, rowH = 22, top = 10;
     const H = top + Math.max(rows.length, 1) * rowH + 28;
@@ -419,9 +484,8 @@ footer p { margin: 0; }
     if (!rows.length) { svg.append(el("text", { x: W / 2, y: H / 2, "text-anchor": "middle" }, "No orders yet.")); return; }
     let tmax = S.t + 1;
     for (const o of rows) {
-      if (o.doneAt != null) tmax = Math.max(tmax, o.doneAt + 1);
-      const e = etas[o.id];
-      if (e && e.deadline != null) tmax = Math.max(tmax, e.deadline + 1);
+      const e = etas[o.id] || {};
+      for (const v of [o.deadline, e.deadline, e.finish, o.finished]) if (v != null) tmax = Math.max(tmax, v + 1);
     }
     tmax = Math.min(tmax + 1, S.t + WINDOW);
     const x = (t) => left + (W - left - right) * ((Math.min(Math.max(t, t0), tmax) - t0) / (tmax - t0));
@@ -436,7 +500,7 @@ footer p { margin: 0; }
       const h = 10, yy = cy - h / 2;
       const seg = (a, b, fill, extra = {}) => { if (b > a) svg.append(el("rect", { x: x(a), y: yy, width: Math.max(1, x(b) - x(a)), height: h, fill, rx: 2, ...extra })); };
       const e = etas[o.id] || {};
-      const dl = o.doneAt != null ? o.doneAt : e.deadline;
+      const dl = o.deadline != null ? o.deadline : e.deadline;
       if (dl != null) { const dx = x(dl + 1); svg.append(el("line", { x1: dx, x2: dx, y1: yy - 4, y2: yy + h + 4, stroke: "var(--half)", "stroke-width": 2 })); }
       if (o.queued) {
         seg(o.arrived, (e.finish ?? o.arrived) + 1, "none", { stroke: "var(--vessel)", "stroke-dasharray": "3 3" });
@@ -458,7 +522,7 @@ footer p { margin: 0; }
     const rows = [...S.orders.filter(o => o.finished == null || recentDone.has(o)), ...S.queued.map(([id, size]) => ({ id, size, arrived: S.t, queued: true }))];
     if (!rows.length) {
       const tr = document.createElement("tr"); const td = document.createElement("td");
-      td.colSpan = 7; td.className = "empty"; td.textContent = "No orders yet. Pick a size and press Add order.";
+      td.colSpan = 8; td.className = "empty"; td.textContent = "No orders yet. Pick a size and press Add order.";
       tr.append(td); tb.append(tr); return;
     }
     for (const o of rows.slice().reverse()) {
@@ -467,11 +531,12 @@ footer p { margin: 0; }
       const [ph, cls] = phase(o);
       const e = etas[o.id] || {};
       const fin = o.finished != null ? `${o.finished + 1} min` : (e.finish != null ? `≈ ${e.finish + 1} min` : "—");
-      const dlT = o.doneAt != null ? o.doneAt : e.deadline;
-      const dl = dlT != null ? `${o.doneAt != null ? "" : "≈ "}${dlT + 1} min` : "—";
+      const dlT = o.deadline != null ? o.deadline : e.deadline;
+      const dl = dlT != null ? `${dlT + 1} min` : "—";
+      const rigsOn = o.finished != null || o.queued ? "" : [...S.assign].filter(([, id]) => id === o.id).map(([r]) => r + 1).join(", ");
       tr.innerHTML = `<td><strong>${o.id}</strong></td><td class="num">${fmt(o.size)}</td><td class="num">${o.arrived} min</td>` +
         `<td class="num">${fmt(f)}<span class="bar"><i style="width:${(100 * f / o.size).toFixed(1)}%"></i></span></td>` +
-        `<td><span class="pill ${cls}">${ph}</span></td><td class="num">${fin}</td><td class="num">${dl}</td>`;
+        `<td><span class="pill ${cls}">${ph}</span></td><td>${rigsOn || "—"}</td><td class="num">${fin}</td><td class="num">${dl}</td>`;
       tb.append(tr);
     }
   }
@@ -490,7 +555,7 @@ footer p { margin: 0; }
     const meanSize = SIZES.reduce((a, b) => a + b, 0) / SIZES.length;
     const lam = Number($("auto").value);
     $("sLoad").textContent = lam > 0 ? Math.round(100 * lam * meanSize / rate) + "%" : "off";
-    renderVessels(); renderTimeline(etas); renderTable(etas);
+    renderVessels(); renderRigs(); renderTimeline(etas); renderTable(etas);
   }
 
   function setPlaying(on) {
@@ -504,6 +569,8 @@ footer p { margin: 0; }
   $("reset").addEventListener("click", () => { setPlaying(false); load(presetKey, false); });
   $("preset").addEventListener("change", (e) => { setPlaying(false); load(e.target.value, false); });
   $("rate").addEventListener("input", (e) => { setRate(Number(e.target.value)); render(); });
+  $("rigs").addEventListener("input", (e) => { $("rigsVal").textContent = e.target.value; S.assign = new Map(); render(); });
+  $("quote").addEventListener("input", (e) => { $("quoteVal").textContent = e.target.value + "%"; render(); });
   $("speed").addEventListener("input", (e) => { $("speedVal").textContent = e.target.value + " min/s"; if (timer) setPlaying(true); });
   $("auto").addEventListener("input", (e) => { const v = Number(e.target.value); $("autoVal").textContent = v === 0 ? "off" : v.toFixed(2); render(); });
   $("add").addEventListener("click", () => { const v = Math.max(1, Math.round(Number($("size").value) || 0)); queue(v); render(); });

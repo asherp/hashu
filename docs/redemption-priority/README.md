@@ -11,13 +11,13 @@ The mint issues hashu vouchers up to hash rate × time horizon (e.g. 12 hours). 
 
 ## Delivery mechanism
 
-- Each rig connected to the mint has its own hash rate and serves one order at a time; one order can be served by several rigs.
-- For now the model treats the rigs as one divisible pool that switches between orders instantly: the rule decides each order's share per tick, and rig assignment just carries out that split. Delivery then depends on total hash rate, not rig count.
-- Real rigs have a startup cost when they switch orders, and production will use rented hash rate. Rig-side scheduling is left for later (see Open questions).
+- Each rig connected to the mint is a lane: it has its own hash rate and serves one order at a time. One order can be served by several rigs, and users may split their orders; either way service stays first come, first served.
+- How many orders run in parallel depends on how many rigs are free.
+- Real rigs have a startup cost when they switch orders, and production will use rented hash rate. Switching delays are left for later (see Open questions).
 
 ## Deadlines, not delivery
 
-The hydraulic rule below only marks **when** each order should be complete. How the hashes flow in between doesn't matter as long as each order's integral reaches its size by its deadline. So the mint runs the hydraulic rule as a virtual clock to set deadlines, and delivers the real hashes **earliest deadline first** (EDF). Nothing is paused at the 50% mark, which removed the incentive to game the halfway line.
+The hydraulic rule below only marks **when** each order should be complete. How the hashes flow in between doesn't matter as long as each order's integral reaches its size by its deadline. So the mint runs the hydraulic rule as a virtual clock to set deadlines, and the rigs deliver the real hashes to meet them. Nothing is paused at the 50% mark, which removed the incentive to game the halfway line.
 
 ## Deadline rule: Kaminski's hydraulic form of the Talmud (contested garment) rule
 
@@ -38,72 +38,85 @@ filled = min(c, min(h − b, c/2) + max(0, h − (T − c/2)))    (zero when h �
 
 Each tick, the new level is found by bisection on h so that the total delivered rises by exactly that tick's hashes (or to the highest open top, with the rest idle).
 
-An order's deadline is its top T, a water level fixed on arrival. In wall-clock terms it is the tick at which the virtual level reaches T. That tick isn't fixed on arrival, since later arrivals slow the virtual level.
+## Fixed deadlines
 
-## Delivery: earliest deadline first
+An order's top T is a water level fixed on arrival, but the wall-clock time the virtual level reaches it drifts later as new orders arrive. So on arrival the mint forecasts that time, assuming no one else redeems and the quoted hash rate holds, and **fixes it as the order's deadline**. It never moves after that.
 
-- Each tick, the real hashes go to the open order with the lowest top. Ties go to the earlier arrival; orders that arrived in the same tick share in proportion to what they still need, so they finish together.
-- A newcomer's top is never below an open order's top (checked as an assertion in every run below), so EDF serves orders in arrival order. In practice the Talmud deadlines turn delivery into first come, first served, with same-tick batches sharing.
-- The head of the queue only changes when an order completes, so each order gets one continuous run of hashes. That also means rigs only switch orders at completions, which suits real rigs with a switching cost.
-- EDF never finishes an order later than its hydraulic deadline: the virtual system and EDF receive the same arrivals and the same hashes, and EDF always works on the order the virtual system would finish first. `delivery_sim.py` checks this in 2,000 random runs with the hash rate changing every tick: every order met its deadline, in arrival order.
-- Both systems deliver the same total each tick while anything is open, so the cumulative hashes delivered are identical; only who gets them when differs.
+- Fixed deadlines run in arrival order, and each is no later than the drifting one (`fixed_deadline_test()`, 1,000 random runs).
+- Quoted on 100% of hash rate, the fixed deadline works out to exactly when first come, first served would finish the order. That leaves no slack: every rig is needed to keep every promise, so small orders wait behind a large one.
+- Quoted on a smaller share, say 80% of hash rate, deadlines are a little later and the spare rigs serve later orders in parallel. In the whale example (2 rigs of 5, a 100 order then two 5s), at 100% the small orders start at tick 10 after the whale; at 80% they start at ticks 7 and 8 and finish then, and the whale still beats its deadline.
+- Deadlines hold as long as the quoted hash rate does. With hash rate changing at random every tick, fixed deadlines slipped in 734 of 1,000 runs, so the quote should use dependable hash rate, not peak.
+
+## Delivery: rigs, earliest deadline first
+
+`deliver_rigs()` reassigns rigs once a tick:
+
+- Open orders are taken in deadline order (which is arrival order). Each gets just enough rigs to stay on pace for its deadline (remaining ÷ ticks left), keeping the rigs it already has where possible, fastest rigs first.
+- Spare rigs go to later orders, so they run in parallel instead of queueing. Rigs nobody needs keep their current order or help the earliest one.
+- A rig whose order completes mid-tick passes its leftover hashes on in deadline order.
+- Result: in 1,000 random runs (2 to 8 rigs of 1 to 5 hashes a tick, constant hash rate), no order missed its fixed deadline. The pooled reference (`deliver_edf()`, all hash rate as one divisible pool) also missed none.
+- Strictly one order per rig, with no rig ever helping another order, can't keep the deadlines: a large order on one small rig takes as long as it takes. That's why an order may hold several rigs, and why users splitting an order is fine.
 
 ## Time to delivery
 
-- Under EDF, later arrivals always queue behind, so an order's finish time is set the moment it arrives: the work ahead of it divided by hash rate. Optimistic and worst-case estimates coincide, and only a change in hash rate moves the ETA. Base it on dependable hash rate rather than peak.
-- The hydraulic deadline is a looser bound. Its wall-clock time drifts later as new orders arrive, so it's not what the wallet should show.
+- The fixed deadline is the promise: shown on arrival and never moved unless hash rate falls below the quote.
+- The live ETA is usually earlier, since rigs often run ahead of deadlines. Later arrivals never delay an earlier order past its deadline.
 - If hash rate holds, everything is delivered within the window; the rule only sets the order of filling.
 
 ## Does splitting an order help?
 
-`splitting_test()` takes 500 random scenarios, picks one order and replaces it with 2, 4 or 10 equal pieces, either all in the same tick or one per tick (3,000 cases).
+Splitting is allowed; it stays first come, first served. `splitting_test()` takes 200 random scenarios, picks one order and replaces it with 2, 4 or 10 equal pieces, either all in the same tick or one per tick, delivered pooled and through random rigs (600 cases each).
 
-| Split | Anyone else's actual finish moved | Splitter's actual finish | Hydraulic deadlines |
-| --- | --- | --- | --- |
-| Same tick (1,500 cases) | Never | Never changed | Splitter's deadline earlier in 206 cases; other orders' deadlines moved 982 times (753 later, 229 earlier) |
-| One piece per tick (1,500 cases) | Other orders finished earlier 822 times, later 319 times | Later in 962 cases, never earlier | Shift both ways |
+| Split | Deadlines | Orders that arrived **before** the splitter | Splitter's finish | Later or same-tick orders' finish |
+| --- | --- | --- | --- | --- |
+| Same tick, pooled | No one's moved | Untouched | Never changed | Never changed |
+| Same tick, rigs | No one's moved | Untouched | Earlier in 45 cases, later in 8 (rig granularity) | Moved 48 times, both ways, all within their deadlines |
+| One per tick, pooled | Splitter's later in 377 cases | Untouched | Same or later, never earlier | Moved both ways |
+| One per tick, rigs | Splitter's later in 375 cases | Untouched | Later in 386 cases, earlier once | Moved both ways |
 
-- Splitting within one tick changes nothing that is delivered: the pieces sit in the same place in the queue as the whole order would.
-- Spreading pieces over time only hurts the splitter: orders arriving in between go ahead of the later pieces. The 319 "later" moves come from mint idle time, when the splitter held back work and the rigs had nothing to do; that's the same as the splitter simply arriving late.
-- The hydraulic deadlines themselves **are** gameable: a large order split into small pieces gets a lower top, because a batch's top uses the largest single size. That's harmless while deadlines only rank orders and ETAs come from EDF, but it means the hydraulic deadline should never be shown or promised as a delivery time.
+- With fixed deadlines, splitting within one tick changes no one's deadline, the splitter's included: the pieces share the batch top, and the forecast is the same.
+- No order that arrived before the splitter is ever affected, deadline or finish.
+- Through rigs, splitting can land the pieces on spare rigs and finish a little sooner, or a little later; others' finishes shift too, but never past their fixed deadlines.
+- Spreading pieces over time pushes the splitter's deadline later, since later pieces queue behind whoever arrived in between.
+- Earlier drifting-deadline versions of this note found the hydraulic deadline gameable by splitting (a batch's top uses the largest single size). With deadlines fixed on arrival from the forecast, that no longer happens.
 
 ## Test run
 
-Hash rate 15 per tick, 8 random orders (sizes 5 to 100) arriving over 20 ticks, two seeds. "Deadline" is the hydraulic finish; "EDF" is when the order actually finished. Every order met its deadline and no order finished before an earlier arrival. Separately, two equal 60-unit orders at rate 10, five ticks apart: deadlines 6 and 11, EDF finished at 5 and 11.
+Hash rate 15 per tick, 8 random orders (sizes 5 to 100) arriving over 20 ticks, two seeds. "Deadline" is the fixed deadline (quoted on 100%). "Pooled" is the divisible-pool reference; "Rigs" is delivery through four rigs of 5, 5, 3 and 2. Every order met its deadline both ways, and deadlines run in arrival order. Separately, two equal 60-unit orders at rate 10, five ticks apart: deadlines 5 and 11, finished at 5 and 11.
 
-| Seed | Order | Size | Arrived (tick) | Deadline (tick) | EDF finished (tick) |
-| --- | --- | --- | --- | --- | --- |
-| 7 | C | 5 | 1 | 8 | 5 |
-| 7 | F | 60 | 1 | 8 | 5 |
-| 7 | H | 40 | 2 | 8 | 7 |
-| 7 | G | 5 | 6 | 8 | 8 |
-| 7 | A | 10 | 10 | 10 | 10 |
-| 7 | E | 60 | 11 | 18 | 14 |
-| 7 | B | 100 | 12 | 21 | 21 |
-| 7 | D | 5 | 17 | 21 | 21 |
-| 11 | G | 5 | 5 | 5 | 5 |
-| 11 | D | 10 | 6 | 6 | 6 |
-| 11 | A | 60 | 14 | 29 | 21 |
-| 11 | B | 40 | 14 | 29 | 21 |
-| 11 | H | 20 | 14 | 29 | 21 |
-| 11 | C | 60 | 16 | 31 | 28 |
-| 11 | E | 40 | 16 | 31 | 28 |
-| 11 | F | 60 | 20 | 32 | 32 |
+| Seed | Order | Size | Arrived (tick) | Deadline (tick) | Pooled finished | Rigs finished |
+| --- | --- | --- | --- | --- | --- | --- |
+| 7 | C | 5 | 1 | 5 | 5 | 1 |
+| 7 | F | 60 | 1 | 5 | 5 | 5 |
+| 7 | H | 40 | 2 | 7 | 7 | 7 |
+| 7 | G | 5 | 6 | 8 | 8 | 8 |
+| 7 | A | 10 | 10 | 10 | 10 | 10 |
+| 7 | E | 60 | 11 | 14 | 14 | 14 |
+| 7 | B | 100 | 12 | 21 | 21 | 21 |
+| 7 | D | 5 | 17 | 21 | 21 | 21 |
+| 11 | G | 5 | 5 | 5 | 5 | 5 |
+| 11 | D | 10 | 6 | 6 | 6 | 6 |
+| 11 | A | 60 | 14 | 21 | 21 | 21 |
+| 11 | B | 40 | 14 | 21 | 21 | 21 |
+| 11 | H | 20 | 14 | 21 | 21 | 21 |
+| 11 | C | 60 | 16 | 28 | 28 | 28 |
+| 11 | E | 40 | 16 | 28 | 28 | 28 |
+| 11 | F | 60 | 20 | 32 | 32 | 32 |
 
-Observation: small orders arriving while a large order is open get the same or a later deadline and, under EDF, wait behind it. In the hydraulic model they would at least receive some hashes while waiting; under EDF they receive none until the orders ahead finish, but never finish later.
+Observation: at a 100% quote the fixed deadline is the first-come-first-served finish, so delivery has little room to beat it; rigs only get ahead through granularity (seed 7's order C, 5 units, finishes at tick 1 on a spare rig instead of 5). A lower quote gives rigs room to run small orders alongside large ones.
 
 ## Units in the simulator
 
-The simulator shows the virtual vessels with a bar beside each for what EDF has really delivered, and both finish times in the table. It uses one-minute ticks, hash rate in TH/s and order sizes in TH/s·h (1 TH/s sustained for an hour = 3.6 × 10¹⁵ hashes ≈ 3,274 TiH). Its default 900 TH/s delivers 15 TH/s·h a minute, matching the 15-per-tick test run above. Finish times there are shown as elapsed minutes, one higher than the tick indices in the table.
+The simulator shows the virtual vessels with a bar beside each for what the rigs have really delivered, a panel of rigs and the order each is serving, and the finish and fixed deadline in the table. Controls set the number of rigs (hash rate split evenly) and the share of hash rate deadlines are quoted on. It uses one-minute ticks, hash rate in TH/s and order sizes in TH/s·h (1 TH/s sustained for an hour = 3.6 × 10¹⁵ hashes ≈ 3,274 TiH). Its default 900 TH/s delivers 15 TH/s·h a minute, matching the 15-per-tick test run above. Finish times there are shown as elapsed minutes, one higher than the tick indices in the table.
 
 ## Open questions
 
 - Tick length (affects smoothness only; splits change only on arrivals).
-- Small orders queue behind a large earlier one. If that wait is too long, the fix is a cap on order size or a separate lane for small orders, not a change to the deadline rule.
-- What to do when hash rate drops and deadlines can't all be met. EDF keeps arrival order, so the latest orders absorb the whole shortfall; the hydraulic rule could instead be used to spread it.
+- What share of hash rate to quote deadlines on. Lower means later promises but more spare rigs for parallel service and more headroom when hash rate dips.
+- What to do when hash rate drops and deadlines can't all be met. Deadlines are fixed, so a shortfall means some get missed. Serving in deadline order puts the whole miss on the latest orders; the hydraulic rule could instead be used to spread it.
 - Handling rigs going offline mid-window. Later: rig-side scheduling for rented hash rate, including buying hash rate as orders arrive vs keeping a reserve or mining continuously, and a switching delay of some number of ticks.
 
-**Note: stop-and-restart.** Holders can stop a redemption anytime and get the remainder back as change. Under EDF, a re-redeemed remainder simply joins the back of the queue, so stopping and restarting can't jump ahead of anyone; it only costs the holder their place. The earlier concern was that, under the pure hydraulic split, re-redeeming as a fresh bucket would regain lower-half priority. The fix proposed then, kept here in case delivery ever follows the hydraulic split directly: stamp change with the water level where the old bucket would have resumed (via a keyset per water-level band, bands wide enough to keep anonymity sets), and base the re-redeemed bucket at that level. Water level already accounts for new arrivals, so stopping and restarting is neutral: no faster, no slower.
+**Note: stop-and-restart.** Holders can stop a redemption anytime and get the remainder back as change. With fixed deadlines in arrival order, a re-redeemed remainder simply joins the back of the queue with a new, later deadline, so stopping and restarting can't jump ahead of anyone; it only costs the holder their place. The earlier concern was that, under the pure hydraulic split, re-redeeming as a fresh bucket would regain lower-half priority. The fix proposed then, kept here in case delivery ever follows the hydraulic split directly: stamp change with the water level where the old bucket would have resumed (via a keyset per water-level band, bands wide enough to keep anonymity sets), and base the re-redeemed bucket at that level. Water level already accounts for new arrivals, so stopping and restarting is neutral: no faster, no slower.
 
 ## References
 
