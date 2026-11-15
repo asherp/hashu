@@ -114,7 +114,7 @@ footer p { margin: 0; }
   <header>
     <p class="eyebrow">Hashu · redemption priority</p>
     <h1>Hashu Delivery Simulator</h1>
-    <p class="lede">Each redemption is a vessel, sized in TH/s·h. A virtual water level rises as if the mint's hash rate were poured into every vessel at once (Kaminski's hydraulic Talmud rule). When an order arrives, the minute its vessel would fill if no one else redeemed becomes its deadline, and that deadline never moves. Real hashes come from physical rigs, each serving one order at a time: orders are taken earliest deadline first and get just enough rigs to stay on pace, and spare rigs serve later orders in parallel.</p>
+    <p class="lede">Each redemption is a vessel, sized in TH/s·h. A virtual water level rises as if the mint's hash rate were poured into every vessel at once (Kaminski's hydraulic Talmud rule). When an order arrives, the minute its vessel would fill if no one else redeemed becomes its deadline, and that deadline never moves. Real hashes come from physical rigs, each serving one order at a time. By default rigs are placed the way the proxy router places them: big rigs to big orders, and a rig stays until its order completes, so an order's ETA is what's left ÷ its rigs' hash rate. Everything owed clears no sooner than owed ÷ total hash rate.</p>
   </header>
 
   <section class="panel" aria-label="Controls">
@@ -145,6 +145,20 @@ footer p { margin: 0; }
         <div class="row"><input id="rigs" type="range" min="1" max="12" step="1" value="4"><span class="val" id="rigsVal">4</span></div>
       </div>
       <div class="group">
+        <label for="mode">Rig assignment</label>
+        <select id="mode">
+          <option value="router">Proxy router: sticky, size-matched</option>
+          <option value="deadline">Talmud deadlines: just enough rigs</option>
+        </select>
+      </div>
+      <div class="group">
+        <label for="mix">Rig sizes</label>
+        <select id="mix">
+          <option value="mixed">Mixed: big to small</option>
+          <option value="equal">All equal</option>
+        </select>
+      </div>
+      <div class="group" id="quoteGroup">
         <label for="quote">Quote deadlines on</label>
         <div class="row"><input id="quote" type="range" min="50" max="100" step="5" value="80"><span class="val" id="quoteVal">80%</span></div>
       </div>
@@ -177,6 +191,7 @@ footer p { margin: 0; }
     <div><dt>Finished</dt><dd id="sDone">0</dd></div>
     <div><dt>Avg wait</dt><dd id="sWait">—</dd></div>
     <div><dt>Load</dt><dd id="sLoad">—</dd></div>
+    <div><dt>Clear all owed by</dt><dd id="sClear">—</dd></div>
   </dl>
 
   <section class="panel">
@@ -196,7 +211,7 @@ footer p { margin: 0; }
   <section class="panel">
     <div class="panel-head">
       <h2>Rigs</h2>
-      <p class="hint">Each rig serves one order at a time. Hash rate is split evenly across rigs.</p>
+      <p class="hint">Each rig serves one order at a time. The hash rate above is split across the rigs, evenly or from big to small.</p>
     </div>
     <div class="rigs" id="rigBox"></div>
   </section>
@@ -205,7 +220,7 @@ footer p { margin: 0; }
     <section class="panel">
       <div class="panel-head">
         <h2>Timeline</h2>
-        <p class="hint">Minutes elapsed. Outline: waiting. Solid: receiving hashes. Dashed: ETA at the current hash rate. Tick: fixed deadline.</p>
+        <p class="hint">Minutes elapsed. Outline: waiting. Solid: receiving hashes. Dashed: ETA at the current hash rate. Tick: Talmud deadline.</p>
       </div>
       <div class="scroll" id="timelineBox"><svg id="timeline" role="img" aria-label="Order timeline"></svg></div>
     </section>
@@ -213,7 +228,7 @@ footer p { margin: 0; }
       <div class="panel-head"><h2>Orders</h2></div>
       <div class="scroll">
         <table>
-          <thead><tr><th>Order</th><th class="num">Size (TH/s·h)</th><th class="num">Arrived</th><th class="num">Delivered (TH/s·h)</th><th>Phase</th><th>Rigs</th><th class="num">Finish</th><th class="num">Deadline</th></tr></thead>
+          <thead><tr><th>Order</th><th class="num">Size (TH/s·h)</th><th class="num">Arrived</th><th class="num">Delivered (TH/s·h)</th><th>Phase</th><th>Rigs</th><th class="num">ETA</th><th class="num">Talmud deadline</th></tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
@@ -224,6 +239,7 @@ footer p { margin: 0; }
     <p>Hash rate is in TH/s. Orders, deliveries and the water level are in TH/s·h, one terahash per second sustained for an hour (3.6 million TH). Rigs are reassigned once a minute, so each minute delivers hash rate ÷ 60 TH/s·h; a rig whose order finishes mid-minute passes its leftover on. Switching delays come later.</p>
     <p>New orders keep arriving at random, sized 5 to 100 TH/s·h. Load is average demand as a share of hash rate; above 100% the backlog grows without limit.</p>
     <p>Deadline rule: a lone order fills straight up. Orders arriving in the same minute share one top, set at the water level plus the largest of their sizes and every open order's remaining amount. Existing tops never move, and a newcomer's top is never below an open order's, so deadlines run in arrival order. Each deadline is forecast on arrival from the quoted share of hash rate and then fixed. At 100% the deadline is exactly when first come, first served would finish, so the rigs have no slack; quoting on less leaves spare rigs for small orders to run alongside large ones. Deadlines hold as long as the hash rate does.</p>
+    <p>Proxy router mode follows hashu-proxy's router: a free rig (biggest first) goes to an order that has waited 2 minutes with no rig (oldest first), else to an order with no rig, else to one that already has rigs; within those, to the order whose remaining need per minute is the smallest that still fits the rig. An order whose rigs already finish it within a minute takes no more. Rigs never leave an order before it completes, so once an order has rigs its ETA can only improve. Waiting orders show a forecast (≈) that later arrivals can push back.</p>
   </footer>
 </div>
 
@@ -243,7 +259,64 @@ footer p { margin: 0; }
   let S, rate = 15, timer = null, presetKey = "test"; // rate = TH/s·h delivered per one-minute tick
   const nRigs = () => Number($("rigs").value);
   const quote = () => Number($("quote").value) / 100;
-  const rigRates = () => Array(nRigs()).fill(rate / nRigs());
+  // Rig hash rates per minute. Mixed: rig k gets weight 1/k (one big rig, a tail of small ones).
+  const rigRates = () => {
+    const n = nRigs(), w = Array.from({ length: n }, (_, k) => $("mix").value === "equal" ? 1 : 1 / (k + 1));
+    const sum = w.reduce((a, b) => a + b, 0);
+    return w.map(x => rate * x / sum);
+  };
+  const mode = () => $("mode").value;
+  const TARGET_RUN = 1, STARVE_AFTER = 2; // minutes; the proxy router uses 60 s and 120 s
+
+  // The proxy router's pick_route: room = remaining ÷ TARGET_RUN − rate already assigned
+  // (no room = capped). Tiers: starving (no rig for STARVE_AFTER), unserved, served.
+  // Starving go oldest first; otherwise best fit (smallest room that fits the rig,
+  // else most room), then oldest.
+  function pickOrder(open, rigs, assign, r, t) {
+    let best = null, bestKey = null;
+    open.forEach((o, age) => {
+      const held = [...assign].filter(([q, id]) => id === o.id && q !== r).map(([q]) => q);
+      const room = (o.size - o.delivered) / TARGET_RUN - held.reduce((s, q) => s + rigs[q], 0);
+      if (room <= EPS) return;
+      const starving = !held.length && t - o.arrived >= STARVE_AFTER;
+      const tier = starving ? 0 : held.length ? 2 : 1;
+      const fits = room >= rigs[r];
+      const key = [tier, starving ? 0 : fits ? 0 : 1, starving ? 0 : fits ? room : -room, age];
+      const i = bestKey ? key.findIndex((v, j) => v !== bestKey[j]) : -1;
+      if (!bestKey || (i >= 0 && key[i] < bestKey[i])) { best = o; bestKey = key; }
+    });
+    return best;
+  }
+
+  // Rigs stay on their order until it completes; free rigs are placed biggest first.
+  function deliverRouter(state, rigs) {
+    const open = state.orders.filter(o => o.finished == null).sort((a, b) => (a.arrived - b.arrived) || (a.id < b.id ? -1 : 1));
+    const byId = new Map(open.map(o => [o.id, o]));
+    const assign = state.assign;
+    for (const [q, id] of [...assign]) if (!byId.has(id)) assign.delete(q);
+    const budget = rigs.slice();
+    const order = rigs.map((_, i) => i).sort((a, b) => rigs[b] - rigs[a]);
+    let used = 0;
+    for (let pass = 0; pass < rigs.length + open.length + 1; pass++) {
+      let moved = false;
+      for (const r of order) {
+        if (budget[r] <= EPS) continue;
+        if (!assign.has(r)) {
+          const o = pickOrder(open.filter(x => x.delivered < x.size - 1e-7), rigs, assign, r, state.t);
+          if (!o) continue;
+          assign.set(r, o.id);
+        }
+        const o = byId.get(assign.get(r));
+        const d = Math.min(budget[r], o.size - o.delivered);
+        if (d > 0 && o.startAt == null) o.startAt = state.t;
+        o.delivered += d; budget[r] -= d; used += d; moved = true;
+        if (o.delivered >= o.size - 1e-7) for (const [q, id] of [...assign]) if (id === o.id) assign.delete(q);
+      }
+      if (!moved) break;
+    }
+    return used;
+  }
+  const deliver = (state, rigs) => mode() === "router" ? deliverRouter(state, rigs) : deliverRigs(state, rigs);
   const setRate = (ths) => { rate = ths / 60; $("rate").value = ths; $("rateVal").textContent = ths.toLocaleString() + " TH/s"; };
 
   function filled(o, h) {
@@ -331,7 +404,7 @@ footer p { margin: 0; }
     S.queued = [];
     admit(S, batch, rate * quote());
     [S.h] = pour(S.orders, S.h, rate);
-    const used = deliverRigs(S, rigRates());
+    const used = deliver(S, rigRates());
     S.delivered += used; S.idle += rate - used;
     mark(S);
     S.t++;
@@ -348,7 +421,7 @@ footer p { margin: 0; }
     const out = {};
     for (let n = 0; n < 20000 && sim.orders.some(o => o.doneAt == null || o.finished == null); n++) {
       [sim.h] = pour(sim.orders, sim.h, rate);
-      deliverRigs(sim, rigRates());
+      deliver(sim, rigRates());
       mark(sim);
       sim.t++;
     }
@@ -462,8 +535,9 @@ footer p { margin: 0; }
 
   function renderRigs() {
     const box = $("rigBox"); box.replaceChildren();
-    const per = rate * 60 / nRigs();
+    const rr = rigRates();
     for (let r = 0; r < nRigs(); r++) {
+      const per = rr[r] * 60;
       const o = S.orders.find(x => x.id === S.assign.get(r) && x.finished == null);
       const d = document.createElement("div");
       d.className = "rig" + (o ? "" : " idle");
@@ -530,10 +604,15 @@ footer p { margin: 0; }
       const f = o.queued ? 0 : o.delivered;
       const [ph, cls] = phase(o);
       const e = etas[o.id] || {};
-      const fin = o.finished != null ? `${o.finished + 1} min` : (e.finish != null ? `≈ ${e.finish + 1} min` : "—");
+      const held = o.finished != null || o.queued ? [] : [...S.assign].filter(([, id]) => id === o.id).map(([r]) => r);
+      const heldRate = held.reduce((sum, r) => sum + rigRates()[r], 0);
+      // With rigs assigned, the ETA is remaining ÷ their hash rate: rigs never leave an order, so it can only improve.
+      const fin = o.finished != null ? `${o.finished + 1} min`
+        : heldRate > 0 ? `by ${S.t + Math.ceil((o.size - o.delivered) / heldRate - 1e-9)} min`
+        : (e.finish != null ? `≈ ${e.finish + 1} min` : "—");
       const dlT = o.deadline != null ? o.deadline : e.deadline;
       const dl = dlT != null ? `${dlT + 1} min` : "—";
-      const rigsOn = o.finished != null || o.queued ? "" : [...S.assign].filter(([, id]) => id === o.id).map(([r]) => r + 1).join(", ");
+      const rigsOn = held.map(r => r + 1).join(", ");
       tr.innerHTML = `<td><strong>${o.id}</strong></td><td class="num">${fmt(o.size)}</td><td class="num">${o.arrived} min</td>` +
         `<td class="num">${fmt(f)}<span class="bar"><i style="width:${(100 * f / o.size).toFixed(1)}%"></i></span></td>` +
         `<td><span class="pill ${cls}">${ph}</span></td><td>${rigsOn || "—"}</td><td class="num">${fin}</td><td class="num">${dl}</td>`;
@@ -547,6 +626,8 @@ footer p { margin: 0; }
     $("sTick").textContent = S.t + " min";
     $("sLevel").textContent = fmt(S.h) + " TH/s·h";
     $("sOpen").textContent = open.length + (S.queued.length ? ` (+${S.queued.length} queued)` : "");
+    const owedNow = open.reduce((s, o) => s + o.size - o.delivered, 0) + S.queued.reduce((s, q) => s + q[1], 0);
+    $("sClear").textContent = owedNow > EPS ? `≥ ${S.t + Math.ceil(owedNow / rate)} min` : "—";
     $("sOwed").textContent = fmt(open.reduce((s, o) => s + o.size - o.delivered, 0) + S.queued.reduce((s, q) => s + q[1], 0)) + " TH/s·h";
     $("sDelivered").textContent = fmt(S.delivered) + " TH/s·h";
     $("sIdle").textContent = fmt(S.idle) + " TH/s·h";
@@ -570,6 +651,10 @@ footer p { margin: 0; }
   $("preset").addEventListener("change", (e) => { setPlaying(false); load(e.target.value, false); });
   $("rate").addEventListener("input", (e) => { setRate(Number(e.target.value)); render(); });
   $("rigs").addEventListener("input", (e) => { $("rigsVal").textContent = e.target.value; S.assign = new Map(); render(); });
+  const syncMode = () => { $("quoteGroup").style.display = mode() === "router" ? "none" : ""; };
+  $("mode").addEventListener("change", () => { syncMode(); S.assign = new Map(); render(); });
+  $("mix").addEventListener("change", () => { S.assign = new Map(); render(); });
+  syncMode();
   $("quote").addEventListener("input", (e) => { $("quoteVal").textContent = e.target.value + "%"; render(); });
   $("speed").addEventListener("input", (e) => { $("speedVal").textContent = e.target.value + " min/s"; if (timer) setPlaying(true); });
   $("auto").addEventListener("input", (e) => { const v = Number(e.target.value); $("autoVal").textContent = v === 0 ? "off" : v.toFixed(2); render(); });

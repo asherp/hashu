@@ -165,8 +165,74 @@ def deliver_rigs(orders: list[Order], rigs: list[float], assign: dict[int, str],
     return switches
 
 
+TARGET_RUN = 1  # ticks; the proxy router's TARGET_RUN is 60 s, one simulator minute
+STARVE_AFTER = 2  # ticks; the router's STARVE_AFTER is 120 s
+
+
+def pick_order(open_: list[Order], rigs: list[float], assign: dict[int, str], r: int, t: int,
+               rate: float) -> Optional[Order]:
+    """The proxy router's pick_route (hashu-proxy/src/router.rs) for rig r of `rate` hashes a tick.
+
+    Room = remaining ÷ TARGET_RUN − rate already assigned; orders with no room are
+    capped. Tiers: starving (no rig for STARVE_AFTER), then unserved, then served.
+    Within a tier, starving orders go oldest first; otherwise best fit (the smallest
+    room that still fits the rig, else the most room), then oldest.
+    """
+    cands = []
+    for age, o in enumerate(open_):
+        held = [q for q, oid in assign.items() if oid == o.id and q != r]
+        room = (o.size - o.delivered) / TARGET_RUN - sum(rigs[q] for q in held)
+        if room <= EPS:
+            continue
+        starving = not held and t - o.arrived >= STARVE_AFTER
+        tier = 0 if starving else 1 if not held else 2
+        fits = room >= rate
+        fit = (0,) if starving else (0, room) if fits else (1, -room)
+        cands.append(((tier, fit, age), o))
+    return min(cands, key=lambda c: c[0])[1] if cands else None
+
+
+def deliver_router(orders: list[Order], rigs: list[float], assign: dict[int, str], t: int) -> float:
+    """Deliver through rigs placed the way the proxy router places them. Returns idle hashes.
+
+    A rig stays on its order until the order completes (no rebalancing). Free rigs
+    are placed biggest first with `pick_order`, so large rigs land on large orders.
+    A rig whose order completes mid-tick is placed again for its leftover hashes.
+    """
+    open_ = sorted((o for o in orders if o.finished is None), key=lambda o: (o.arrived, o.id))
+    by_id = {o.id: o for o in open_}
+    for q in [q for q, oid in assign.items() if oid not in by_id]:
+        del assign[q]
+    budget = list(rigs)
+    idle = 0.0
+    for _ in range(len(rigs) + len(open_) + 1):
+        moved = False
+        for r in sorted(range(len(rigs)), key=lambda q: -rigs[q]):
+            if budget[r] <= EPS:
+                continue
+            if r not in assign:
+                live = [o for o in open_ if o.delivered < o.size - 1e-7]
+                o = pick_order(live, rigs, assign, r, t, rigs[r])
+                if o is None:
+                    continue
+                assign[r] = o.id
+            o = by_id[assign[r]]
+            d = min(budget[r], o.size - o.delivered)
+            if d > 0 and o.started is None:
+                o.started = t
+            o.delivered += d
+            budget[r] -= d
+            moved = True
+            if o.delivered >= o.size - 1e-7:
+                for q in [q for q, oid in assign.items() if oid == o.id]:
+                    del assign[q]
+        if not moved:
+            break
+    return sum(budget)
+
+
 def simulate(rate, arrivals: dict[int, list[tuple[str, float]]], ticks: int,
-             rigs: Optional[list[float]] = None, quote: float = 1.0) -> list[Order]:
+             rigs: Optional[list[float]] = None, quote: float = 1.0, router: bool = False) -> list[Order]:
     """Run the hydraulic deadlines and real delivery side by side.
 
     `rate` is hashes per tick, a number or a function of the tick. With `rigs`
@@ -186,6 +252,8 @@ def simulate(rate, arrivals: dict[int, list[tuple[str, float]]], ticks: int,
         h, _idle = pour(orders, h, r)
         if rigs is None:
             deliver_edf(orders, r)
+        elif router:
+            deliver_router(orders, rigs, assign, t)
         else:
             deliver_rigs(orders, rigs, assign, t)
         for o in orders:
@@ -230,6 +298,47 @@ def split(arrivals, oid: str, k: int, spread: bool = False):
             for j in range(k):
                 out.setdefault(t + (j if spread else 0), []).append((f"{i}{j}", s / k))
     return out
+
+
+def router_test(seeds: int = 150) -> dict[str, int]:
+    """Proxy-router placement: is the ETA from assigned rigs kept, and how good is a
+    forecast made on arrival?
+
+    The locked ETA is taken the first tick an order holds rigs: now + remaining ÷
+    their hash rate. The arrival forecast simulates on with no further arrivals.
+    Rigs are random (2 to 8 rigs of 1 to 8 hashes a tick).
+    """
+    import math
+    c = {"orders": 0, "finished after locked ETA": 0, "finished after arrival forecast": 0,
+         "ticks past arrival forecast": 0, "finished before an earlier arrival": 0}
+    for seed in range(seeds):
+        rng = random.Random(seed)
+        arr = random_arrivals(seed, n=rng.randint(3, 10), horizon=rng.randint(5, 30))
+        rigs = [rng.choice([1, 2, 3, 5, 8]) for _ in range(rng.choice([2, 3, 5, 8]))]
+        orders: list[Order] = []
+        assign: dict[int, str] = {}
+        locked: dict[str, int] = {}
+        for t in range(3000):
+            admit(orders, 0.0, t, arr.get(t, []))
+            deliver_router(orders, rigs, assign, t)
+            for o in orders:
+                if o.finished is None and o.delivered >= o.size - 1e-7:
+                    o.finished = t
+                rate = sum(rigs[q] for q, i in assign.items() if i == o.id)
+                if o.finished is None and o.id not in locked and rate > 0:
+                    locked[o.id] = t + math.ceil((o.size - o.delivered) / rate - 1e-9)
+            if t > max(arr) and all(o.finished is not None for o in orders):
+                break
+        for o in orders:
+            c["orders"] += 1
+            c["finished after locked ETA"] += o.id in locked and o.finished > locked[o.id]
+            sub = {t: b for t, b in arr.items() if t <= o.arrived}
+            forecast_ = {q.id: q.finished for q in simulate(None, sub, 3000, rigs=rigs, router=True)}[o.id]
+            c["finished after arrival forecast"] += o.finished > forecast_
+            c["ticks past arrival forecast"] += max(0, o.finished - forecast_)
+        c["finished before an earlier arrival"] += sum(
+            1 for a in orders for b in orders if b.arrived > a.arrived and b.finished < a.finished)
+    return c
 
 
 def fixed_deadline_test(seeds: int = 1000) -> dict[str, int]:
@@ -303,6 +412,10 @@ if __name__ == "__main__":
     orders = simulate(None, {0: [("W", 100)], 1: [("S", 5)], 2: [("T", 5)]}, 40, rigs=[5, 5])
     print("whale + two small orders, 2 rigs of 5 (deadline, started, finished):",
           {o.id: (o.deadline, o.started, o.finished) for o in orders})
+    orders = simulate(None, {0: [("W", 100), ("S", 5)]}, 40, rigs=[8, 2], router=True)
+    print("proxy router, rigs of 8 and 2, a 100 and a 5 (started, finished):",
+          {o.id: (o.started, o.finished) for o in orders})
+    print("proxy router:", router_test())
     print("fixed deadlines, constant hash rate:", fixed_deadline_test())
     print("fixed deadlines quoted on 80% of hash rate:", {o.id: (o.deadline, o.started, o.finished) for o in
           simulate(None, {0: [("W", 100)], 1: [("S", 5)], 2: [("T", 5)]}, 40, rigs=[5, 5], quote=0.8)})

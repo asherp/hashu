@@ -57,9 +57,27 @@ An order's top T is a water level fixed on arrival, but the wall-clock time the 
 - Result: in 1,000 random runs (2 to 8 rigs of 1 to 5 hashes a tick, constant hash rate), no order missed its fixed deadline. The pooled reference (`deliver_edf()`, all hash rate as one divisible pool) also missed none.
 - Strictly one order per rig, with no rig ever helping another order, can't keep the deadlines: a large order on one small rig takes as long as it takes. That's why an order may hold several rigs, and why users splitting an order is fine.
 
+## ETAs from assigned rigs (proxy router)
+
+A deadline is really an ETA from the rigs assigned to an order: put a large rig on a large order and the order has an expected delivery time, remaining ÷ assigned hash rate. The mint only issues a finite number of hashes, so how fast it fills orders is bounded by the hash rate it can muster: everything owed clears no sooner than owed ÷ total hash rate, and issuance is capped at hash rate × horizon.
+
+`deliver_router()` places rigs the way `hashu-proxy/src/router.rs` (#60) does:
+
+- A rig stays on its order until the order completes; there is no rebalancing.
+- Free rigs are placed biggest first. Tiers: an order with no rig for 2 minutes (oldest first), then any order with no rig, then orders that already have rigs. Within a tier, best fit: the order whose remaining need per minute is the smallest that still fits the rig, so large rigs land on large orders.
+- An order whose rigs already finish it within a minute takes no more.
+
+`router_test()` (150 random runs, 970 orders, 2 to 8 rigs of 1 to 8 hashes a tick):
+
+- **The ETA from assigned rigs was never missed** (0 of 970). Rigs never leave an order before it completes and more can join, so once an order has rigs its ETA can only improve.
+- **A forecast made on arrival, before rigs are assigned, slipped for 172 of 970 orders** (980 ticks in all), because later arrivals can take freed rigs first: unserved orders outrank served ones, and best fit ignores arrival order. 231 times an order finished before one that arrived earlier.
+- A large order that arrives when every rig is free takes all of them and keeps them, so later small orders wait until it finishes (the simulator's "Whale arrives late" scenario shows this). A per-order cap on rigs, or reserving the smallest rigs for small orders, would keep a lane open.
+
+So the honest promise has two stages: a forecast (≈) while an order waits for rigs, and a firm ETA once rigs are on it. The worst-case wait is bounded by everything owed ahead of it ÷ total hash rate.
+
 ## Time to delivery
 
-- The fixed deadline is the promise: shown on arrival and never moved unless hash rate falls below the quote.
+- With Talmud deadlines (`deliver_rigs`), the fixed deadline is the promise: shown on arrival and never moved unless hash rate falls below the quote. With router placement, the promise is the ETA from assigned rigs (see above).
 - The live ETA is usually earlier, since rigs often run ahead of deadlines. Later arrivals never delay an earlier order past its deadline.
 - If hash rate holds, everything is delivered within the window; the rule only sets the order of filling.
 
@@ -107,7 +125,7 @@ Observation: at a 100% quote the fixed deadline is the first-come-first-served f
 
 ## Units in the simulator
 
-The simulator shows the virtual vessels with a bar beside each for what the rigs have really delivered, a panel of rigs and the order each is serving, and the finish and fixed deadline in the table. Controls set the number of rigs (hash rate split evenly) and the share of hash rate deadlines are quoted on. It uses one-minute ticks, hash rate in TH/s and order sizes in TH/s·h (1 TH/s sustained for an hour = 3.6 × 10¹⁵ hashes ≈ 3,274 TiH). Its default 900 TH/s delivers 15 TH/s·h a minute, matching the 15-per-tick test run above. Finish times there are shown as elapsed minutes, one higher than the tick indices in the table.
+The simulator shows the virtual vessels with a bar beside each for what the rigs have really delivered, a panel of rigs and the order each is serving, and the finish and fixed deadline in the table. Controls set the number of rigs, their sizes (equal, or big to small), the rig assignment (proxy router or Talmud deadlines), and the share of hash rate deadlines are quoted on. In router mode the ETA column shows "by X" once an order has rigs (firm) and "≈ X" while it waits. It uses one-minute ticks, hash rate in TH/s and order sizes in TH/s·h (1 TH/s sustained for an hour = 3.6 × 10¹⁵ hashes ≈ 3,274 TiH). Its default 900 TH/s delivers 15 TH/s·h a minute, matching the 15-per-tick test run above. Finish times there are shown as elapsed minutes, one higher than the tick indices in the table.
 
 ## Open questions
 
