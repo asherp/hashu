@@ -96,7 +96,7 @@ Before the halfway mark, redeemers want delivery as soon as possible; once they 
 - The cost lands on end dates: orders finish about 50% later on average, and small orders, which the router often finishes in one go, take about twice as long.
 - The last order finishes at the same time under every scheduler (the total is fixed by hash rate), so this only moves who waits.
 - Half the orders miss a Talmud deadline quoted on 100%, so with half first the promise has to be two times: "half by X" (fast, and only first halves compete for it) and "all by Y", a backstop such as the clear-all-owed bound or a deadline quoted on a lower share of hash rate.
-- Gaming: stopping after half and re-redeeming the change would win first-half priority on half of the remainder. Mark change from a stopped order as second-phase (for example its own keyset) so re-redeeming it doesn't jump ahead. Splitting an order up front doesn't help, since the total first-half work is the same.
+- Gaming: stopping after half and re-redeeming the change would win first-half priority on half of the remainder. Hold the change until the epoch ends (see Stop-and-restart below) so re-redeeming it can't jump ahead. Splitting an order up front doesn't help, since the total first-half work is the same.
 
 ## Time to delivery
 
