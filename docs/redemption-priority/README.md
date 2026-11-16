@@ -75,6 +75,29 @@ A deadline is really an ETA from the rigs assigned to an order: put a large rig 
 
 So the honest promise has two stages: a forecast (≈) while an order waits for rigs, and a firm ETA once rigs are on it. The worst-case wait is bounded by everything owed ahead of it ÷ total hash rate.
 
+## Half first: urgent first halves, flexible second halves
+
+Before the halfway mark, redeemers want delivery as soon as possible; once they hold half, they focus on what they have, so the end date can flex. This is close to Aumann and Maschler's reading of the Talmud rule: what a claimant holds uncontested is secure, and only the rest is in dispute. `deliver_half_first()`:
+
+- Each tick, every open order's unmet first half outranks every second half.
+- First halves share the rigs: each rig goes to the first half given the least so far this tick, so a new order gets a rig as soon as there are as many rigs as first halves (the hydraulic rule's lower chamber, "share the gains"). With `share=False` first halves go oldest first instead.
+- Second halves go oldest first, on whatever rigs first halves don't need. A rig on a second half moves when a new first half needs it.
+
+`compare_test()`: the same 400 random runs (2,967 orders, 2 to 8 rigs of 1 to 8 hashes a tick) under each scheduler. Times are mean ticks from arrival.
+
+| Scheduler | First hash | Half delivered | Finished | Small orders (≤ 10) finished | Large orders (≥ 60) finished | Missed Talmud deadline (100% quote) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Proxy router | 4.9 | 8.9 | 11.7 | 7.5 | 18.0 | 822 |
+| Talmud deadlines | 6.9 | 9.9 | 12.0 | 9.4 | 16.0 | 0 |
+| Half first, oldest first | 2.5 | 4.9 | 16.6 | 13.5 | 21.4 | 1,439 |
+| Half first, shared | 1.4 | 4.9 | 17.3 | 14.7 | 21.2 | 1,439 |
+
+- Half first does what it's meant to: hashes start flowing about 3.5 times sooner than with the router, and half arrives about twice as fast.
+- The cost lands on end dates: orders finish about 50% later on average, and small orders, which the router often finishes in one go, take about twice as long.
+- The last order finishes at the same time under every scheduler (the total is fixed by hash rate), so this only moves who waits.
+- Half the orders miss a Talmud deadline quoted on 100%, so with half first the promise has to be two times: "half by X" (fast, and only first halves compete for it) and "all by Y", a backstop such as the clear-all-owed bound or a deadline quoted on a lower share of hash rate.
+- Gaming: stopping after half and re-redeeming the change would win first-half priority on half of the remainder. Mark change from a stopped order as second-phase (for example its own keyset) so re-redeeming it doesn't jump ahead. Splitting an order up front doesn't help, since the total first-half work is the same.
+
 ## Time to delivery
 
 - With Talmud deadlines (`deliver_rigs`), the fixed deadline is the promise: shown on arrival and never moved unless hash rate falls below the quote. With router placement, the promise is the ETA from assigned rigs (see above).
@@ -125,7 +148,7 @@ Observation: at a 100% quote the fixed deadline is the first-come-first-served f
 
 ## Units in the simulator
 
-The simulator shows the virtual vessels with a bar beside each for what the rigs have really delivered, a panel of rigs and the order each is serving, and the finish and fixed deadline in the table. Controls set the number of rigs, their sizes (equal, or big to small), the rig assignment (proxy router or Talmud deadlines), and the share of hash rate deadlines are quoted on. In router mode the ETA column shows "by X" once an order has rigs (firm) and "≈ X" while it waits. It uses one-minute ticks, hash rate in TH/s and order sizes in TH/s·h (1 TH/s sustained for an hour = 3.6 × 10¹⁵ hashes ≈ 3,274 TiH). Its default 900 TH/s delivers 15 TH/s·h a minute, matching the 15-per-tick test run above. Finish times there are shown as elapsed minutes, one higher than the tick indices in the table.
+The simulator shows the virtual vessels with a bar beside each for what the rigs have really delivered, a panel of rigs and the order each is serving, and the finish and fixed deadline in the table. Controls set the number of rigs, their sizes (equal, or big to small), the rig assignment (proxy router, half first, or Talmud deadlines), and the share of hash rate deadlines are quoted on. In router mode the ETA column shows "by X" once an order has rigs (firm) and "≈ X" while it waits. It uses one-minute ticks, hash rate in TH/s and order sizes in TH/s·h (1 TH/s sustained for an hour = 3.6 × 10¹⁵ hashes ≈ 3,274 TiH). Its default 900 TH/s delivers 15 TH/s·h a minute, matching the 15-per-tick test run above. Finish times there are shown as elapsed minutes, one higher than the tick indices in the table.
 
 ## Open questions
 

@@ -34,6 +34,7 @@ class Order:
     delivered: float = 0.0  # hashes actually delivered under EDF
     finished: Optional[int] = None  # actual finish tick under EDF
     started: Optional[int] = None  # tick it first received hashes
+    half_at: Optional[int] = None  # tick delivery reached half the order
 
     def filled(self, h: float) -> float:
         """Hashes delivered to this order at water level h."""
@@ -231,8 +232,69 @@ def deliver_router(orders: list[Order], rigs: list[float], assign: dict[int, str
     return sum(budget)
 
 
+def deliver_half_first(orders: list[Order], rigs: list[float], assign: dict[int, str], t: int,
+                       share: bool = True) -> int:
+    """Half first: first halves are urgent, second halves flex. Returns rig switches.
+
+    Each tick, work is split into two tiers: every open order's unmet first half
+    (oldest first), then every order's second half (oldest first). Rigs, biggest
+    first, cover the first tier before the second, so a new order starts as soon
+    as a rig can be taken off someone's second half. A rig keeps its order when
+    that order still has work in the highest tier that has any; otherwise it
+    moves. A rig with hashes left over after its order is covered passes them on.
+
+    With `share` (the default), first halves share the rigs: each rig goes to the
+    first half that has been given the least this tick, so every new order gets a
+    rig as soon as there are as many rigs as first halves (the Talmud rule's lower
+    chamber, "share the gains"). Without it, first halves go oldest first.
+    """
+    open_ = sorted((o for o in orders if o.finished is None), key=lambda o: (o.arrived, o.id))
+    need1 = {o.id: max(0.0, o.size / 2 - o.delivered) for o in open_}
+    need2 = {o.id: o.size - o.delivered - need1[o.id] for o in open_}
+    by_id = {o.id: o for o in open_}
+    switches = 0
+    new: dict[int, str] = {}
+    given = {o.id: 0.0 for o in open_}
+
+    def take(oid: str, amount: float) -> float:
+        given[oid] += amount
+        d1 = min(amount, need1[oid])
+        need1[oid] -= d1
+        d2 = min(amount - d1, need2[oid])
+        need2[oid] -= d2
+        o = by_id[oid]
+        if d1 + d2 > 0 and o.started is None:
+            o.started = t
+        o.delivered += d1 + d2
+        return d1 + d2
+
+    for r in sorted(range(len(rigs)), key=lambda q: -rigs[q]):
+        budget = rigs[r]
+        while budget > EPS:
+            tier1 = [o.id for o in open_ if need1[o.id] > EPS]
+            tier = tier1 or [o.id for o in open_ if need2[o.id] > EPS]
+            if not tier:
+                break
+            cur = assign.get(r)
+            if share and tier1:
+                least = min(given[i] for i in tier)
+                low = [i for i in tier if given[i] <= least + EPS]
+                oid = cur if cur in low else low[0]
+            else:
+                oid = cur if cur in tier else tier[0]
+            if r not in new:
+                new[r] = oid
+                if cur in by_id and cur != oid and by_id[cur].finished is None:
+                    switches += 1
+            budget -= take(oid, budget if oid not in tier1 else min(budget, need1[oid]))
+    assign.clear()
+    assign.update(new)
+    return switches
+
+
 def simulate(rate, arrivals: dict[int, list[tuple[str, float]]], ticks: int,
-             rigs: Optional[list[float]] = None, quote: float = 1.0, router: bool = False) -> list[Order]:
+             rigs: Optional[list[float]] = None, quote: float = 1.0, router: bool = False,
+             half_first: bool = False, share: bool = True) -> list[Order]:
     """Run the hydraulic deadlines and real delivery side by side.
 
     `rate` is hashes per tick, a number or a function of the tick. With `rigs`
@@ -252,6 +314,8 @@ def simulate(rate, arrivals: dict[int, list[tuple[str, float]]], ticks: int,
         h, _idle = pour(orders, h, r)
         if rigs is None:
             deliver_edf(orders, r)
+        elif half_first:
+            deliver_half_first(orders, rigs, assign, t, share)
         elif router:
             deliver_router(orders, rigs, assign, t)
         else:
@@ -259,6 +323,8 @@ def simulate(rate, arrivals: dict[int, list[tuple[str, float]]], ticks: int,
         for o in orders:
             if o.done_at is None and o.filled(h) >= o.size - EPS:
                 o.done_at = t
+            if o.half_at is None and o.delivered >= o.size / 2 - 1e-7:
+                o.half_at = t
             if o.finished is None and o.delivered >= o.size - 1e-7:
                 o.finished = t
     return orders
@@ -341,6 +407,37 @@ def router_test(seeds: int = 150) -> dict[str, int]:
     return c
 
 
+def compare_test(seeds: int = 400) -> dict[str, dict[str, float]]:
+    """Compare rig schedulers on the same random runs (2 to 8 rigs of 1 to 8 a tick).
+
+    Means per order, in ticks from arrival: start (first hash), half (half
+    delivered), finish; finish for small (≤ 10) and large (≥ 60) orders; and how
+    many orders missed the Talmud deadline quoted on 100% of hash rate.
+    """
+    modes = {"proxy router": dict(router=True), "Talmud deadlines": {},
+             "half first, oldest first": dict(half_first=True, share=False),
+             "half first, shared": dict(half_first=True, share=True)}
+    out = {}
+    runs = []
+    for seed in range(seeds):
+        rng = random.Random(seed)
+        arr = random_arrivals(seed, n=rng.randint(3, 12), horizon=rng.randint(5, 30))
+        runs.append((arr, [rng.choice([1, 2, 3, 5, 8]) for _ in range(rng.choice([2, 3, 5, 8]))]))
+    for name, kw in modes.items():
+        os_ = [o for arr, rigs in runs for o in simulate(None, arr, 3000, rigs=rigs, **kw)]
+        mean = lambda xs: round(sum(xs) / len(xs), 1)
+        out[name] = {
+            "start": mean([o.started - o.arrived for o in os_]),
+            "half": mean([o.half_at - o.arrived + 1 for o in os_]),
+            "finish": mean([o.finished - o.arrived + 1 for o in os_]),
+            "finish small": mean([o.finished - o.arrived + 1 for o in os_ if o.size <= 10]),
+            "finish large": mean([o.finished - o.arrived + 1 for o in os_ if o.size >= 60]),
+            "missed Talmud deadline": sum(o.finished > o.deadline for o in os_),
+            "orders": len(os_),
+        }
+    return out
+
+
 def fixed_deadline_test(seeds: int = 1000) -> dict[str, int]:
     """Constant hash rate: are fixed deadlines met, pooled and through rigs?"""
     c = {"runs": 0, "orders": 0, "pooled missed": 0, "rigs missed": 0,
@@ -416,6 +513,8 @@ if __name__ == "__main__":
     print("proxy router, rigs of 8 and 2, a 100 and a 5 (started, finished):",
           {o.id: (o.started, o.finished) for o in orders})
     print("proxy router:", router_test())
+    for name, row in compare_test().items():
+        print(f"compare, {name}:", row)
     print("fixed deadlines, constant hash rate:", fixed_deadline_test())
     print("fixed deadlines quoted on 80% of hash rate:", {o.id: (o.deadline, o.started, o.finished) for o in
           simulate(None, {0: [("W", 100)], 1: [("S", 5)], 2: [("T", 5)]}, 40, rigs=[5, 5], quote=0.8)})

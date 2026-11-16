@@ -148,6 +148,7 @@ footer p { margin: 0; }
         <label for="mode">Rig assignment</label>
         <select id="mode">
           <option value="router">Proxy router: sticky, size-matched</option>
+          <option value="half">Half first: first halves urgent</option>
           <option value="deadline">Talmud deadlines: just enough rigs</option>
         </select>
       </div>
@@ -228,7 +229,7 @@ footer p { margin: 0; }
       <div class="panel-head"><h2>Orders</h2></div>
       <div class="scroll">
         <table>
-          <thead><tr><th>Order</th><th class="num">Size (TH/s·h)</th><th class="num">Arrived</th><th class="num">Delivered (TH/s·h)</th><th>Phase</th><th>Rigs</th><th class="num">ETA</th><th class="num">Talmud deadline</th></tr></thead>
+          <thead><tr><th>Order</th><th class="num">Size (TH/s·h)</th><th class="num">Arrived</th><th class="num">Delivered (TH/s·h)</th><th>Phase</th><th>Rigs</th><th class="num">Half by</th><th class="num">ETA</th><th class="num">Talmud deadline</th></tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
@@ -240,6 +241,7 @@ footer p { margin: 0; }
     <p>New orders keep arriving at random, sized 5 to 100 TH/s·h. Load is average demand as a share of hash rate; above 100% the backlog grows without limit.</p>
     <p>Deadline rule: a lone order fills straight up. Orders arriving in the same minute share one top, set at the water level plus the largest of their sizes and every open order's remaining amount. Existing tops never move, and a newcomer's top is never below an open order's, so deadlines run in arrival order. Each deadline is forecast on arrival from the quoted share of hash rate and then fixed. At 100% the deadline is exactly when first come, first served would finish, so the rigs have no slack; quoting on less leaves spare rigs for small orders to run alongside large ones. Deadlines hold as long as the hash rate does.</p>
     <p>Proxy router mode follows hashu-proxy's router: a free rig (biggest first) goes to an order that has waited 2 minutes with no rig (oldest first), else to an order with no rig, else to one that already has rigs; within those, to the order whose remaining need per minute is the smallest that still fits the rig. An order whose rigs already finish it within a minute takes no more. Rigs never leave an order before it completes, so once an order has rigs its ETA can only improve. Waiting orders show a forecast (≈) that later arrivals can push back.</p>
+    <p>Half first mode treats each order's first half as urgent and its second half as flexible: rigs cover every order's unmet first half before any second half, spreading across first halves so each new order gets a rig as soon as one is free (the Talmud rule's lower chamber), and second halves go oldest first; and a rig on a second half moves when a new first half needs it. New orders start sooner and reach half sooner; second halves, and so finish times, stretch. Forecasts (≈) assume no new orders.</p>
   </footer>
 </div>
 
@@ -316,7 +318,49 @@ footer p { margin: 0; }
     }
     return used;
   }
-  const deliver = (state, rigs) => mode() === "router" ? deliverRouter(state, rigs) : deliverRigs(state, rigs);
+  // Half first: every open order's unmet first half (shared) outranks every
+  // second half (oldest first). Rigs, biggest first, cover the first tier before the
+  // second; a rig keeps its order while that order has work in the top tier with any.
+  function deliverHalfFirst(state, rigs) {
+    const open = state.orders.filter(o => o.finished == null).sort((a, b) => (a.arrived - b.arrived) || (a.id < b.id ? -1 : 1));
+    const need1 = new Map(open.map(o => [o.id, Math.max(0, o.size / 2 - o.delivered)]));
+    const need2 = new Map(open.map(o => [o.id, o.size - o.delivered - need1.get(o.id)]));
+    const byId = new Map(open.map(o => [o.id, o]));
+    const next = new Map(), given = new Map(open.map(o => [o.id, 0]));
+    let used = 0;
+    const take = (id, amount) => {
+      given.set(id, given.get(id) + amount);
+      const d1 = Math.min(amount, need1.get(id)); need1.set(id, need1.get(id) - d1);
+      const d2 = Math.min(amount - d1, need2.get(id)); need2.set(id, need2.get(id) - d2);
+      const o = byId.get(id);
+      if (d1 + d2 > 0 && o.startAt == null) o.startAt = state.t;
+      o.delivered += d1 + d2; used += d1 + d2;
+      return d1 + d2;
+    };
+    for (const r of rigs.map((_, i) => i).sort((a, b) => rigs[b] - rigs[a])) {
+      let budget = rigs[r];
+      while (budget > EPS) {
+        const tier1 = open.filter(o => need1.get(o.id) > EPS).map(o => o.id);
+        const tier = tier1.length ? tier1 : open.filter(o => need2.get(o.id) > EPS).map(o => o.id);
+        if (!tier.length) break;
+        const cur = state.assign.get(r);
+        let id;
+        if (tier1.length) {
+          // First halves share: the rig goes to the first half given the least this minute.
+          const least = Math.min(...tier.map(x => given.get(x)));
+          const low = tier.filter(x => given.get(x) <= least + EPS);
+          id = low.includes(cur) ? cur : low[0];
+        } else id = tier.includes(cur) ? cur : tier[0];
+        if (!next.has(r)) next.set(r, id);
+        const got = take(id, tier1.length ? Math.min(budget, need1.get(id)) : budget);
+        if (got <= EPS) break;
+        budget -= got;
+      }
+    }
+    state.assign = next;
+    return used;
+  }
+  const deliver = (state, rigs) => mode() === "router" ? deliverRouter(state, rigs) : mode() === "half" ? deliverHalfFirst(state, rigs) : deliverRigs(state, rigs);
   const setRate = (ths) => { rate = ths / 60; $("rate").value = ths; $("rateVal").textContent = ths.toLocaleString() + " TH/s"; };
 
   function filled(o, h) {
@@ -395,6 +439,7 @@ footer p { margin: 0; }
   function mark(state) {
     for (const o of state.orders) {
       if (o.doneAt == null && filled(o, state.h) >= o.size - EPS) o.doneAt = state.t;
+      if (o.halfAt == null && o.delivered >= o.size / 2 - 1e-7) o.halfAt = state.t;
       if (o.finished == null && o.delivered >= o.size - 1e-7) { o.finished = state.t; o.delivered = o.size; }
     }
   }
@@ -425,7 +470,7 @@ footer p { margin: 0; }
       mark(sim);
       sim.t++;
     }
-    for (const o of sim.orders) out[o.id] = { finish: o.finished, deadline: o.deadline };
+    for (const o of sim.orders) out[o.id] = { finish: o.finished, deadline: o.deadline, half: o.halfAt };
     return out;
   }
 
@@ -469,7 +514,7 @@ footer p { margin: 0; }
   function phase(o) {
     if (o.queued) return ["Queued", "p-queued"];
     if (o.finished != null) return ["Delivered", "p-done"];
-    if (o.startAt != null) return ["Receiving", "p-upper"];
+    if (o.startAt != null) return o.delivered >= o.size / 2 - 1e-7 ? ["Second half", "p-upper"] : ["First half", "p-lower"];
     return ["Waiting", "p-lower"];
   }
 
@@ -596,7 +641,7 @@ footer p { margin: 0; }
     const rows = [...S.orders.filter(o => o.finished == null || recentDone.has(o)), ...S.queued.map(([id, size]) => ({ id, size, arrived: S.t, queued: true }))];
     if (!rows.length) {
       const tr = document.createElement("tr"); const td = document.createElement("td");
-      td.colSpan = 8; td.className = "empty"; td.textContent = "No orders yet. Pick a size and press Add order.";
+      td.colSpan = 9; td.className = "empty"; td.textContent = "No orders yet. Pick a size and press Add order.";
       tr.append(td); tb.append(tr); return;
     }
     for (const o of rows.slice().reverse()) {
@@ -608,14 +653,15 @@ footer p { margin: 0; }
       const heldRate = held.reduce((sum, r) => sum + rigRates()[r], 0);
       // With rigs assigned, the ETA is remaining ÷ their hash rate: rigs never leave an order, so it can only improve.
       const fin = o.finished != null ? `${o.finished + 1} min`
-        : heldRate > 0 ? `by ${S.t + Math.ceil((o.size - o.delivered) / heldRate - 1e-9)} min`
+        : heldRate > 0 && mode() === "router" ? `by ${S.t + Math.ceil((o.size - o.delivered) / heldRate - 1e-9)} min`
         : (e.finish != null ? `≈ ${e.finish + 1} min` : "—");
       const dlT = o.deadline != null ? o.deadline : e.deadline;
       const dl = dlT != null ? `${dlT + 1} min` : "—";
       const rigsOn = held.map(r => r + 1).join(", ");
+      const half = o.halfAt != null ? `${o.halfAt + 1} min` : (e.half != null ? `≈ ${e.half + 1} min` : "—");
       tr.innerHTML = `<td><strong>${o.id}</strong></td><td class="num">${fmt(o.size)}</td><td class="num">${o.arrived} min</td>` +
         `<td class="num">${fmt(f)}<span class="bar"><i style="width:${(100 * f / o.size).toFixed(1)}%"></i></span></td>` +
-        `<td><span class="pill ${cls}">${ph}</span></td><td>${rigsOn || "—"}</td><td class="num">${fin}</td><td class="num">${dl}</td>`;
+        `<td><span class="pill ${cls}">${ph}</span></td><td>${rigsOn || "—"}</td><td class="num">${half}</td><td class="num">${fin}</td><td class="num">${dl}</td>`;
       tb.append(tr);
     }
   }
