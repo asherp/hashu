@@ -157,7 +157,23 @@ The simulator shows the virtual vessels with a bar beside each for what the rigs
 - What to do when hash rate drops and deadlines can't all be met. Deadlines are fixed, so a shortfall means some get missed. Serving in deadline order puts the whole miss on the latest orders; the hydraulic rule could instead be used to spread it.
 - Handling rigs going offline mid-window. Later: rig-side scheduling for rented hash rate, including buying hash rate as orders arrive vs keeping a reserve or mining continuously, and a switching delay of some number of ticks.
 
-**Note: stop-and-restart.** Holders can stop a redemption anytime and get the remainder back as change. With fixed deadlines in arrival order, a re-redeemed remainder simply joins the back of the queue with a new, later deadline, so stopping and restarting can't jump ahead of anyone; it only costs the holder their place. The earlier concern was that, under the pure hydraulic split, re-redeeming as a fresh bucket would regain lower-half priority. The fix proposed then, kept here in case delivery ever follows the hydraulic split directly: stamp change with the water level where the old bucket would have resumed (via a keyset per water-level band, bands wide enough to keep anonymity sets), and base the re-redeemed bucket at that level. Water level already accounts for new arrivals, so stopping and restarting is neutral: no faster, no slower.
+## Stop-and-restart: holding change until the epoch ends
+
+Holders can stop a redemption anytime and get the remainder back as change. Under half first, re-redeeming that change right away would win first-half priority on half of it, so change must not be redeemable within the epoch it was issued.
+
+**Time-based keysets don't work with stock cdk 0.16.** Checked against the cdk 0.16.0 source:
+
+- One active keyset per unit. `rotate_keyset` calls `set_active_keyset(unit, id)`, and outputs must use an active keyset (`verification.rs`). So change and fresh purchases in the same epoch are signed by the same keyset and can't be told apart; there is no second active "change keyset".
+- Melt change must be in the inputs' unit (`melt_saga` and `verify_transaction_balanced` return `UnitMismatch`), so change can't be issued in a separate "change" unit either.
+- Even with a fork that allowed it, a change-only keyset marks those proofs as change (a smaller anonymity set), and the mint would also need to stop swaps from moving change into the regular keyset before the epoch ends.
+
+**What works instead: delay the change.** Change is only signed when cdk finalizes the melt, and that happens when `HashrateMelter::check_outgoing_payment` (`hashu-mint/src/melt.rs`) reports `Paid` for a `Settled` redemption. If it keeps reporting `Pending` until a release time, the change simply doesn't exist yet:
+
+- Release at the end of the epoch the stop happened in (epochs could match the stock top-up hour), or after a cooldown equal to how long the stopped order's remaining hashes would have taken at current hash rate. The cooldown version makes stopping and restarting exactly neutral.
+- Works with stock wallets and the non-custodial checkout change flow: the browser already polls the melt quote and unblinds the change when it's paid.
+- No privacy cost: change is signed by the normal active keyset, indistinguishable from purchases.
+- Cost: the holder's change is locked until release. It's hashrate either way, so the only loss is not being able to redeem it immediately, which is the point.
+- Splitting an order up front needs no rule: the total first-half work is the same either way.
 
 ## References
 
