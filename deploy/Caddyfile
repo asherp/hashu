@@ -47,6 +47,13 @@
 		file_server
 	}
 
+	# Comparison page (site/compare/), on every host like the guides.
+	redir /compare /compare/
+	handle /compare/* {
+		root * /srv/site
+		file_server
+	}
+
 	# MDK demo (optional, HASHU_MDK_DOMAIN): the dashboard runs on its own
 	# host because the MDK shell serves from / (its /auth, /apps and /app-ui
 	# paths are absolute). The entrypoint writes these redirects, or nothing.

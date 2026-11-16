@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hashu compared</title>
+<meta name="description" content="How Hashu compares with other Cashu projects, hashrate rental marketplaces and cloud mining.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f7931a'/%3E%3Cpath d='M10 7v18M22 7v18M10 16h12' stroke='%23111' stroke-width='3.4' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f6f6f4; --surface: #ffffff; --ink: #1b1b1a; --ink-2: #55534f; --ink-3: #8a8782;
+  --line: rgba(27,27,26,0.12); --brand: #e8850c; --brand-fill: rgba(232,133,12,0.12); --brand-ink: #111;
+  --good: #2f8a57; --good-bg: rgba(47,138,87,0.14); --bad: #c2403a; --bad-bg: rgba(194,64,58,0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111110; --surface: #1a1a19; --ink: #f1efea; --ink-2: #b5b2ab; --ink-3: #85827c;
+    --line: rgba(241,239,234,0.14); --brand: #f7931a; --brand-fill: rgba(247,147,26,0.14);
+    --good: #5cc28a; --good-bg: rgba(92,194,138,0.16); --bad: #e06c6c; --bad-bg: rgba(224,108,108,0.14);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: inherit; }
+.wrap { max-width: 960px; margin: 0 auto; padding: 0 16px; }
+nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 0; flex-wrap: wrap; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; text-decoration: none; }
+.logo svg { width: 28px; height: 28px; }
+nav .links { display: flex; gap: 18px; font-size: 14px; flex-wrap: wrap; }
+nav .links a { color: var(--ink-2); text-decoration: none; }
+nav .links a:hover { color: var(--ink); }
+.hero { padding: 48px 0 32px; }
+.hero h1 { font-size: clamp(34px, 6vw, 56px); line-height: 1.05; letter-spacing: -0.02em; margin: 0 0 18px; max-width: 14ch; }
+.hero h1 span { color: var(--brand); }
+.hero p { font-size: 19px; color: var(--ink-2); max-width: 60ch; margin: 0 0 28px; }
+.cta { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn { display: inline-block; text-decoration: none; border: 1px solid var(--line); border-radius: 10px; padding: 12px 20px; font-weight: 600; font-size: 15px; }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+.btn:hover { filter: brightness(1.05); }
+.btn.soldout { background: transparent; border-color: var(--line); color: var(--ink-3, #888); cursor: not-allowed; pointer-events: none; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 40px 0 8px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.stat .k { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); }
+.stat .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; overflow-wrap: anywhere; }
+.stat .v small { font-size: 13px; font-weight: 500; color: var(--ink-2); }
+.pill { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 13px; font-weight: 600; }
+.pill.ok { background: var(--good-bg); color: var(--good); }
+.pill.no { background: var(--bad-bg); color: var(--bad); }
+section { padding: 40px 0; border-top: 1px solid var(--line); }
+section > h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-2); margin: 0 0 20px; }
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; min-width: 0; }
+.card h3 { margin: 0 0 6px; font-size: 18px; }
+.card p { margin: 0; color: var(--ink-2); }
+.num { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--brand-fill); color: var(--brand); font-weight: 700; margin-bottom: 10px; }
+.flow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-weight: 600; margin: 4px 0 0; }
+.flow span { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; }
+.flow i { color: var(--ink-3); font-style: normal; }
+.unit { font-size: 15px; color: var(--ink-2); margin: 0; }
+.unit b { color: var(--ink); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+pre { margin: 10px 0 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; }
+.copy { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.copy code { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; overflow-wrap: anywhere; flex: 1 1 200px; }
+.copy button { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 8px; padding: 8px 14px; cursor: pointer; font: inherit; font-size: 14px; }
+dl { margin: 12px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 14px; }
+dt { color: var(--ink-3); }
+dd { margin: 0; overflow-wrap: anywhere; }
+footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 14px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+.hero .kicker { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--brand); margin: 0 0 12px; }
+.hero p.live { display: inline-flex; align-items: baseline; gap: 8px; max-width: 100%; background: var(--good-bg); color: var(--good); border-radius: 12px; padding: 6px 14px; font-size: 14px; font-weight: 600; margin: 0 0 24px; }
+.hero p.live::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+.contrast { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.contrast .card h3 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-3); }
+.contrast .card.us { border-color: var(--brand); }
+.contrast .card.us h3 { color: var(--brand); }
+.contrast ul { margin: 8px 0 0; padding-left: 18px; color: var(--ink-2); }
+.contrast li { margin: 4px 0; }
+.grid4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+.links-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.links-grid a { display: block; text-decoration: none; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.links-grid a:hover { border-color: var(--brand); }
+.links-grid b { display: block; font-size: 16px; }
+.links-grid span { color: var(--ink-2); font-size: 14px; overflow-wrap: anywhere; }
+
+.lede { font-size: 18px; color: var(--ink-2); max-width: 62ch; margin: 0 0 8px; }
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+tr:last-child th, tr:last-child td { border-bottom: none; }
+thead th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); font-weight: 600; }
+tbody th { font-weight: 650; white-space: nowrap; }
+td { color: var(--ink-2); }
+tr.us th, tr.us td { background: var(--brand-fill); color: var(--ink); }
+tr.us th { color: var(--brand); }
+.note { color: var(--ink-2); font-size: 15px; max-width: 70ch; margin: 16px 0 0; }
+.sources { font-size: 13px; color: var(--ink-3); }
+.sources li { margin: 4px 0; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="logo" href="/">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#f7931a"/><path d="M10 7v18M22 7v18M10 16h12" stroke="#111" stroke-width="3.4" stroke-linecap="round"/></svg>
+      Hashu
+    </a>
+    <div class="links">
+      <a href="/">Home</a>
+      <a href="/#how">How it works</a>
+      <a href="/redeem/">Pool guides</a>
+      <a href="https://github.com/asherp/hashu">GitHub</a>
+      <a href="https://mint.hashu.io/checkout/">Live mint</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <p class="kicker">Compare</p>
+    <h1>Where Hashu <span>fits</span></h1>
+    <p class="lede">Hashu sells hashes as Chaumian hashrate vouchers: Cashu tokens that can only be redeemed as work delivered to the holder's pool. Here is how that compares with other Cashu projects, with hashrate rental marketplaces, and with cloud mining.</p>
+  </header>
+
+  <section id="at-a-glance">
+    <h2>At a glance</h2>
+    <div class="tbl"><table>
+      <thead><tr><th></th><th>What you get</th><th>Account</th><th>Pay with</th><th>Pays out bitcoin?</th></tr></thead>
+      <tbody>
+        <tr class="us"><th>Hashu</th><td>Bearer vouchers for a quantity of hashes (TiH), redeemed as hashrate at any Stratum pool you choose</td><td>None</td><td>Lightning or USDT, per order</td><td>No. Your pool pays you for the work, under its own rules</td></tr>
+        <tr><th>Cashu mint</th><td>Bearer tokens for sats</td><td>None</td><td>Lightning</td><td>Yes, the mint holds bitcoin and pays it back out</td></tr>
+        <tr><th>Hashrate rental</th><td>A rig or a hashrate order pointed at your pool for a period of time</td><td>Yes</td><td>A deposited crypto balance</td><td>No. Your pool pays you</td></tr>
+        <tr><th>Cloud mining</th><td>A contract for a share of a provider's mining output</td><td>Yes</td><td>Fiat or crypto, up front</td><td>Yes, the provider pays what it says you mined, minus its fees</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section id="cashu">
+    <h2>Other Cashu projects</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Project</th><th>A token is</th><th>Backed by</th><th>Redeemed for</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr class="us"><th>Hashu</th><td>A voucher for hashes, counted in TiH (2<sup>40</sup> hashes), sold to buyers</td><td>The hashrate of the mint's miners. No bitcoin is held for users</td><td>Work delivered to the holder's pool. Never sats</td><td>Demo mint on mainnet at mint.hashu.io</td></tr>
+        <tr><th>Cashu mints<br><small>Nutshell, CDK</small></th><td>An IOU for sats</td><td>Bitcoin the mint holds in custody</td><td>Sats over Lightning (melt)</td><td>Widely used, with wallets such as Cashu.me and Minibits</td></tr>
+        <tr><th>Hashpool<br><small>eHash, by vnprc</small></th><td>A token per mining share, issued by a pool to its miners</td><td>Proof of work: a claim on the pool's future block rewards</td><td>Bitcoin after a maturity window, over Lightning, on-chain or as ecash</td><td>Early development, Testnet4</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">Hashu runs on the Cashu Development Kit (CDK), the same mint software many Cashu mints use, and works with Cashu wallets such as Cashu.me. The difference is the unit: a regular mint holds bitcoin and owes sats, while a Hashu mint holds no bitcoin for users and owes only work. Hashpool sits on the other side of the market. It pays miners for shares they have already produced, while Hashu sells future hashes to buyers. The two could fit together: a Hashu voucher redeemed at a Hashpool would turn bought hashes into eHash.</p>
+  </section>
+
+  <section id="rental">
+    <h2>Hashrate rental marketplaces</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Service</th><th>How you buy</th><th>Account and payment</th><th>Smallest order</th><th>Fees</th></tr></thead>
+      <tbody>
+        <tr class="us"><th>Hashu</th><td>Buy a quantity of hashes now, redeem them later at any Stratum pool and worker. Vouchers can be held, split or handed on</td><td>No account. Pay each order over Lightning or in USDT</td><td>1 PiH (2<sup>50</sup> hashes, about 0.3 TH/s for one hour)</td><td>Set by each mint operator as a markup on the market price</td></tr>
+        <tr><th>MiningRigRentals</th><td>Rent a specific rig by the hour, pointed at your pool</td><td>Account with a deposited balance</td><td>Set by each rig owner</td><td>3% on transactions</td></tr>
+        <tr><th>NiceHash</th><td>Place a hashpower order with a price and speed, pointed at your pool</td><td>Account with a deposited BTC balance</td><td>Set by NiceHash per algorithm</td><td>Set by NiceHash</td></tr>
+        <tr><th>Braiins Hashpower</th><td>Bid a price, budget and destination pool; hashrate is delivered and settled hourly</td><td>Braiins ID account with a BTC deposit, screened for compliance</td><td>1 PH/s, with a budget of 10,000 sats or more</td><td>0% on spot bids during the beta</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">Rental marketplaces deliver hashrate to your pool, the same thing a Hashu redemption does. The difference is in how you hold it. On a marketplace your money sits in an account and buys time on rigs. With Hashu you hold bearer vouchers for a fixed quantity of work, and blind signatures mean the mint can't link who bought to who redeems. Rental marketplaces are much larger: Hashu's demo mint sells only what its own miners can produce.</p>
+  </section>
+
+  <section id="cloud">
+    <h2>Cloud mining</h2>
+    <div class="contrast">
+      <div class="card">
+        <h3>Cloud mining contract</h3>
+        <ul>
+          <li>You pay up front for a share of a provider's machines, often for months or years.</li>
+          <li>The provider runs the machines, reports what you mined, and pays you bitcoin minus maintenance and electricity fees.</li>
+          <li>You can't check that your hashrate exists. You rely on the provider's accounting and solvency.</li>
+          <li>Sold as an investment, and the category has a long history of fraud.</li>
+        </ul>
+      </div>
+      <div class="card us">
+        <h3>Hashu</h3>
+        <ul>
+          <li>You buy a fixed quantity of hashes, priced from the live hashrate rental market.</li>
+          <li>The work goes to your own pool and worker, where you can watch the shares arrive.</li>
+          <li>The mint pays nothing out. Any reward comes from your pool, under its rules.</li>
+          <li>A voucher is a purchase of computation, not an investment, and it can't be cashed out at the mint.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="sources">
+    <h2>Sources</h2>
+    <ul class="sources">
+      <li>Hashpool: <a href="https://blog.cashu.space/what-is-hashpool/">blog.cashu.space/what-is-hashpool</a>, <a href="https://github.com/vnprc/hashpool">github.com/vnprc/hashpool</a></li>
+      <li>Braiins Hashpower: <a href="https://academy.braiins.com/braiins-hashpower/about">academy.braiins.com/braiins-hashpower/about</a>, <a href="https://academy.braiins.com/braiins-hashpower/faqs/basics">FAQ</a></li>
+      <li>MiningRigRentals: <a href="https://www.miningrigrentals.com/faq">miningrigrentals.com/faq</a></li>
+      <li>NiceHash: <a href="https://www.nicehash.com/">nicehash.com</a></li>
+    </ul>
+    <p class="sources">Checked November 2026. Services change their terms; check each one before you rely on it.</p>
+  </section>
+
+  <footer>
+    <span>Inquiries: <a href="https://x.com/asherp" rel="noopener">@asherp</a> on X · <a href="mailto:asherp.nostr@gmail.com">asherp.nostr@gmail.com</a></span>
+    <span>Built at bitcoin++ Seoul 2026 · <a href="https://github.com/asherp/hashu">github.com/asherp/hashu</a></span>
+  </footer>
+</div>
+</body>
+</html>
