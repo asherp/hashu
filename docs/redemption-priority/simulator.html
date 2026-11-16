@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hashu Delivery Simulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* Layout: control strip → status line → vessel tank (hero) → timeline + order ledger */
+:root {
+  --bg: #F1F4F7;
+  --surface: #FFFFFF;
+  --ink: #14202B;
+  --muted: #5A6A79;
+  --line: #CDD6DE;
+  --vessel: #8A9AA9;
+  --water: #2F76C2;
+  --water-soft: #A9CBEE;
+  --half: #B97A12;
+  --done: #9AA8B5;
+  --done-soft: #DCE3E9;
+  --focus: #2F76C2;
+  --font-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0E151C; --surface: #151F29; --ink: #E3E9EF; --muted: #8C9DAD; --line: #2A3946;
+    --vessel: #6D8091; --water: #4A98E6; --water-soft: #234D78; --half: #E2A640;
+    --done: #5E6F7F; --done-soft: #22303C; --focus: #4A98E6; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0E151C; --surface: #151F29; --ink: #E3E9EF; --muted: #8C9DAD; --line: #2A3946;
+  --vessel: #6D8091; --water: #4A98E6; --water-soft: #234D78; --half: #E2A640;
+  --done: #5E6F7F; --done-soft: #22303C; --focus: #4A98E6; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 28px 40px; display: flex; flex-direction: column; gap: 18px; }
+header { display: flex; flex-direction: column; gap: 6px; }
+.eyebrow { margin: 0; font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: clamp(26px, 4vw, 34px); line-height: 1.15; text-wrap: balance; }
+.lede { margin: 0; max-width: 68ch; color: var(--muted); }
+h2 { margin: 0; font-family: var(--font-display); font-weight: 500; font-size: 17px; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.panel-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+.hint { margin: 0; font-size: 13px; color: var(--muted); }
+
+.controls { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: flex-end; }
+.group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.group > label, .group > .lbl { font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+button, select, input[type="number"] { font: inherit; font-size: 14px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; padding: 7px 12px; }
+button { cursor: pointer; font-weight: 500; }
+button:hover { border-color: var(--vessel); }
+button.primary { background: var(--water); border-color: var(--water); color: #fff; min-width: 84px; }
+button.primary:hover { filter: brightness(1.08); }
+input[type="number"] { width: 84px; font-family: var(--font-mono); }
+input[type="range"] { width: 140px; accent-color: var(--water); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.val { font-family: var(--font-mono); font-size: 13px; min-width: 4.5ch; font-variant-numeric: tabular-nums; }
+
+.status { display: flex; flex-wrap: wrap; gap: 6px 26px; font-size: 14px; padding: 0 2px; }
+.status div { display: flex; gap: 8px; align-items: baseline; }
+.status dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+.status dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 500; }
+dl { margin: 0; }
+
+.scroll { overflow-x: auto; min-width: 0; }
+svg text { font-family: var(--font-mono); font-size: 11px; fill: var(--muted); }
+svg .id { font-family: var(--font-body); font-weight: 600; font-size: 12.5px; fill: var(--ink); }
+svg .strong { fill: var(--ink); }
+
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 14px; height: 10px; border-radius: 2px; display: inline-block; }
+
+.grid2 { display: grid; grid-template-columns: 1fr; gap: 18px; }
+@media (min-width: 1000px) { .grid2 { grid-template-columns: 1.1fr 1fr; } }
+
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th { text-align: left; font-weight: 500; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); padding: 6px 10px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; font-variant-numeric: tabular-nums; }
+td.num { font-family: var(--font-mono); text-align: right; }
+th.num { text-align: right; }
+tr:last-child td { border-bottom: 0; }
+.bar { display: inline-block; width: 70px; height: 6px; border-radius: 3px; background: var(--done-soft); vertical-align: middle; margin-left: 8px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--water); }
+.pill { display: inline-block; font-size: 12px; padding: 1px 9px; border-radius: 999px; font-weight: 500; }
+.p-queued { border: 1px dashed var(--vessel); color: var(--muted); }
+.p-lower { background: var(--water-soft); color: var(--ink); }
+.p-upper { background: var(--water); color: #fff; }
+.p-done { background: var(--done-soft); color: var(--muted); }
+.empty { color: var(--muted); font-size: 14px; padding: 18px 4px; }
+.rigs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.rig { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.rig .top { display: flex; justify-content: space-between; color: var(--muted); font-family: var(--font-mono); font-size: 12px; }
+.rig strong { font-size: 15px; }
+.rig.idle { border-style: dashed; color: var(--muted); }
+.rig .bar { width: 100%; margin: 0; }
+
+footer { font-size: 13px; color: var(--muted); max-width: 80ch; display: flex; flex-direction: column; gap: 4px; }
+footer p { margin: 0; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Hashu · redemption priority</p>
+    <h1>Hashu Delivery Simulator</h1>
+    <p class="lede">Each redemption is a vessel, sized in TH/s·h. A virtual water level rises as if the mint's hash rate were poured into every vessel at once (Kaminski's hydraulic Talmud rule). When an order arrives, the minute its vessel would fill if no one else redeemed becomes its deadline, and that deadline never moves. Real hashes come from physical rigs, each serving one order at a time. By default rigs are placed the way the proxy router places them: big rigs to big orders, and a rig stays until its order completes, so an order's ETA is what's left ÷ its rigs' hash rate. Everything owed clears no sooner than owed ÷ total hash rate.</p>
+  </header>
+
+  <section class="panel" aria-label="Controls">
+    <div class="controls">
+      <div class="group">
+        <span class="lbl">Run</span>
+        <div class="row">
+          <button id="play" class="primary" type="button">Play</button>
+          <button id="step" type="button">Step</button>
+          <button id="reset" type="button">Reset</button>
+        </div>
+      </div>
+      <div class="group">
+        <label for="preset">Scenario</label>
+        <select id="preset">
+          <option value="test">Test run: 8 random orders</option>
+          <option value="equal">Two equal orders, 5 minutes apart</option>
+          <option value="whale">Whale arrives late</option>
+          <option value="empty">Empty mint</option>
+        </select>
+      </div>
+      <div class="group">
+        <label for="rate">Hash rate</label>
+        <div class="row"><input id="rate" type="range" min="60" max="3600" step="60" value="900"><span class="val" id="rateVal">900 TH/s</span></div>
+      </div>
+      <div class="group">
+        <label for="rigs">Rigs</label>
+        <div class="row"><input id="rigs" type="range" min="1" max="12" step="1" value="4"><span class="val" id="rigsVal">4</span></div>
+      </div>
+      <div class="group">
+        <label for="mode">Rig assignment</label>
+        <select id="mode">
+          <option value="router">Proxy router: sticky, size-matched</option>
+          <option value="half">Half first: first halves urgent</option>
+          <option value="deadline">Talmud deadlines: just enough rigs</option>
+        </select>
+      </div>
+      <div class="group">
+        <label for="mix">Rig sizes</label>
+        <select id="mix">
+          <option value="mixed">Mixed: big to small</option>
+          <option value="equal">All equal</option>
+        </select>
+      </div>
+      <div class="group" id="quoteGroup">
+        <label for="quote">Quote deadlines on</label>
+        <div class="row"><input id="quote" type="range" min="50" max="100" step="5" value="80"><span class="val" id="quoteVal">80%</span></div>
+      </div>
+      <div class="group">
+        <label for="speed">Speed</label>
+        <div class="row"><input id="speed" type="range" min="1" max="12" step="1" value="4"><span class="val" id="speedVal">4 min/s</span></div>
+      </div>
+      <div class="group">
+        <label for="size">Redeem (TH/s·h)</label>
+        <div class="row">
+          <input id="size" type="number" min="1" max="2000" step="1" value="40" aria-label="Order size in TH/s·h">
+          <button id="add" type="button">Add order</button>
+          <button id="burst" type="button">Random burst</button>
+        </div>
+      </div>
+      <div class="group">
+        <label for="auto">New orders per minute</label>
+        <div class="row"><input id="auto" type="range" min="0" max="1.5" step="0.05" value="0.35"><span class="val" id="autoVal">0.35</span></div>
+      </div>
+    </div>
+  </section>
+
+  <dl class="status" aria-live="polite">
+    <div><dt>Elapsed</dt><dd id="sTick">0 min</dd></div>
+    <div><dt>Virtual level</dt><dd id="sLevel">0</dd></div>
+    <div><dt>Open orders</dt><dd id="sOpen">0</dd></div>
+    <div><dt>Owed</dt><dd id="sOwed">0</dd></div>
+    <div><dt>Delivered</dt><dd id="sDelivered">0</dd></div>
+    <div><dt>Idle hashes</dt><dd id="sIdle">0</dd></div>
+    <div><dt>Finished</dt><dd id="sDone">0</dd></div>
+    <div><dt>Avg wait</dt><dd id="sWait">—</dd></div>
+    <div><dt>Load</dt><dd id="sLoad">—</dd></div>
+    <div><dt>Clear all owed by</dt><dd id="sClear">—</dd></div>
+  </dl>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Vessels</h2>
+      <p class="hint">Height is the virtual water level in TH/s·h. Each vessel: lower half, pipe, upper half. The bar beside it is what the rigs have really delivered.</p>
+    </div>
+    <div class="scroll" id="vesselBox"><svg id="vessels" role="img" aria-label="Order vessels filling with hashes"></svg></div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--water-soft)"></i>Virtual fill (sets the deadline)</span>
+      <span><i class="sw" style="background:var(--water)"></i>Really delivered by rigs</span>
+      <span><i class="sw" style="background:var(--half);height:2px"></i>Halfway line</span>
+      <span><i class="sw" style="border-top:1.5px dashed var(--ink);height:0"></i>Virtual water level</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Rigs</h2>
+      <p class="hint">Each rig serves one order at a time. The hash rate above is split across the rigs, evenly or from big to small.</p>
+    </div>
+    <div class="rigs" id="rigBox"></div>
+  </section>
+
+  <div class="grid2">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Timeline</h2>
+        <p class="hint">Minutes elapsed. Outline: waiting. Solid: receiving hashes. Dashed: ETA at the current hash rate. Tick: Talmud deadline.</p>
+      </div>
+      <div class="scroll" id="timelineBox"><svg id="timeline" role="img" aria-label="Order timeline"></svg></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Orders</h2></div>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Order</th><th class="num">Size (TH/s·h)</th><th class="num">Arrived</th><th class="num">Delivered (TH/s·h)</th><th>Phase</th><th>Rigs</th><th class="num">Half by</th><th class="num">ETA</th><th class="num">Talmud deadline</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <p>Hash rate is in TH/s. Orders, deliveries and the water level are in TH/s·h, one terahash per second sustained for an hour (3.6 million TH). Rigs are reassigned once a minute, so each minute delivers hash rate ÷ 60 TH/s·h; a rig whose order finishes mid-minute passes its leftover on. Switching delays come later.</p>
+    <p>New orders keep arriving at random, sized 5 to 100 TH/s·h. Load is average demand as a share of hash rate; above 100% the backlog grows without limit.</p>
+    <p>Deadline rule: a lone order fills straight up. Orders arriving in the same minute share one top, set at the water level plus the largest of their sizes and every open order's remaining amount. Existing tops never move, and a newcomer's top is never below an open order's, so deadlines run in arrival order. Each deadline is forecast on arrival from the quoted share of hash rate and then fixed. At 100% the deadline is exactly when first come, first served would finish, so the rigs have no slack; quoting on less leaves spare rigs for small orders to run alongside large ones. Deadlines hold as long as the hash rate does.</p>
+    <p>Proxy router mode follows hashu-proxy's router: a free rig (biggest first) goes to an order that has waited 2 minutes with no rig (oldest first), else to an order with no rig, else to one that already has rigs; within those, to the order whose remaining need per minute is the smallest that still fits the rig. An order whose rigs already finish it within a minute takes no more. Rigs never leave an order before it completes, so once an order has rigs its ETA can only improve. Waiting orders show a forecast (≈) that later arrivals can push back.</p>
+    <p>Half first mode treats each order's first half as urgent and its second half as flexible: rigs cover every order's unmet first half before any second half, spreading across first halves so each new order gets a rig as soon as one is free (the Talmud rule's lower chamber), and second halves go oldest first; and a rig on a second half moves when a new first half needs it. New orders start sooner and reach half sooner; second halves, and so finish times, stretch. Forecasts (≈) assume no new orders.</p>
+  </footer>
+</div>
+
+<script>
+(() => {
+  const EPS = 1e-9;
+  const PRESETS = {
+    test:  { rate: 900, start: 9, arrivals: { 1: [["C",5],["F",60]], 2: [["H",40]], 6: [["G",5]], 10: [["A",10]], 11: [["E",60]], 12: [["B",100]], 17: [["D",5]] } },
+    equal: { rate: 600, start: 0, arrivals: { 0: [["A",60]], 5: [["B",60]] } },
+    whale: { rate: 900, start: 0, arrivals: { 0: [["A",20],["B",30]], 3: [["C",40]], 6: [["D",300]], 8: [["E",10]] } },
+    empty: { rate: 900, start: 0, arrivals: {} },
+  };
+  const SIZES = [5, 10, 20, 40, 60, 100];
+  const KEEP = 120, WINDOW = 60, MAX_ROWS = 28;
+
+  const $ = (id) => document.getElementById(id);
+  let S, rate = 15, timer = null, presetKey = "test"; // rate = TH/s·h delivered per one-minute tick
+  const nRigs = () => Number($("rigs").value);
+  const quote = () => Number($("quote").value) / 100;
+  // Rig hash rates per minute. Mixed: rig k gets weight 1/k (one big rig, a tail of small ones).
+  const rigRates = () => {
+    const n = nRigs(), w = Array.from({ length: n }, (_, k) => $("mix").value === "equal" ? 1 : 1 / (k + 1));
+    const sum = w.reduce((a, b) => a + b, 0);
+    return w.map(x => rate * x / sum);
+  };
+  const mode = () => $("mode").value;
+  const TARGET_RUN = 1, STARVE_AFTER = 2; // minutes; the proxy router uses 60 s and 120 s
+
+  // The proxy router's pick_route: room = remaining ÷ TARGET_RUN − rate already assigned
+  // (no room = capped). Tiers: starving (no rig for STARVE_AFTER), unserved, served.
+  // Starving go oldest first; otherwise best fit (smallest room that fits the rig,
+  // else most room), then oldest.
+  function pickOrder(open, rigs, assign, r, t) {
+    let best = null, bestKey = null;
+    open.forEach((o, age) => {
+      const held = [...assign].filter(([q, id]) => id === o.id && q !== r).map(([q]) => q);
+      const room = (o.size - o.delivered) / TARGET_RUN - held.reduce((s, q) => s + rigs[q], 0);
+      if (room <= EPS) return;
+      const starving = !held.length && t - o.arrived >= STARVE_AFTER;
+      const tier = starving ? 0 : held.length ? 2 : 1;
+      const fits = room >= rigs[r];
+      const key = [tier, starving ? 0 : fits ? 0 : 1, starving ? 0 : fits ? room : -room, age];
+      const i = bestKey ? key.findIndex((v, j) => v !== bestKey[j]) : -1;
+      if (!bestKey || (i >= 0 && key[i] < bestKey[i])) { best = o; bestKey = key; }
+    });
+    return best;
+  }
+
+  // Rigs stay on their order until it completes; free rigs are placed biggest first.
+  function deliverRouter(state, rigs) {
+    const open = state.orders.filter(o => o.finished == null).sort((a, b) => (a.arrived - b.arrived) || (a.id < b.id ? -1 : 1));
+    const byId = new Map(open.map(o => [o.id, o]));
+    const assign = state.assign;
+    for (const [q, id] of [...assign]) if (!byId.has(id)) assign.delete(q);
+    const budget = rigs.slice();
+    const order = rigs.map((_, i) => i).sort((a, b) => rigs[b] - rigs[a]);
+    let used = 0;
+    for (let pass = 0; pass < rigs.length + open.length + 1; pass++) {
+      let moved = false;
+      for (const r of order) {
+        if (budget[r] <= EPS) continue;
+        if (!assign.has(r)) {
+          const o = pickOrder(open.filter(x => x.delivered < x.size - 1e-7), rigs, assign, r, state.t);
+          if (!o) continue;
+          assign.set(r, o.id);
+        }
+        const o = byId.get(assign.get(r));
+        const d = Math.min(budget[r], o.size - o.delivered);
+        if (d > 0 && o.startAt == null) o.startAt = state.t;
+        o.delivered += d; budget[r] -= d; used += d; moved = true;
+        if (o.delivered >= o.size - 1e-7) for (const [q, id] of [...assign]) if (id === o.id) assign.delete(q);
+      }
+      if (!moved) break;
+    }
+    return used;
+  }
+  // Half first: every open order's unmet first half (shared) outranks every
+  // second half (oldest first). Rigs, biggest first, cover the first tier before the
+  // second; a rig keeps its order while that order has work in the top tier with any.
+  function deliverHalfFirst(state, rigs) {
+    const open = state.orders.filter(o => o.finished == null).sort((a, b) => (a.arrived - b.arrived) || (a.id < b.id ? -1 : 1));
+    const need1 = new Map(open.map(o => [o.id, Math.max(0, o.size / 2 - o.delivered)]));
+    const need2 = new Map(open.map(o => [o.id, o.size - o.delivered - need1.get(o.id)]));
+    const byId = new Map(open.map(o => [o.id, o]));
+    const next = new Map(), given = new Map(open.map(o => [o.id, 0]));
+    let used = 0;
+    const take = (id, amount) => {
+      given.set(id, given.get(id) + amount);
+      const d1 = Math.min(amount, need1.get(id)); need1.set(id, need1.get(id) - d1);
+      const d2 = Math.min(amount - d1, need2.get(id)); need2.set(id, need2.get(id) - d2);
+      const o = byId.get(id);
+      if (d1 + d2 > 0 && o.startAt == null) o.startAt = state.t;
+      o.delivered += d1 + d2; used += d1 + d2;
+      return d1 + d2;
+    };
+    for (const r of rigs.map((_, i) => i).sort((a, b) => rigs[b] - rigs[a])) {
+      let budget = rigs[r];
+      while (budget > EPS) {
+        const tier1 = open.filter(o => need1.get(o.id) > EPS).map(o => o.id);
+        const tier = tier1.length ? tier1 : open.filter(o => need2.get(o.id) > EPS).map(o => o.id);
+        if (!tier.length) break;
+        const cur = state.assign.get(r);
+        let id;
+        if (tier1.length) {
+          // First halves share: the rig goes to the first half given the least this minute.
+          const least = Math.min(...tier.map(x => given.get(x)));
+          const low = tier.filter(x => given.get(x) <= least + EPS);
+          id = low.includes(cur) ? cur : low[0];
+        } else id = tier.includes(cur) ? cur : tier[0];
+        if (!next.has(r)) next.set(r, id);
+        const got = take(id, tier1.length ? Math.min(budget, need1.get(id)) : budget);
+        if (got <= EPS) break;
+        budget -= got;
+      }
+    }
+    state.assign = next;
+    return used;
+  }
+  const deliver = (state, rigs) => mode() === "router" ? deliverRouter(state, rigs) : mode() === "half" ? deliverHalfFirst(state, rigs) : deliverRigs(state, rigs);
+  const setRate = (ths) => { rate = ths / 60; $("rate").value = ths; $("rateVal").textContent = ths.toLocaleString() + " TH/s"; };
+
+  function filled(o, h) {
+    const x = h - o.base;
+    if (x <= 0) return 0;
+    const half = o.size / 2;
+    return Math.min(o.size, Math.min(x, half) + Math.max(0, h - (o.top - half)));
+  }
+  const total = (os, h) => os.reduce((s, o) => s + filled(o, h), 0);
+
+  function pour(orders, h, E) {
+    const open = orders.filter(o => o.doneAt == null);
+    if (!open.length) return [h, E];
+    const top = Math.max(...open.map(o => o.top));
+    const base = total(open, h);
+    const avail = total(open, top) - base;
+    if (avail <= E) return [top, E - avail];
+    let lo = h, hi = top; const target = base + E;
+    for (let i = 0; i < 64; i++) {
+      const mid = (lo + hi) / 2;
+      if (total(open, mid) < target) lo = mid; else hi = mid;
+    }
+    return [hi, 0];
+  }
+
+  function admit(state, batch, quoteRate) {
+    if (!batch.length) return;
+    const open = state.orders.filter(o => o.doneAt == null);
+    const T = state.h + Math.max(...batch.map(b => b[1]), ...open.map(o => o.size - filled(o, state.h)));
+    const fresh = batch.map(([id, size]) => ({ id, size, base: state.h, top: T, arrived: state.t, doneAt: null, deadline: null, delivered: 0, startAt: null, finished: null }));
+    state.orders.push(...fresh);
+    // Fix the deadline: the minute the virtual level would reach T if no one else redeemed.
+    const sim = state.orders.filter(o => o.doneAt == null).map(o => ({ ...o }));
+    let h = state.h;
+    for (let t = state.t; t < state.t + 100000; t++) {
+      [h] = pour(sim, h, quoteRate);
+      if (h >= T - 1e-6) { for (const o of fresh) o.deadline = t; return; }
+    }
+  }
+
+  // Real delivery through rigs, each serving one order at a time. Orders are taken by
+  // fixed deadline; each gets just enough rigs to stay on pace, spare rigs serve later
+  // orders, and a rig whose order finishes mid-minute passes its leftover on.
+  function deliverRigs(state, rigs) {
+    const open = state.orders.filter(o => o.finished == null).sort((a, b) => (a.deadline - b.deadline) || (a.arrived - b.arrived) || (a.id < b.id ? -1 : 1));
+    const byId = new Map(open.map(o => [o.id, o]));
+    const prev = state.assign, next = new Map();
+    let free = rigs.map((_, i) => i);
+    for (const o of open) {
+      const need = (o.size - o.delivered) / Math.max(1, o.deadline - state.t + 1);
+      const mine = free.filter(r => prev.get(r) === o.id);
+      const others = free.filter(r => prev.get(r) !== o.id).sort((a, b) => rigs[b] - rigs[a]);
+      let have = 0;
+      for (const r of [...mine, ...others]) {
+        if (have >= need - EPS) break;
+        next.set(r, o.id); have += rigs[r]; free = free.filter(x => x !== r);
+      }
+    }
+    for (const r of free) {
+      if (byId.has(prev.get(r))) next.set(r, prev.get(r));
+      else if (open.length) next.set(r, open[0].id);
+    }
+    state.assign = next;
+    let spare = 0, used = 0;
+    const give = (o, d) => { if (d > 0 && o.startAt == null) o.startAt = state.t; o.delivered += d; used += d; };
+    for (let r = 0; r < rigs.length; r++) {
+      const o = byId.get(next.get(r));
+      if (!o) { spare += rigs[r]; continue; }
+      const d = Math.min(rigs[r], o.size - o.delivered);
+      give(o, d); spare += rigs[r] - d;
+    }
+    for (const o of open) { const d = Math.min(spare, o.size - o.delivered); give(o, d); spare -= d; }
+    return used;
+  }
+
+  function mark(state) {
+    for (const o of state.orders) {
+      if (o.doneAt == null && filled(o, state.h) >= o.size - EPS) o.doneAt = state.t;
+      if (o.halfAt == null && o.delivered >= o.size / 2 - 1e-7) o.halfAt = state.t;
+      if (o.finished == null && o.delivered >= o.size - 1e-7) { o.finished = state.t; o.delivered = o.size; }
+    }
+  }
+
+  function step() {
+    const batch = [...(S.scheduled[S.t] || []), ...S.queued];
+    S.queued = [];
+    admit(S, batch, rate * quote());
+    [S.h] = pour(S.orders, S.h, rate);
+    const used = deliver(S, rigRates());
+    S.delivered += used; S.idle += rate - used;
+    mark(S);
+    S.t++;
+    const lambda = Number($("auto").value);
+    for (let k = poisson(lambda); k > 0; k--) queue(SIZES[Math.floor(Math.random() * SIZES.length)]);
+    for (const o of S.orders) if (o.finished != null && !o.counted) { o.counted = true; S.doneCount++; S.waitSum += o.finished - o.arrived + 1; }
+    S.orders = S.orders.filter(o => o.doneAt == null || o.finished == null || o.finished >= S.t - KEEP);
+  }
+  function poisson(l) { if (l <= 0) return 0; const L = Math.exp(-l); let k = 0, p = 1; do { k++; p *= Math.random(); } while (p > L); return k - 1; }
+
+  function eta() {
+    const sim = { t: S.t, h: S.h, assign: new Map(S.assign), orders: S.orders.filter(o => o.doneAt == null || o.finished == null).map(o => ({ ...o })) };
+    admit(sim, S.queued.slice(), rate * quote());
+    const out = {};
+    for (let n = 0; n < 20000 && sim.orders.some(o => o.doneAt == null || o.finished == null); n++) {
+      [sim.h] = pour(sim.orders, sim.h, rate);
+      deliver(sim, rigRates());
+      mark(sim);
+      sim.t++;
+    }
+    for (const o of sim.orders) out[o.id] = { finish: o.finished, deadline: o.deadline, half: o.halfAt };
+    return out;
+  }
+
+  function nextId() {
+    for (let i = 0; ; i++) {
+      const id = String.fromCharCode(65 + (i % 26)) + (i >= 26 ? Math.floor(i / 26) + 1 : "");
+      if (!S.used.has(id)) { S.used.add(id); return id; }
+    }
+  }
+  function queue(size) { S.queued.push([nextId(), size]); }
+
+  function load(key, advance) {
+    presetKey = key;
+    const p = PRESETS[key];
+    const scheduled = {};
+    const used = new Set();
+    for (const [t, list] of Object.entries(p.arrivals)) { scheduled[t] = list.map(x => [...x]); list.forEach(x => used.add(x[0])); }
+    S = { t: 0, h: 0, orders: [], scheduled, queued: [], idle: 0, delivered: 0, used, doneCount: 0, waitSum: 0, assign: new Map() };
+    setRate(p.rate);
+    if (advance) for (let i = 0; i < p.start; i++) step();
+    render();
+  }
+
+  const fmt = (n) => { const r = Math.round(n * 10) / 10; return Number.isInteger(r) ? String(r) : r.toFixed(1); };
+  const NS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs, text) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function niceTicks(min, max, count) {
+    const span = max - min || 1;
+    const raw = span / count, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const stepV = [1, 2, 5, 10].map(m => m * mag).find(s => s >= raw) || 10 * mag;
+    const out = [];
+    for (let v = Math.ceil(min / stepV) * stepV; v <= max + EPS; v += stepV) out.push(Math.round(v * 1e6) / 1e6);
+    return out;
+  }
+
+  function phase(o) {
+    if (o.queued) return ["Queued", "p-queued"];
+    if (o.finished != null) return ["Delivered", "p-done"];
+    if (o.startAt != null) return o.delivered >= o.size / 2 - 1e-7 ? ["Second half", "p-upper"] : ["First half", "p-lower"];
+    return ["Waiting", "p-lower"];
+  }
+
+  function renderVessels() {
+    const svg = $("vessels"); svg.replaceChildren();
+    const shown = S.orders.filter(o => o.doneAt == null || o.finished == null || o.doneAt >= S.t - 4).slice(-16);
+    const boxW = $("vesselBox").clientWidth || 600;
+    const H = 330, left = 52, padTop = 26, padBot = 50, slot = 74;
+    const W = Math.max(boxW, left + Math.max(shown.length, 1) * slot + 16);
+    svg.setAttribute("width", W); svg.setAttribute("height", H); svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    if (!shown.length) {
+      svg.append(el("text", { x: W / 2, y: H / 2, "text-anchor": "middle", class: "strong" }, "No open redemptions. Add an order to start pouring."));
+      return;
+    }
+    let ymin = Math.min(...shown.map(o => o.base));
+    let ymax = Math.max(...shown.map(o => o.top), S.h);
+    if (ymax - ymin < 1) ymax = ymin + 1;
+    const plotH = H - padTop - padBot;
+    const y = (v) => padTop + plotH * (1 - (v - ymin) / (ymax - ymin));
+
+    for (const v of niceTicks(ymin, ymax, 5)) {
+      svg.append(el("line", { x1: left, x2: W - 8, y1: y(v), y2: y(v), stroke: "var(--line)", "stroke-width": 1 }));
+      svg.append(el("text", { x: left - 8, y: y(v) + 4, "text-anchor": "end" }, fmt(v)));
+    }
+
+    const cw = 36, pw = 7;
+    shown.forEach((o, i) => {
+      const cx = left + slot * i + slot / 2;
+      const half = o.size / 2, done = o.doneAt != null;
+      const lowTop = o.base + half, upBot = o.top - half;
+      const water = done ? "var(--done)" : "var(--water-soft)";
+      const stroke = done ? "var(--done)" : "var(--vessel)";
+      const g = el("g", {});
+      const chamber = (a, b, w) => {
+        if (b - a <= EPS) return;
+        g.append(el("rect", { x: cx - w / 2, y: y(b), width: w, height: Math.max(0, y(a) - y(b)), fill: "var(--surface)", stroke, "stroke-width": 1.5, rx: w > 10 ? 3 : 1 }));
+      };
+      const fillRect = (a, b, w) => {
+        const top = Math.min(S.h, b);
+        if (top - a <= EPS) return;
+        g.append(el("rect", { x: cx - w / 2 + 1, y: y(top), width: w - 2, height: Math.max(0, y(a) - y(top)), fill: water, rx: w > 10 ? 2 : 0 }));
+      };
+      chamber(o.base, lowTop, cw);
+      if (upBot - lowTop > EPS) chamber(lowTop, upBot, pw);
+      chamber(upBot, o.top, cw);
+      fillRect(o.base, lowTop, cw);
+      if (upBot - lowTop > EPS) fillRect(lowTop, upBot, pw);
+      fillRect(upBot, o.top, cw);
+      g.append(el("line", { x1: cx - cw / 2 - 4, x2: cx + cw / 2 + 4, y1: y(lowTop), y2: y(lowTop), stroke: "var(--half)", "stroke-width": 2 }));
+      const bx = cx + cw / 2 + 5, frac = o.delivered / o.size, by = y(o.base), bt = y(o.top);
+      g.append(el("rect", { x: bx, y: bt, width: 5, height: Math.max(0, by - bt), fill: "var(--done-soft)", rx: 1 }));
+      g.append(el("rect", { x: bx, y: by - frac * (by - bt), width: 5, height: frac * (by - bt), fill: o.finished != null ? "var(--done)" : "var(--water)", rx: 1 }));
+      g.append(el("text", { x: cx, y: H - padBot + 20, "text-anchor": "middle", class: "id" }, o.id));
+      g.append(el("text", { x: cx, y: H - padBot + 36, "text-anchor": "middle" }, `${fmt(o.delivered)}/${fmt(o.size)}`));
+      if (done && o.finished != null) g.setAttribute("opacity", "0.7");
+      svg.append(g);
+    });
+
+    const wy = y(S.h);
+    svg.append(el("line", { x1: left, x2: W - 8, y1: wy, y2: wy, stroke: "var(--ink)", "stroke-width": 1.2, "stroke-dasharray": "5 4" }));
+    svg.append(el("text", { x: W - 10, y: wy - 6, "text-anchor": "end", class: "strong" }, `level ${fmt(S.h)} TH/s·h`));
+  }
+
+  function renderRigs() {
+    const box = $("rigBox"); box.replaceChildren();
+    const rr = rigRates();
+    for (let r = 0; r < nRigs(); r++) {
+      const per = rr[r] * 60;
+      const o = S.orders.find(x => x.id === S.assign.get(r) && x.finished == null);
+      const d = document.createElement("div");
+      d.className = "rig" + (o ? "" : " idle");
+      d.innerHTML = `<div class="top"><span>Rig ${r + 1}</span><span>${fmt(per)} TH/s</span></div>` +
+        (o ? `<strong>${o.id}</strong><span class="bar"><i style="width:${(100 * o.delivered / o.size).toFixed(1)}%"></i></span>` : `<strong>idle</strong>`);
+      box.append(d);
+    }
+  }
+
+  function renderTimeline(etas) {
+    const svg = $("timeline"); svg.replaceChildren();
+    const t0 = Math.max(0, S.t - WINDOW);
+    const rows = [...S.orders.filter(o => o.finished == null || o.finished >= t0), ...S.queued.map(([id, size]) => ({ id, size, arrived: S.t, queued: true }))].slice(-MAX_ROWS);
+    const boxW = $("timelineBox").clientWidth || 480;
+    const W = Math.max(boxW, 420), left = 40, right = 14, rowH = 22, top = 10;
+    const H = top + Math.max(rows.length, 1) * rowH + 28;
+    svg.setAttribute("width", W); svg.setAttribute("height", H); svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    if (!rows.length) { svg.append(el("text", { x: W / 2, y: H / 2, "text-anchor": "middle" }, "No orders yet.")); return; }
+    let tmax = S.t + 1;
+    for (const o of rows) {
+      const e = etas[o.id] || {};
+      for (const v of [o.deadline, e.deadline, e.finish, o.finished]) if (v != null) tmax = Math.max(tmax, v + 1);
+    }
+    tmax = Math.min(tmax + 1, S.t + WINDOW);
+    const x = (t) => left + (W - left - right) * ((Math.min(Math.max(t, t0), tmax) - t0) / (tmax - t0));
+    const axisY = top + rows.length * rowH + 4;
+    for (const v of niceTicks(t0, tmax, 8)) {
+      svg.append(el("line", { x1: x(v), x2: x(v), y1: top - 4, y2: axisY, stroke: "var(--line)", "stroke-width": 1 }));
+      svg.append(el("text", { x: x(v), y: axisY + 16, "text-anchor": "middle" }, `${v}m`));
+    }
+    rows.forEach((o, i) => {
+      const cy = top + i * rowH + rowH / 2;
+      svg.append(el("text", { x: left - 8, y: cy + 4, "text-anchor": "end", class: "id" }, o.id));
+      const h = 10, yy = cy - h / 2;
+      const seg = (a, b, fill, extra = {}) => { if (b > a) svg.append(el("rect", { x: x(a), y: yy, width: Math.max(1, x(b) - x(a)), height: h, fill, rx: 2, ...extra })); };
+      const e = etas[o.id] || {};
+      const dl = o.deadline != null ? o.deadline : e.deadline;
+      if (dl != null) { const dx = x(dl + 1); svg.append(el("line", { x1: dx, x2: dx, y1: yy - 4, y2: yy + h + 4, stroke: "var(--half)", "stroke-width": 2 })); }
+      if (o.queued) {
+        seg(o.arrived, (e.finish ?? o.arrived) + 1, "none", { stroke: "var(--vessel)", "stroke-dasharray": "3 3" });
+        return;
+      }
+      const end = o.finished != null ? o.finished + 1 : S.t;
+      const start = o.startAt != null ? Math.min(o.startAt, end) : end;
+      seg(o.arrived, start, "none", { stroke: "var(--vessel)" });
+      seg(start, end, o.finished != null ? "var(--done)" : "var(--water)");
+      if (o.finished == null && e.finish != null) seg(S.t, e.finish + 1, "none", { stroke: "var(--water)", "stroke-dasharray": "3 3" });
+    });
+    svg.append(el("line", { x1: x(S.t), x2: x(S.t), y1: top - 6, y2: axisY, stroke: "var(--ink)", "stroke-width": 1.2 }));
+    svg.append(el("text", { x: x(S.t) + 4, y: top - 0, class: "strong" }, "now"));
+  }
+
+  function renderTable(etas) {
+    const tb = $("rows"); tb.replaceChildren();
+    const recentDone = new Set(S.orders.filter(o => o.finished != null).slice(-10));
+    const rows = [...S.orders.filter(o => o.finished == null || recentDone.has(o)), ...S.queued.map(([id, size]) => ({ id, size, arrived: S.t, queued: true }))];
+    if (!rows.length) {
+      const tr = document.createElement("tr"); const td = document.createElement("td");
+      td.colSpan = 9; td.className = "empty"; td.textContent = "No orders yet. Pick a size and press Add order.";
+      tr.append(td); tb.append(tr); return;
+    }
+    for (const o of rows.slice().reverse()) {
+      const tr = document.createElement("tr");
+      const f = o.queued ? 0 : o.delivered;
+      const [ph, cls] = phase(o);
+      const e = etas[o.id] || {};
+      const held = o.finished != null || o.queued ? [] : [...S.assign].filter(([, id]) => id === o.id).map(([r]) => r);
+      const heldRate = held.reduce((sum, r) => sum + rigRates()[r], 0);
+      // With rigs assigned, the ETA is remaining ÷ their hash rate: rigs never leave an order, so it can only improve.
+      const fin = o.finished != null ? `${o.finished + 1} min`
+        : heldRate > 0 && mode() === "router" ? `by ${S.t + Math.ceil((o.size - o.delivered) / heldRate - 1e-9)} min`
+        : (e.finish != null ? `≈ ${e.finish + 1} min` : "—");
+      const dlT = o.deadline != null ? o.deadline : e.deadline;
+      const dl = dlT != null ? `${dlT + 1} min` : "—";
+      const rigsOn = held.map(r => r + 1).join(", ");
+      const half = o.halfAt != null ? `${o.halfAt + 1} min` : (e.half != null ? `≈ ${e.half + 1} min` : "—");
+      tr.innerHTML = `<td><strong>${o.id}</strong></td><td class="num">${fmt(o.size)}</td><td class="num">${o.arrived} min</td>` +
+        `<td class="num">${fmt(f)}<span class="bar"><i style="width:${(100 * f / o.size).toFixed(1)}%"></i></span></td>` +
+        `<td><span class="pill ${cls}">${ph}</span></td><td>${rigsOn || "—"}</td><td class="num">${half}</td><td class="num">${fin}</td><td class="num">${dl}</td>`;
+      tb.append(tr);
+    }
+  }
+
+  function render() {
+    const etas = eta();
+    const open = S.orders.filter(o => o.finished == null);
+    $("sTick").textContent = S.t + " min";
+    $("sLevel").textContent = fmt(S.h) + " TH/s·h";
+    $("sOpen").textContent = open.length + (S.queued.length ? ` (+${S.queued.length} queued)` : "");
+    const owedNow = open.reduce((s, o) => s + o.size - o.delivered, 0) + S.queued.reduce((s, q) => s + q[1], 0);
+    $("sClear").textContent = owedNow > EPS ? `≥ ${S.t + Math.ceil(owedNow / rate)} min` : "—";
+    $("sOwed").textContent = fmt(open.reduce((s, o) => s + o.size - o.delivered, 0) + S.queued.reduce((s, q) => s + q[1], 0)) + " TH/s·h";
+    $("sDelivered").textContent = fmt(S.delivered) + " TH/s·h";
+    $("sIdle").textContent = fmt(S.idle) + " TH/s·h";
+    $("sDone").textContent = S.doneCount;
+    $("sWait").textContent = S.doneCount ? fmt(S.waitSum / S.doneCount) + " min" : "—";
+    const meanSize = SIZES.reduce((a, b) => a + b, 0) / SIZES.length;
+    const lam = Number($("auto").value);
+    $("sLoad").textContent = lam > 0 ? Math.round(100 * lam * meanSize / rate) + "%" : "off";
+    renderVessels(); renderRigs(); renderTimeline(etas); renderTable(etas);
+  }
+
+  function setPlaying(on) {
+    clearInterval(timer); timer = null;
+    $("play").textContent = on ? "Pause" : "Play";
+    if (on) timer = setInterval(() => { step(); render(); }, 1000 / Number($("speed").value));
+  }
+
+  $("play").addEventListener("click", () => setPlaying(!timer));
+  $("step").addEventListener("click", () => { setPlaying(false); step(); render(); });
+  $("reset").addEventListener("click", () => { setPlaying(false); load(presetKey, false); });
+  $("preset").addEventListener("change", (e) => { setPlaying(false); load(e.target.value, false); });
+  $("rate").addEventListener("input", (e) => { setRate(Number(e.target.value)); render(); });
+  $("rigs").addEventListener("input", (e) => { $("rigsVal").textContent = e.target.value; S.assign = new Map(); render(); });
+  const syncMode = () => { $("quoteGroup").style.display = mode() === "router" ? "none" : ""; };
+  $("mode").addEventListener("change", () => { syncMode(); S.assign = new Map(); render(); });
+  $("mix").addEventListener("change", () => { S.assign = new Map(); render(); });
+  syncMode();
+  $("quote").addEventListener("input", (e) => { $("quoteVal").textContent = e.target.value + "%"; render(); });
+  $("speed").addEventListener("input", (e) => { $("speedVal").textContent = e.target.value + " min/s"; if (timer) setPlaying(true); });
+  $("auto").addEventListener("input", (e) => { const v = Number(e.target.value); $("autoVal").textContent = v === 0 ? "off" : v.toFixed(2); render(); });
+  $("add").addEventListener("click", () => { const v = Math.max(1, Math.round(Number($("size").value) || 0)); queue(v); render(); });
+  $("burst").addEventListener("click", () => { for (let i = 0; i < 3; i++) queue(SIZES[Math.floor(Math.random() * SIZES.length)]); render(); });
+  let rz; window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(render, 120); });
+
+  load("test", true);
+  setPlaying(true);
+})();
+</script>
+</body>
+</html>
