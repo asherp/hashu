@@ -11,15 +11,22 @@
 //! | Password    | `x`                         |                               |
 //! | Password    | `pool=public-pool.io:21496` | that pool, if its host is on [`HomeConfig::allowed_hosts`] |
 //!
-//! While a redemption needs hashrate, the router borrows the miner exactly
-//! as it borrows the operator's rigs (worker name rewritten to the
-//! redeemer's), then sends it back to its home pool, never to the
-//! operator's default pool. A miner whose user is not a Bitcoin address
-//! and gives no `pool=` has no home pool and is treated as before (the
-//! operator's default pool, worker name passed through).
+//! The same rule holds for every rig, the operator's own included: a
+//! miner whose user is not a Bitcoin address and gives no `pool=` idles
+//! on the operator's default pool (`HASHU_UPSTREAM`, worker name passed
+//! through).
 //!
-//! Other password options (`d=512`, `x`) are kept and passed on; only the
-//! `pool=` option is removed before the home pool sees the password.
+//! Which orders a rig may fill is a separate question, answered by the
+//! `pw=` option: the operator's secret
+//! ([`HomeConfig::operator_secret_sha256`]) makes it one of Hashu's own
+//! rigs whatever its user is, a registered supplier's secret makes it
+//! that supplier's (see [`crate::suppliers`]). While a redemption needs
+//! hashrate, the router borrows such a rig (worker name rewritten to the
+//! redeemer's), then sends it back to where it idles.
+//!
+//! Other password options (`d=512`, `x`) are kept and passed on; the
+//! `pool=` and `pw=` options are removed before any pool sees the
+//! password.
 //!
 //! `pool=` only accepts hosts on an allow-list so a miner can't make the
 //! proxy dial arbitrary addresses (such as services on its private
@@ -50,14 +57,18 @@ pub struct HomeConfig {
     /// Hosts a miner may name with `pool=` (lowercase, no port). Empty
     /// turns `pool=` off.
     pub allowed_hosts: Vec<String>,
-    /// Hashu's own worker account (`HASHU_OPERATOR_WORKER`, e.g. the
-    /// operator's Braiins user). When set, only users equal to it or
-    /// starting with `<it>.` are Hashu's rigs: they idle on the default
-    /// pool and are the only rigs borrowed for redemptions. Every other
-    /// miner idles on its home pool and is never borrowed, and a miner
-    /// with no home pool is refused. `None` keeps the old behaviour:
-    /// every rig may be borrowed and a miner with no home pool idles on
-    /// the default pool.
+    /// SHA-256 (lowercase hex) of the operator's rig secret
+    /// (`HASHU_OPERATOR_SECRET_SHA256`). A rig whose `pw=` hashes to it is
+    /// one of Hashu's own rigs whatever its user is. When this (or the
+    /// deprecated [`HomeConfig::operator_worker`]) is set, only Hashu's
+    /// rigs are borrowed for the mint's redemptions; every other rig
+    /// idles where it chose and is never borrowed. When neither is set
+    /// every rig may be borrowed.
+    pub operator_secret_sha256: Option<String>,
+    /// Deprecated (`HASHU_OPERATOR_WORKER`): users equal to it or
+    /// starting with `<it>.` are also Hashu's rigs. Kept for one release
+    /// so existing rigs keep working; use
+    /// [`HomeConfig::operator_secret_sha256`] instead.
     pub operator_worker: Option<String>,
 }
 
@@ -69,6 +80,7 @@ impl Default for HomeConfig {
                 .iter()
                 .map(|h| h.to_string())
                 .collect(),
+            operator_secret_sha256: None,
             operator_worker: None,
         }
     }
@@ -80,13 +92,35 @@ impl HomeConfig {
         Self {
             solo_upstream: None,
             allowed_hosts: Vec::new(),
+            operator_secret_sha256: None,
             operator_worker: None,
         }
     }
 
-    /// Whether `user` is one of Hashu's own rigs (see
-    /// [`HomeConfig::operator_worker`]).
-    pub fn is_operator(&self, user: &str) -> bool {
+    /// Whether Hashu's own rigs are named (by secret or the deprecated
+    /// worker prefix): then only they are borrowed for the mint's orders.
+    pub fn has_operator(&self) -> bool {
+        self.operator_secret_sha256.is_some()
+            || self
+                .operator_worker
+                .as_deref()
+                .is_some_and(|o| !o.is_empty())
+    }
+
+    /// Whether `secret` (a rig's `pw=`) is the operator's.
+    pub fn is_operator_secret(&self, secret: Option<&str>) -> bool {
+        match (self.operator_secret_sha256.as_deref(), secret) {
+            (Some(want), Some(s)) => crate::suppliers::constant_time_eq(
+                &crate::suppliers::secret_hash(s),
+                &want.to_ascii_lowercase(),
+            ),
+            _ => false,
+        }
+    }
+
+    /// Whether `user` matches the deprecated
+    /// [`HomeConfig::operator_worker`] prefix.
+    pub fn is_operator_worker(&self, user: &str) -> bool {
         let Some(op) = self.operator_worker.as_deref().filter(|o| !o.is_empty()) else {
             return false;
         };
@@ -121,28 +155,27 @@ pub struct MinerIdentity {
     pub home: Option<HomePool>,
     /// Why a `pool=` option was ignored, for the log.
     pub refused_pool: Option<String>,
-    /// One of Hashu's own rigs ([`HomeConfig::operator_worker`]).
+    /// One of Hashu's own rigs: its `pw=` is the operator's secret, or
+    /// (deprecated) its user matches [`HomeConfig::operator_worker`].
     pub operator: bool,
+    /// It is [`MinerIdentity::operator`] only through the deprecated
+    /// worker prefix, for a deprecation line in the log.
+    pub operator_by_worker: bool,
     /// The `pw=` option: the supplier secret this rig proves its name with
     /// (see [`crate::suppliers`]). Never passed to a pool.
     pub secret: Option<String>,
 }
 
-/// Why the proxy refuses a miner, sent back as its authorize error.
+/// Why the proxy refuses a miner with nowhere to idle (no home pool and
+/// no default pool), sent back as its authorize error.
 pub const REFUSE_NO_HOME: &str =
     "no home pool: use a Bitcoin address as the user, or add pool=host:port to the password";
 
 impl MinerIdentity {
-    /// Whether this miner may be borrowed to fill redemptions.
+    /// Whether this miner may be borrowed to fill the operator's
+    /// redemptions.
     pub fn borrowable(&self, cfg: &HomeConfig) -> bool {
-        cfg.operator_worker.is_none() || self.operator
-    }
-
-    /// `Some(reason)` if the proxy should refuse this miner: Hashu's own
-    /// rigs are set, this isn't one, and it has no home pool to go to.
-    pub fn refusal(&self, cfg: &HomeConfig) -> Option<&'static str> {
-        (cfg.operator_worker.is_some() && !self.operator && self.home.is_none())
-            .then_some(REFUSE_NO_HOME)
+        !cfg.has_operator() || self.operator
     }
 }
 
@@ -187,12 +220,14 @@ impl MinerIdentity {
                 .filter(|_| is_mainnet_address(&supplier))
         });
 
-        let operator = cfg.is_operator(user);
+        let by_secret = cfg.is_operator_secret(secret.as_deref());
+        let by_worker = !by_secret && cfg.is_operator_worker(user);
         Self {
             supplier,
             secret,
-            operator,
-            home: upstream.filter(|_| !operator).map(|upstream| HomePool {
+            operator: by_secret || by_worker,
+            operator_by_worker: by_worker,
+            home: upstream.map(|upstream| HomePool {
                 upstream,
                 worker_name: user.to_string(),
                 worker_password,
@@ -208,6 +243,40 @@ impl MinerIdentity {
         let password = params.get(1).and_then(|p| p.as_str()).unwrap_or("");
         Some(Self::from_authorize(user, password, cfg))
     }
+}
+
+/// The password a pool should see: `password` without the proxy's own
+/// `pool=` and `pw=` options (`x` if nothing is left), or `None` if it
+/// has neither and passes through unchanged.
+pub fn strip_proxy_options(password: &str) -> Option<String> {
+    let opts: Vec<&str> = password
+        .split(',')
+        .map(str::trim)
+        .filter(|o| !o.is_empty())
+        .collect();
+    let ours = |o: &&str| o.starts_with("pool=") || o.starts_with("pw=");
+    if !opts.iter().any(ours) {
+        return None;
+    }
+    let rest: Vec<&str> = opts.into_iter().filter(|o| !ours(o)).collect();
+    Some(if rest.is_empty() {
+        "x".to_string()
+    } else {
+        rest.join(",")
+    })
+}
+
+/// `params` of a `mining.authorize` with [`strip_proxy_options`] applied
+/// to the password, for the default pool (which otherwise sees the
+/// miner's authorize as sent).
+pub fn strip_authorize_params(params: &serde_json::Value) -> serde_json::Value {
+    let mut params = params.clone();
+    if let Some(pw) = params.get_mut(1) {
+        if let Some(clean) = pw.as_str().and_then(strip_proxy_options) {
+            *pw = serde_json::Value::String(clean);
+        }
+    }
+    params
 }
 
 /// `pool=` value → upstream, if its host is allowed.
@@ -347,24 +416,78 @@ mod tests {
             ..HomeConfig::default()
         };
         for u in ["hashu", "hashu.mrr1"] {
-            let id = MinerIdentity::from_authorize(u, "pool=public-pool.io:21496", &cfg);
+            let id = MinerIdentity::from_authorize(u, "x", &cfg);
             assert!(id.operator, "{u}");
-            assert_eq!(id.home, None, "operator rigs idle on the default pool");
+            assert!(id.operator_by_worker, "{u}");
+            assert_eq!(id.home, None, "no pool= → default pool");
             assert!(id.borrowable(&cfg));
-            assert_eq!(id.refusal(&cfg), None);
         }
+        // Operator rigs follow the same pool= rule as everyone else.
+        let id = MinerIdentity::from_authorize("hashu.mrr1", "pool=public-pool.io:21496", &cfg);
+        assert!(id.operator);
+        assert_eq!(id.home.unwrap().upstream, "public-pool.io:21496");
         // Prefix must end at a dot.
         let id = MinerIdentity::from_authorize("hashuevil.1", "x", &cfg);
         assert!(!id.operator);
-        assert_eq!(id.refusal(&cfg), Some(REFUSE_NO_HOME));
-        // Home miners: kept at home, never borrowed, not refused.
+        assert!(!id.borrowable(&cfg));
+        // Home miners: kept at home, never borrowed.
         let id = MinerIdentity::from_authorize(ADDR, "x", &cfg);
         assert!(!id.borrowable(&cfg));
-        assert_eq!(id.refusal(&cfg), None);
         // Without the setting nothing changes.
         let id = MinerIdentity::from_authorize("bob.rig1", "x", &HomeConfig::default());
         assert!(id.borrowable(&HomeConfig::default()));
-        assert_eq!(id.refusal(&HomeConfig::default()), None);
+    }
+
+    #[test]
+    fn operator_secret_marks_hashus_rigs_whatever_the_user() {
+        let cfg = HomeConfig {
+            operator_secret_sha256: Some(
+                crate::suppliers::secret_hash("op-secret").to_ascii_uppercase(),
+            ),
+            ..HomeConfig::default()
+        };
+        assert!(cfg.has_operator());
+        for u in [
+            "acct.hashu.bitaxe1",
+            "tb1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq.bitaxe1",
+            ADDR,
+        ] {
+            let id = MinerIdentity::from_authorize(
+                u,
+                "pw=op-secret,pool=solo.ckpool.org:3333,d=512",
+                &cfg,
+            );
+            assert!(id.operator, "{u}");
+            assert!(!id.operator_by_worker);
+            assert!(id.borrowable(&cfg));
+            let home = id.home.unwrap();
+            assert_eq!(home.upstream, "solo.ckpool.org:3333");
+            assert_eq!(home.worker_password, "d=512", "pw= never reaches a pool");
+        }
+        for pw in ["pw=wrong", "x", "pool=public-pool.io:21496"] {
+            let id = MinerIdentity::from_authorize("acct.rig", pw, &cfg);
+            assert!(!id.operator, "{pw}");
+            assert!(!id.borrowable(&cfg));
+        }
+    }
+
+    #[test]
+    fn proxy_options_are_stripped_for_the_default_pool() {
+        assert_eq!(strip_proxy_options("x"), None);
+        assert_eq!(strip_proxy_options("d=512, x"), None);
+        assert_eq!(strip_proxy_options("pw=s"), Some("x".into()));
+        assert_eq!(
+            strip_proxy_options("pw=s, d=512,pool=a:1"),
+            Some("d=512".into())
+        );
+        assert_eq!(
+            strip_authorize_params(&serde_json::json!(["u.1", "pw=s,d=9"])),
+            serde_json::json!(["u.1", "d=9"])
+        );
+        assert_eq!(
+            strip_authorize_params(&serde_json::json!(["u.1"])),
+            serde_json::json!(["u.1"])
+        );
     }
 
     #[test]

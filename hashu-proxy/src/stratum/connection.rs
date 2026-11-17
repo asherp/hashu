@@ -90,7 +90,10 @@ const ID_SUBSCRIBE: i64 = 734_000_002;
 const ID_SUGGEST: i64 = 734_000_003;
 const ID_AUTHORIZE: i64 = 734_000_004;
 const PROXY_IDS: [i64; 4] = [ID_CONFIGURE, ID_SUBSCRIBE, ID_SUGGEST, ID_AUTHORIZE];
-const _: () = assert!(ID_AUTHORIZE <= u32::MAX as i64, "pool request ids must fit in 32 bits");
+const _: () = assert!(
+    ID_AUTHORIZE <= u32::MAX as i64,
+    "pool request ids must fit in 32 bits"
+);
 
 /// Run a single miner ⇄ pool proxy until either side disconnects. Shares
 /// are counted and committed but not credited to any redemption.
@@ -1021,7 +1024,11 @@ impl Conn {
                 Some(d) => json!([worker_name, password_with_difficulty(worker_password, d)]),
                 None => json!([worker_name, worker_password]),
             },
-            None => m.authorize_params.clone().unwrap_or_else(|| json!([])),
+            None => m
+                .authorize_params
+                .as_ref()
+                .map(crate::home::strip_authorize_params)
+                .unwrap_or_else(|| json!([])),
         };
         lines.push(json!({"id": ID_AUTHORIZE, "method": "mining.authorize", "params": auth}));
         for l in lines {

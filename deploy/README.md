@@ -51,7 +51,7 @@ again at startup, so running them without compose fails the same way.
 | Variable | Required | What |
 |---|---|---|
 | `HASHU_DOMAIN` | **yes** | Public host name of the mint (`mint.example.com`), an A record pointing at this machine. Caddy's certificate, the mint URL in every token (`HASHU_MINT_URL=https://$HASHU_DOMAIN`). |
-| `HASHU_UPSTREAM` | **yes** | Default pool: where miners mine when no redemption is open (`stratum+tcp://host:port`). The miner's username passes through, so it must be valid there. |
+| `HASHU_UPSTREAM` | **yes** | Fallback idle pool (`stratum+tcp://host:port`): where a rig mines when no redemption needs it and it named no `pool=` and isn't a mainnet address. The miner's username passes through, so it must be valid there. Changing it doesn't change which rigs are yours. |
 | `PHOENIXD_PASSWORD` | **yes** | phoenixd full-access password (stays inside phoenixd). `openssl rand -hex 32` |
 | `PHOENIXD_LIMITED_PASSWORD` | **yes** | phoenixd limited password given to hashu (invoices only, cannot send). |
 | `OPERATOR_PASSWORD_HASH` | **yes** | bcrypt hash for the operator GUI at `/operator/` (`caddy hash-password`). |
@@ -59,7 +59,8 @@ again at startup, so running them without compose fails the same way.
 | `HASHU_EXTRA_DOMAINS` | no | More host names for the same site, with the splash page (`site/`) at `/`. Default none. |
 | `HASHU_MINT_NAME`, `HASHU_MINT_DESCRIPTION` | no | NUT-06 name and description (defaults: `Hashu` and a generic description). |
 | `HASHU_MINT_CONTACT` | no | Operator contact, `method:info` pairs, comma separated (`email:ops@example.com,nostr:npub1...`). Shown in wallets and on the landing page; default none. |
-| `HASHU_OPERATOR_WORKER` | no | Your own rigs' pool user (rigs mine as `<user>.<rig>`). Set: only those rigs fill this mint's orders, other miners stay on their home pool. Unset: any connected rig may be borrowed. |
+| `HASHU_OPERATOR_SECRET_SHA256` | no | SHA-256 hex of your rigs' secret (`printf %s "$SECRET" \| sha256sum`). Rigs with `pw=$SECRET` in their password are yours whatever their user: only they fill this mint's orders, other miners stay where they idle. Unset: any connected rig may be borrowed. |
+| `HASHU_OPERATOR_WORKER` | no | **Deprecated** (one release): pool-user prefix (`<user>.<rig>`) that also marks your rigs. Move them to `pw=`. |
 | `HASHU_SUPPLIERS_FILE` | no | Registered suppliers (JSON in the data volume, e.g. `/data/suppliers.json`; see [docs/mine/bitaxe.md](../docs/mine/bitaxe.md)). Each gets its own mint at `<name>.$HASHU_DOMAIN`; add a wildcard A record `*.$HASHU_DOMAIN` for it. Unset: none. |
 | `HASHU_HOME_SOLO_UPSTREAM`, `HASHU_HOME_POOLS`, `HASHU_HOME_POOLS_OFF` | no | Home pools for Bitaxes ([docs/mine/bitaxe.md](../docs/mine/bitaxe.md)): default solo pool `solo.ckpool.org:3333`, allowed `pool=` hosts (public pools), or `true` to turn home pools off. |
 | `HASHU_WAITLIST` | no | `true` serves the hosted-mint waitlist for miners at `/waitlist/` (contact plus optional mint name, hashrate, commitment horizon, payout preference and note; no IPs stored; rate limited). Sign-ups go to `waitlist.jsonl` in the data volume and are listed, exported as CSV and deleted at `/operator/waitlist`. Default `false`. |
@@ -475,8 +476,9 @@ Bitaxe-class rig (≈ 1.1 TiH/s) 1,024 TiH is about 15 minutes of hashing. Three
   quantity on sale holds still and the checkout ETA moves instead. The
   stock is kept in `capacity.json`. Only hashrate above what running
   rentals declare counts, so rented rigs are not counted twice. Rigs count
-  when they serve this mint: those mining as `HASHU_OPERATOR_WORKER.<rig>`,
-  or any unregistered rig when that variable is unset. Home-pool-only and
+  when they serve this mint: those with `pw=<operator secret>` (or the
+  deprecated `HASHU_OPERATOR_WORKER.<rig>`), or any unregistered rig when
+  neither is set. Home-pool-only and
   supplier rigs do not. If the rigs go quiet the listed stock still
   stands until it sells, so delivery slows rather than the stock vanishing.
   API: `{"live_horizon_hours": 24}`, `null` turns it off,

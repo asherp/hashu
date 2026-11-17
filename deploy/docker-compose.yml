@@ -84,10 +84,12 @@ services:
       HASHU_HOME_SOLO_UPSTREAM: ${HASHU_HOME_SOLO_UPSTREAM:-solo.ckpool.org:3333}
       HASHU_HOME_POOLS: ${HASHU_HOME_POOLS:-solo.ckpool.org,eusolo.ckpool.org,ausolo.ckpool.org,public-pool.io,stratum.braiins.com,mine.ocean.xyz}
       HASHU_HOME_POOLS_OFF: ${HASHU_HOME_POOLS_OFF:-false}
-      # The operator's own rigs: your pool user (e.g. rented rigs mine as
-      # <user>.<rig>). Set it and only those rigs fill this mint's orders;
-      # other miners stay on their home pool, and account-name users with no
-      # home pool are refused. Unset: any rig may be borrowed.
+      # The operator's own rigs: SHA-256 of the secret they send as pw= in
+      # their password, whatever their user. Set it and only those rigs fill
+      # this mint's orders; other miners stay where they idle (pool=, their
+      # address, or HASHU_UPSTREAM). Unset: any rig may be borrowed.
+      HASHU_OPERATOR_SECRET_SHA256: ${HASHU_OPERATOR_SECRET_SHA256:-}
+      # Deprecated (one release): pool-user prefix that also marks your rigs.
       HASHU_OPERATOR_WORKER: ${HASHU_OPERATOR_WORKER:-}
       # Registered suppliers, a JSON file in the data volume, e.g.
       # /data/suppliers.json. Each gets a mint at <name>.$HASHU_DOMAIN
