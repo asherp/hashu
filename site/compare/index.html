@@ -145,7 +145,7 @@ tr.us th { color: var(--brand); }
         <tr><th>Hashpool<br><small>eHash, by vnprc</small></th><td>A token per mining share, issued by a pool to its miners</td><td>Proof of work: a claim on the pool's future block rewards</td><td>Bitcoin after a maturity window, over Lightning, on-chain or as ecash</td><td>Early development, Testnet4</td></tr>
       </tbody>
     </table></div>
-    <p class="note">Hashu runs on the Cashu Development Kit (CDK), the same mint software many Cashu mints use, and its vouchers work with any Cashu wallet. The difference is the unit: a regular mint holds bitcoin and owes sats, while a Hashu mint holds no bitcoin for users and owes only work. Hashpool sits on the other side of the market. It pays miners for shares they have already produced, while Hashu sells future hashes to buyers. The two could fit together: a Hashu voucher redeemed at a Hashpool would turn bought hashes into eHash.</p>
+    <p class="note">Hashu runs on the Cashu Development Kit (CDK), the same mint software many Cashu mints use, and its vouchers work with any Cashu wallet, such as Cashu.me. The difference is the unit: a regular mint holds bitcoin and owes sats, while a Hashu mint holds no bitcoin for users and owes only work. Hashpool sits on the other side of the market. It pays miners for shares they have already produced, while Hashu sells future hashes to buyers. The two could fit together: a Hashu voucher redeemed at a Hashpool would turn bought hashes into eHash.</p>
   </section>
 
   <section id="rental">
@@ -184,6 +184,14 @@ tr.us th { color: var(--brand); }
         </ul>
       </div>
     </div>
+    <p class="note">Some hosted packages sit between cloud mining and rental. NiceHash Virtual Machine Mining is the closest to Hashu, because you can send the work to your own pool:</p>
+    <div class="tbl" style="margin-top:12px"><table>
+      <thead><tr><th></th><th>What you buy</th><th>Account and payment</th><th>Where the work goes</th><th>Fees</th></tr></thead>
+      <tbody>
+        <tr class="us"><th>Hashu</th><td>A fixed quantity of hashes as bearer vouchers, redeemed whenever you choose</td><td>No account. Lightning or USDT per order</td><td>Any Stratum pool and worker you name at redemption</td><td>Mint operator's markup on the market price</td></tr>
+        <tr><th>NiceHash VM Mining</th><td>A package of "virtual miners": fixed price, speed and duration, or a flexible amount and speed</td><td>Verified account with 2FA, paid in USDT from your NiceHash wallet</td><td>The NiceHash pool, which pays BTC to your NiceHash wallet every 4 hours, or your own pool, set at purchase</td><td>6% infrastructure fee, a fixed fee of up to 1 USDT, and a 3% buy fee on each purchase or refill; hashrate priced 1% above the index</td></tr>
+      </tbody>
+    </table></div>
   </section>
 
   <section id="sources">
@@ -192,7 +200,7 @@ tr.us th { color: var(--brand); }
       <li>Hashpool: <a href="https://blog.cashu.space/what-is-hashpool/">blog.cashu.space/what-is-hashpool</a>, <a href="https://github.com/vnprc/hashpool">github.com/vnprc/hashpool</a></li>
       <li>Braiins Hashpower: <a href="https://academy.braiins.com/braiins-hashpower/about">academy.braiins.com/braiins-hashpower/about</a>, <a href="https://academy.braiins.com/braiins-hashpower/faqs/basics">FAQ</a></li>
       <li>MiningRigRentals: <a href="https://www.miningrigrentals.com/faq">miningrigrentals.com/faq</a></li>
-      <li>NiceHash: <a href="https://www.nicehash.com/">nicehash.com</a></li>
+      <li>NiceHash: <a href="https://www.nicehash.com/">nicehash.com</a>, <a href="https://www.nicehash.com/support/virtual-machine-mining/getting-started/what-is-virtual-machine-mining">Virtual Machine Mining</a>, <a href="https://www.nicehash.com/support/virtual-machine-mining/packages-and-pricing/what-does-the-package-price-include">package fees</a></li>
     </ul>
     <p class="sources">Checked November 2026. Services change their terms; check each one before you rely on it.</p>
   </section>
