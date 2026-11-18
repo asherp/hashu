@@ -2,10 +2,12 @@
 //!
 //! Each supplier sets, in `<data-dir>/mints/<name>/settings.json`:
 //!
-//! - `ask_msat_per_pih`: their price, in millisats per PiH (2^50 hashes =
-//!   1,024 TiH; #90). Every mint quotes in the same unit, so asks compare
-//!   and orders can be matched across suppliers at Lightning's resolution.
-//!   ≈ 625 msat/PiH is ≈ 2 sats per THH;
+//! - `ask_sats_per_eih`: their price, in whole sats per EiH (2^60 hashes =
+//!   2^20 TiH; Asher, 2026-11-18). Every mint quotes in the same unit, so
+//!   asks compare and orders can be matched across suppliers; a sat per EiH
+//!   is fine enough (≈ 0.17% of today's ≈ 600) and the price of any purchase
+//!   still comes out to the millisat. ≈ 640 sats/EiH is ≈ 2 sats per THH.
+//!   Settings saved with the older `ask_msat_per_pih` load converted;
 //! - `horizon_hours`: how far ahead they sell (Asher, 2026-11-11). Every hour
 //!   the mint tops up their stock to what their verified rigs produce within
 //!   the horizon (EWMA hashrate, half-life horizon / 2, × horizon − TiH
@@ -20,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::{Context, Result};
-use hashu_core::denom::msat_for_tih;
+use hashu_core::denom::{msat_for_tih_at_sats_per_eih, sats_per_eih_from_msat_per_pih};
 use hashu_mint::capacity::MIN_PURCHASE_TIH;
 use hashu_mint::lnaddress::LightningAddress;
 use hashu_mint::pricing::{PricingError, TihPricer};
@@ -40,7 +42,7 @@ fn default_horizon() -> f64 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SupplierSettings {
     #[serde(default)]
-    pub ask_msat_per_pih: Option<u64>,
+    pub ask_sats_per_eih: Option<u64>,
     #[serde(default = "default_horizon")]
     pub horizon_hours: f64,
     #[serde(default)]
@@ -50,7 +52,7 @@ pub struct SupplierSettings {
 impl Default for SupplierSettings {
     fn default() -> Self {
         Self {
-            ask_msat_per_pih: None,
+            ask_sats_per_eih: None,
             horizon_hours: DEFAULT_HORIZON_HOURS,
             lightning_address: None,
         }
@@ -61,8 +63,8 @@ impl SupplierSettings {
     /// Check the values (not whether the address works: see
     /// [`hashu_mint::lnaddress::probe`]). Normalizes the address.
     pub fn validated(mut self) -> Result<Self, String> {
-        if self.ask_msat_per_pih == Some(0) {
-            return Err("ask must be at least 1 msat per PiH".into());
+        if self.ask_sats_per_eih == Some(0) {
+            return Err("ask must be at least 1 sat per EiH".into());
         }
         if !self.horizon_hours.is_finite() || self.horizon_hours < MIN_HORIZON_HOURS {
             return Err(format!("horizon must be at least {MIN_HORIZON_HOURS} hour"));
@@ -82,10 +84,31 @@ impl SupplierSettings {
     pub fn load(dir: &Path) -> Result<Self> {
         let path = Self::path(dir);
         match std::fs::read(&path) {
-            Ok(b) => serde_json::from_slice(&b).with_context(|| format!("read {path:?}")),
+            Ok(b) => Self::from_json(&b).with_context(|| format!("read {path:?}")),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e).with_context(|| format!("read {path:?}")),
         }
+    }
+
+    /// Parse saved settings, converting an ask saved in the older msat
+    /// per PiH unit.
+    fn from_json(b: &[u8]) -> serde_json::Result<Self> {
+        #[derive(Deserialize)]
+        struct Saved {
+            #[serde(flatten)]
+            settings: SupplierSettings,
+            #[serde(default)]
+            ask_msat_per_pih: Option<u64>,
+        }
+        let Saved {
+            mut settings,
+            ask_msat_per_pih,
+        } = serde_json::from_slice(b)?;
+        if settings.ask_sats_per_eih.is_none() {
+            settings.ask_sats_per_eih =
+                ask_msat_per_pih.map(|m| sats_per_eih_from_msat_per_pih(m).max(1));
+        }
+        Ok(settings)
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
@@ -289,7 +312,7 @@ impl TihPricer for SupplierPricer {
             .settings
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .ask_msat_per_pih
+            .ask_sats_per_eih
             .ok_or(PricingError::NoPrice)?;
         let available = self.capacity().available_tih;
         if amount_tih > available {
@@ -298,7 +321,7 @@ impl TihPricer for SupplierPricer {
                 available,
             });
         }
-        msat_for_tih(amount_tih, ask).ok_or(PricingError::Overflow(amount_tih))
+        msat_for_tih_at_sats_per_eih(amount_tih, ask).ok_or(PricingError::Overflow(amount_tih))
     }
 }
 
@@ -312,7 +335,7 @@ mod tests {
         SupplierPricer::new(
             "alice",
             Arc::new(RwLock::new(SupplierSettings {
-                ask_msat_per_pih: ask,
+                ask_sats_per_eih: ask,
                 horizon_hours: horizon,
                 lightning_address: None,
             })),
@@ -381,7 +404,7 @@ mod tests {
             SupplierPricer::new(
                 "alice",
                 Arc::new(RwLock::new(SupplierSettings {
-                    ask_msat_per_pih: Some(600),
+                    ask_sats_per_eih: Some(600),
                     ..Default::default()
                 })),
                 Arc::new(move |_: &str| ths * 1e12),
@@ -404,8 +427,8 @@ mod tests {
         // 1.2 TH/s for 24 h = 28.8 THH ≈ 94,296 TiH, 5,000 owed: 89,296.
         let p = pricer(1.2, Some(600), 24.0, 5_000.0);
         assert_eq!(p.capacity().available_tih, 89_296);
-        // 600 msat per 1,024 TiH, rounded up.
-        assert_eq!(p.price(89_296), Ok(52_322));
+        // 600 sats per 2^20 TiH, to the millisat, rounded up.
+        assert_eq!(p.price(89_296), Ok(51_096));
         assert_eq!(
             p.price(89_297),
             Err(PricingError::SoldOut {
@@ -423,10 +446,10 @@ mod tests {
     }
 
     #[test]
-    fn asks_have_millisat_resolution() {
-        // 625 msat per PiH: 3 PiH cost 1,875 msat; a single TiH rounds up
-        // to 1 msat.
-        let p = pricer(1.0, Some(625), 24.0, 0.0);
+    fn whole_sat_asks_price_to_the_millisat() {
+        // 640 sats per EiH: 3 PiH cost 1,875 msat; one more TiH than the
+        // 4,096 TiH minimum rounds up to the next millisat.
+        let p = pricer(1.0, Some(640), 24.0, 0.0);
         assert_eq!(p.price(3 * 1024), Ok(1_875));
         assert_eq!(p.price(4_096 + 1), Ok(2_501));
     }
@@ -467,7 +490,7 @@ mod tests {
             SupplierSettings::default()
         );
         let s = SupplierSettings {
-            ask_msat_per_pih: Some(45),
+            ask_sats_per_eih: Some(45),
             horizon_hours: 12.0,
             lightning_address: Some(" Alice@Wallet.Example ".into()),
         }
@@ -476,6 +499,14 @@ mod tests {
         assert_eq!(s.lightning_address.as_deref(), Some("alice@wallet.example"));
         s.save(dir.path()).unwrap();
         assert_eq!(SupplierSettings::load(dir.path()).unwrap(), s);
+        // An ask saved as msat per PiH loads as sats per EiH.
+        std::fs::write(
+            SupplierSettings::path(dir.path()),
+            br#"{"ask_msat_per_pih": 590, "horizon_hours": 6}"#,
+        )
+        .unwrap();
+        let old = SupplierSettings::load(dir.path()).unwrap();
+        assert_eq!((old.ask_sats_per_eih, old.horizon_hours), (Some(604), 6.0));
         let one_hour = SupplierSettings {
             horizon_hours: 1.0,
             ..Default::default()
@@ -483,7 +514,7 @@ mod tests {
         assert!(one_hour.validated().is_ok());
         for bad in [
             SupplierSettings {
-                ask_msat_per_pih: Some(0),
+                ask_sats_per_eih: Some(0),
                 ..Default::default()
             },
             SupplierSettings {
