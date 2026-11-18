@@ -10,13 +10,13 @@
 :root {
   --bg: #f6f6f4; --surface: #ffffff; --ink: #1b1b1a; --ink-2: #55534f; --ink-3: #8a8782;
   --line: rgba(27,27,26,0.12); --brand: #e8850c; --brand-fill: rgba(232,133,12,0.12); --brand-ink: #111;
-  --good: #2f8a57; --good-bg: rgba(47,138,87,0.14); --bad: #c2403a; --bad-bg: rgba(194,64,58,0.12);
+  --good: #2f8a57; --good-bg: rgba(47,138,87,0.14); --bad: #c2403a; --bad-bg: rgba(194,64,58,0.12); --pay: #3f63b8;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #111110; --surface: #1a1a19; --ink: #f1efea; --ink-2: #b5b2ab; --ink-3: #85827c;
     --line: rgba(241,239,234,0.14); --brand: #f7931a; --brand-fill: rgba(247,147,26,0.14);
-    --good: #5cc28a; --good-bg: rgba(92,194,138,0.16); --bad: #e06c6c; --bad-bg: rgba(224,108,108,0.14);
+    --good: #5cc28a; --good-bg: rgba(92,194,138,0.16); --bad: #e06c6c; --bad-bg: rgba(224,108,108,0.14); --pay: #7f9cf0;
   }
 }
 * { box-sizing: border-box; }
@@ -85,6 +85,27 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
 .links-grid a:hover { border-color: var(--brand); }
 .links-grid b { display: block; font-size: 16px; }
 .links-grid span { color: var(--ink-2); font-size: 14px; overflow-wrap: anywhere; }
+.flows { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.flows .card h3 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-3); }
+.flows .card.us { border-color: var(--brand); }
+.flows .card.us h3 { color: var(--brand); }
+.flows .card p { font-size: 15px; }
+.mflow { display: block; width: 100%; height: auto; margin: 8px 0 12px; }
+.mflow .e { fill: none; stroke-width: 3; stroke-linecap: round; }
+.mflow .s-hash { stroke: var(--brand); } .mflow .f-hash { fill: var(--brand); }
+.mflow .s-pay { stroke: var(--pay); } .mflow .f-pay { fill: var(--pay); }
+.mflow .s-btc { stroke: var(--good); } .mflow .f-btc { fill: var(--good); }
+.mflow .s-kyc { stroke: var(--bad); } .mflow .f-kyc { fill: var(--bad); }
+.mflow .lbl { font: 600 16px ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle; paint-order: stroke; stroke: var(--surface); stroke-width: 5px; }
+.mflow .node rect { fill: var(--bg); stroke: var(--line); stroke-width: 1.5; }
+.mflow .node.ring-kyc rect { stroke: var(--bad); stroke-width: 2.5; }
+.mflow .node.faded { opacity: 0.4; } .mflow .node.faded rect { stroke-dasharray: 5 4; }
+.mflow .nm { fill: var(--ink); font: 700 19px system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle; }
+.mflow .sub { fill: var(--ink-3); font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; text-anchor: middle; }
+.mflow .ring-kyc .sub { fill: var(--bad); }
+.flow-key { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 16px 0 0; font-size: 14px; color: var(--ink-2); }
+.flow-key span { display: inline-flex; align-items: center; gap: 8px; }
+.flow-key i { width: 22px; height: 4px; border-radius: 2px; display: inline-block; }
 </style>
 </head>
 <body>
@@ -151,6 +172,59 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       <div class="card"><div class="num">4</div><h3>Audit</h3><p>Every share credited to a redemption goes into its own Merkle tree. Holders can fetch the root and inclusion proofs to check the work that reached their pool.</p></div>
     </div>
     <p class="unit" style="margin-top:20px"><b>1 TiH</b> (tebihash) = 2<sup>40</sup> hashes = 256 difficulty-1 shares. 1 TH/s for one hour ≈ 3,274 TiH. Prices are per PiH (1,024 TiH).</p>
+  </section>
+
+  <section id="money">
+    <h2>Where the money goes</h2>
+    <div class="flows">
+      <div class="card">
+        <h3>Today</h3>
+        <svg class="mflow" viewBox="0 0 640 330" role="img" aria-label="Today: the miner sends hashes to a pool for BTC and sells that BTC to an exchange for fiat. You send fiat to the exchange and gets KYC'd BTC.">
+<defs><marker id="mf-today-hash" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-hash" d="M0,0 L10,5 L0,10 z"/></marker><marker id="mf-today-pay" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-pay" d="M0,0 L10,5 L0,10 z"/></marker><marker id="mf-today-btc" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-btc" d="M0,0 L10,5 L0,10 z"/></marker><marker id="mf-today-kyc" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-kyc" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<path class="e s-hash" d="M128,209.1 Q216,172 292.4,78" marker-end="url(#mf-today-hash)"/>
+<path class="e s-btc" d="M256,70.9 Q168,108 91.6,202" marker-end="url(#mf-today-btc)"/>
+<path class="e s-btc" d="M128,216 Q192,196 256,216" marker-end="url(#mf-today-btc)"/>
+<path class="e s-pay" d="M256,256 Q192,276 128,256" marker-end="url(#mf-today-pay)"/>
+<path class="e s-pay" d="M512,216 Q448,196 384,216" marker-end="url(#mf-today-pay)"/>
+<path class="e s-kyc" d="M384,256 Q448,276 512,256" marker-end="url(#mf-today-kyc)"/>
+<text class="lbl f-hash" x="221.5" y="175.6">hashes</text>
+<text class="lbl f-btc" x="162.5" y="114.4">BTC</text>
+<text class="lbl f-btc" x="192" y="227">BTC</text>
+<text class="lbl f-pay" x="192" y="255">fiat</text>
+<text class="lbl f-pay" x="448" y="195">fiat</text>
+<text class="lbl f-kyc" x="448" y="287">KYC'd BTC</text>
+<g class="node"><rect x="262" y="16" width="116" height="56" rx="10"/><text class="nm" x="320" y="49">Pool</text></g>
+<g class="node"><rect x="6" y="208" width="116" height="56" rx="10"/><text class="nm" x="64" y="241">Miner</text></g>
+<g class="node ring-kyc"><rect x="262" y="208" width="116" height="56" rx="10"/><text class="nm" x="320" y="234">Exchange</text><text class="sub" x="320" y="251">KYC</text></g>
+<g class="node"><rect x="518" y="208" width="116" height="56" rx="10"/><text class="nm" x="576" y="241">You</text></g>
+</svg>
+        <p>Miners earn bitcoin at the pool, then sell it to an exchange to pay their bills. You buy those coins back from the exchange, tied to your identity.</p>
+      </div>
+      <div class="card us">
+        <h3>With Hashu</h3>
+        <svg class="mflow" viewBox="0 0 640 330" role="img" aria-label="With Hashu: the miner sells TiH vouchers to the user for sats or USDT. The user redeems the TiH at a pool and receives BTC with no KYC.">
+<defs><marker id="mf-hashu-hash" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-hash" d="M0,0 L10,5 L0,10 z"/></marker><marker id="mf-hashu-pay" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-pay" d="M0,0 L10,5 L0,10 z"/></marker><marker id="mf-hashu-btc" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-btc" d="M0,0 L10,5 L0,10 z"/></marker><marker id="mf-hashu-kyc" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-kyc" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<path class="e s-hash" d="M128,217 Q192,198 256,217" marker-end="url(#mf-hashu-hash)"/>
+<path class="e s-pay" d="M256,255 Q192,274 128,255" marker-end="url(#mf-hashu-pay)"/>
+<path class="e s-hash" d="M341.3,202 Q380,140 341.3,78" marker-end="url(#mf-hashu-hash)"/>
+<path class="e s-btc" d="M298.8,78 Q260,140 298.8,202" marker-end="url(#mf-hashu-btc)"/>
+<text class="lbl f-hash" x="192" y="228.5">TiH vouchers</text>
+<text class="lbl f-pay" x="192" y="253.5">sats / USDT</text>
+<text class="lbl f-hash" x="374.6" y="145">redeem TiH</text>
+<text class="lbl f-btc" x="265.4" y="145">BTC, no KYC</text>
+<g class="node"><rect x="262" y="16" width="116" height="56" rx="10"/><text class="nm" x="320" y="49">Pool</text></g>
+<g class="node"><rect x="6" y="208" width="116" height="56" rx="10"/><text class="nm" x="64" y="234">Miner</text><text class="sub" x="64" y="251">Hashu mint</text></g>
+<g class="node"><rect x="262" y="208" width="116" height="56" rx="10"/><text class="nm" x="320" y="241">You</text></g>
+</svg>
+        <p>You pay the miner in sats or USDT and get TiH vouchers. Redeeming them points the miner's hashrate at your pool, which pays you bitcoin directly. No exchange in between.</p>
+      </div>
+    </div>
+    <div class="flow-key" aria-hidden="true">
+      <span><i style="background:var(--brand)"></i>Hashes / TiH vouchers</span>
+      <span><i style="background:var(--pay)"></i>Fiat, sats or USDT</span>
+      <span><i style="background:var(--good)"></i>BTC, no KYC</span>
+      <span><i style="background:var(--bad)"></i>KYC'd BTC</span>
+    </div>
   </section>
 
   <section id="run">
