@@ -64,7 +64,8 @@ pub async fn run(cmd: InitCmd) -> Result<()> {
         );
     }
 
-    fs::create_dir_all(&data_dir).with_context(|| format!("create {}", data_dir.display()))?;
+    fs::create_dir_all(&data_dir)
+        .with_context(|| format!("create {}", data_dir.display()))?;
     let mut perms = fs::metadata(&data_dir)?.permissions();
     perms.set_mode(0o700);
     fs::set_permissions(&data_dir, perms)
@@ -87,16 +88,16 @@ pub async fn run(cmd: InitCmd) -> Result<()> {
         .save_atomic_to_path(&state)
         .context("save manifest_state.json")?;
 
-    let npub = keys.public_key().to_bech32().context("encode npub")?;
+    let npub = keys
+        .public_key()
+        .to_bech32()
+        .context("encode npub")?;
     println!("Initialized hashu data dir at {}", data_dir.display());
     println!("  nsec:          {}", nsec.display());
     println!("  manifest:      {}", state.display());
     println!("  npub:          {npub}");
     println!();
-    println!(
-        "Edit {} to refine profile fields any time.",
-        state.display()
-    );
+    println!("Edit {} to refine profile fields any time.", state.display());
     Ok(())
 }
 
@@ -207,7 +208,10 @@ fn nonblank(s: String) -> Option<String> {
 }
 
 fn write_nsec(path: &Path, keys: &Keys) -> Result<()> {
-    let nsec = keys.secret_key().to_bech32().context("encode nsec")?;
+    let nsec = keys
+        .secret_key()
+        .to_bech32()
+        .context("encode nsec")?;
     let mut f: File = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -221,7 +225,8 @@ fn write_nsec(path: &Path, keys: &Keys) -> Result<()> {
 
 pub fn load_keys(data_dir: &Path) -> Result<Keys> {
     let path = nsec_path(data_dir);
-    let body = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    let body = fs::read_to_string(&path)
+        .with_context(|| format!("read {}", path.display()))?;
     let nsec = body.trim();
     Keys::parse(nsec).with_context(|| format!("parse nsec at {}", path.display()))
 }

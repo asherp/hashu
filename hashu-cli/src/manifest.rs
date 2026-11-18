@@ -6,7 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use hashu_mint::manifest::{self, FixedKeysetSource, KeysetSource, ManifestState, Transition};
+use hashu_mint::manifest::{
+    self, FixedKeysetSource, KeysetSource, ManifestState, Transition,
+};
 use nostr::{JsonUtil, ToBech32};
 
 use crate::init::{load_keys, resolve_data_dir, state_path};
