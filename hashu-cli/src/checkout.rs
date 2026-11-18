@@ -53,7 +53,7 @@ use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, State as ProofSpent
 use cdk::wallet::{KeysetFilter, Wallet};
 use cdk::Amount;
 use hashu_core::redemption::{RedemptionId, RedemptionLedger, HASHES_PER_TIH};
-use hashu_mint::capacity::MIN_PURCHASE_TIH;
+use hashu_mint::capacity::{LiveView, MIN_PURCHASE_TIH};
 use hashu_mint::melt::{redemption_id_for, METHOD as HASHRATE};
 use hashu_mint::tether::{METHOD as USDT, USDC_METHOD as USDC};
 use hashu_proxy::meter::HashrateMeter;
@@ -456,25 +456,46 @@ async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
         "max_tih": s.max_tih,
         "mint_url": s.public_url,
         "hashes_per_tih": HASHES_PER_TIH as f64,
-        "delivery": delivery_json(&s),
+        "delivery": delivery_json(&s, &cap.live),
     }))
 }
 
-/// Window the checkout's delivery estimate averages hashrate over.
+/// Window the fallback delivery estimate averages hashrate over.
 const ETA_WINDOW: Duration = Duration::from_secs(300);
 
-/// What a delivery estimate needs: the proxy's current hashrate and the
-/// TiH still owed to open redemptions, which are served before a new one.
-fn delivery_json(s: &CheckoutState) -> Value {
+/// What a delivery estimate needs: the hashrate that fills this mint's
+/// redemptions and the TiH still owed to open ones, which are served
+/// before a new one.
+///
+/// The hashrate is the summed per-rig EWMA of the rigs that serve this
+/// mint's orders (`Router::operator_hashrate`, the same figure capacity
+/// sizes the live stock from). It leaves out supplier rigs and rigs only
+/// passing through to their home pools, which never fill these orders.
+/// Rented rigs mine through the proxy, so they are already in it; their
+/// declared TH/s is not added again. Without a live source (tests and
+/// tools) it falls back to all accepted work over [`ETA_WINDOW`].
+fn delivery_json(s: &CheckoutState, live: &LiveView) -> Value {
     let queue: Vec<_> = s.ledger.active();
     let queue_tih: f64 = queue
         .iter()
         .map(|r| r.target_hashes.saturating_sub(r.accumulated_hashes) as f64)
         .sum::<f64>()
         / HASHES_PER_TIH as f64;
+    let (hashrate_hs, source, window) = if live.available {
+        (
+            Some(live.measured_ths * 1e12),
+            "operator_rigs",
+            hashu_proxy::router::RIG_RATE_TAU,
+        )
+    } else {
+        (s.meter.rate_over(ETA_WINDOW), "all_shares", ETA_WINDOW)
+    };
     json!({
-        "hashrate_hs": s.meter.rate_over(ETA_WINDOW),
-        "window_s": ETA_WINDOW.as_secs(),
+        "hashrate_hs": hashrate_hs,
+        // "operator_rigs": summed per-rig EWMA (window_s = its time
+        // constant); "all_shares": every accepted share over window_s.
+        "hashrate_source": source,
+        "window_s": window.as_secs(),
         "queue_tih": queue_tih,
         "open_redemptions": queue.len(),
     })
@@ -1646,6 +1667,21 @@ mod tests {
                 Ok(c) => c.unspent_tih,
                 Err(_) => 0,
             }
+        }
+
+        #[tokio::test]
+        async fn delivery_estimate_uses_the_rigs_that_fill_orders() {
+            let s = start().await;
+            // No live source: every accepted share (none yet).
+            let Json(v) = info(State(s.clone())).await;
+            assert_eq!(v["delivery"]["hashrate_source"], "all_shares", "{v}");
+            assert!(v["delivery"]["hashrate_hs"].is_null(), "{v}");
+            // With one, the operator's rigs only: 1.5 TH/s.
+            s.controls.capacity.set_live_source(Arc::new(|| 1.5));
+            let Json(v) = info(State(s.clone())).await;
+            assert_eq!(v["delivery"]["hashrate_source"], "operator_rigs");
+            assert_eq!(v["delivery"]["hashrate_hs"], 1.5e12);
+            assert_eq!(v["delivery"]["window_s"], 120);
         }
 
         #[tokio::test]
