@@ -126,6 +126,9 @@ services:
       HASHU_MRR_RENTAL_IDS: ${HASHU_MRR_RENTAL_IDS:-}
       # Heat estimate: J/TH for rigs whose name does not name a model.
       HASHU_HEAT_J_PER_TH: ${HASHU_HEAT_J_PER_TH:-30}
+      # The wallet Caddy serves at HASHU_APP_DOMAIN, linked from the landing
+      # and checkout pages (empty: no links).
+      HASHU_APP_URL: ${HASHU_APP_DOMAIN:+https://${HASHU_APP_DOMAIN}}
     command:
       - mint
       - run

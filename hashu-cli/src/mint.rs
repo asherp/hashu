@@ -271,6 +271,11 @@ pub struct RunArgs {
     /// (seconds). Shares are sparse, so short windows are noisy.
     #[arg(long, default_value_t = 60)]
     pub hashrate_window: u64,
+    /// The operator's Hashu wallet (the hashu.me PWA), e.g.
+    /// `https://app.example.com`. The landing and checkout pages link to
+    /// it and offer "Open in wallet" for tokens. Unset: no wallet links.
+    #[arg(long, env = "HASHU_APP_URL")]
+    pub app_url: Option<String>,
 
     // ---- capacity ---------------------------------------------------
     /// MiningRigRentals API key. With `--mrr-api-secret`, the mint reads the
@@ -803,23 +808,26 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     } else {
         format!("http://{}", args.listen)
     };
-    let checkout = Arc::new(CheckoutState::new(
-        internal_url.clone(),
-        args.mint_url.clone().unwrap_or(internal_url),
-        controls.clone(),
-        Some(sats_controlled.clone()),
-        usdt_controlled.clone(),
-        methods.iter().filter(|m| *m != HASHRATE).cloned().collect(),
-        args.min_redeem_tih.max(1),
-        args.max_tih,
-        ledger.clone(),
-        mint.clone(),
-        meter.clone(),
-        Arc::new(
-            OrderBook::persistent(&args.data_dir.join("redemption-orders.json"))
-                .context("open redemption orders")?,
-        ),
-    ));
+    let checkout = Arc::new(
+        CheckoutState::new(
+            internal_url.clone(),
+            args.mint_url.clone().unwrap_or(internal_url),
+            controls.clone(),
+            Some(sats_controlled.clone()),
+            usdt_controlled.clone(),
+            methods.iter().filter(|m| *m != HASHRATE).cloned().collect(),
+            args.min_redeem_tih.max(1),
+            args.max_tih,
+            ledger.clone(),
+            mint.clone(),
+            meter.clone(),
+            Arc::new(
+                OrderBook::persistent(&args.data_dir.join("redemption-orders.json"))
+                    .context("open redemption orders")?,
+            ),
+        )
+        .with_app_url(app_url(args.app_url.as_deref())?),
+    );
 
     let waitlist = if args.waitlist {
         let path = args.data_dir.join("waitlist.jsonl");
@@ -1080,5 +1088,41 @@ mod contact_tests {
     fn rejects_entries_without_a_method() {
         assert!(parse_contacts(&["ops@example.com".into()]).is_err());
         assert!(parse_contacts(&["email:".into()]).is_err());
+    }
+}
+
+/// `--app-url`: an http(s) URL without a trailing slash, or none when unset
+/// or empty (compose passes an empty value when there is no wallet).
+fn app_url(raw: Option<&str>) -> Result<Option<String>> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let host = raw
+        .strip_prefix("https://")
+        .or_else(|| raw.strip_prefix("http://"))
+        .unwrap_or("");
+    let host = host.split('/').next().unwrap_or("");
+    if host.is_empty() || host.contains(char::is_whitespace) {
+        bail!("--app-url must be an http(s) URL like https://app.example.com (got {raw})");
+    }
+    Ok(Some(raw.trim_end_matches('/').to_string()))
+}
+
+#[cfg(test)]
+mod app_url_tests {
+    use super::app_url;
+
+    #[test]
+    fn app_url_is_optional_and_checked() {
+        assert_eq!(app_url(None).unwrap(), None);
+        assert_eq!(app_url(Some("")).unwrap(), None);
+        assert_eq!(
+            app_url(Some("https://app.example.com/"))
+                .unwrap()
+                .as_deref(),
+            Some("https://app.example.com")
+        );
+        assert!(app_url(Some("app.example.com")).is_err());
+        assert!(app_url(Some("https://")).is_err());
     }
 }
