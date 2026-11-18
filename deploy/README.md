@@ -71,6 +71,7 @@ again at startup, so running them without compose fails the same way.
 | `MRR_API_KEY`, `MRR_API_SECRET`, `HASHU_MRR_RENTAL_IDS` | no | Capacity from your MiningRigRentals rentals (or set them in the operator GUI). |
 | `HASHU_HEAT_J_PER_TH` | no | Heat estimate default, 30 J/TH. |
 | `COMPOSE_PROFILES=mdk` + `HASHU_MDK_DOMAIN`, `MDK_DEMO_USER`, `MDK_DEMO_PASSWORD` | no | The mock MDK dashboard demo. Off by default; when on, all three are required. |
+| `HASHU_APP_DOMAIN` | no | Serves the [hashu.me wallet](https://github.com/asherp/hashu.me) (built into the caddy image) on this host, e.g. `app.hashu.io`. Needs an A record pointing here. Unset: no wallet. |
 | `HASHU_REGISTRY`, `HASHU_IMAGE_TAG` | no | Image source for `docker compose pull` (default `ghcr.io/asherp`, `latest`). Point at your fork's registry to deploy your own builds. |
 
 Outside Docker, `hashu mint run` reads the same `HASHU_*` variables (or

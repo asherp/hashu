@@ -19,6 +19,21 @@ COPY deploy/caddy/redeem/build.mjs ./
 COPY docs/redeem/ /docs/redeem/
 RUN node build.mjs /docs/redeem /out
 
+# hashu.me wallet (github.com/asherp/hashu.me, a fork of Cashu.me): a
+# static PWA served at $HASHU_APP_DOMAIN when that is set. HASHU_APP_REF is
+# a branch, tag or commit; the images workflow passes the wallet's current
+# main commit so a new wallet commit busts this layer's cache.
+FROM node:22-bookworm AS wallet
+ARG HASHU_APP_REPO=https://github.com/asherp/hashu.me.git
+ARG HASHU_APP_REF=main
+WORKDIR /wallet
+RUN git init -q . \
+ && git remote add origin "$HASHU_APP_REPO" \
+ && git fetch -q --depth 1 origin "$HASHU_APP_REF" \
+ && git checkout -q FETCH_HEAD
+RUN npm ci --no-audit --no-fund
+RUN npx quasar build -m pwa
+
 FROM caddy:2
 # The routes ship with the image, so the Caddyfile always matches the site,
 # slides and guides built here: `docker compose pull && up -d` alone picks
@@ -30,6 +45,7 @@ COPY deploy/Caddyfile /etc/caddy/Caddyfile
 COPY --chmod=0755 deploy/caddy/entrypoint.sh /usr/local/bin/hashu-caddy-entrypoint
 ENTRYPOINT ["hashu-caddy-entrypoint"]
 CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+COPY --from=wallet /wallet/dist/pwa /srv/app
 COPY --from=slides /out /srv/slides
 # Project splash page (site/), served at / on HASHU_EXTRA_DOMAINS only (see Caddyfile).
 COPY site/ /srv/site/

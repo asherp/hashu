@@ -32,4 +32,25 @@ else
   echo "# MDK demo off (HASHU_MDK_DOMAIN unset)" > "$GEN/mdk-site.caddy"
 fi
 
+if [ -n "${HASHU_APP_DOMAIN:-}" ]; then
+  case "$HASHU_APP_DOMAIN" in
+    *://*|*/*) fail "HASHU_APP_DOMAIN must be a bare host name like app.example.com (got $HASHU_APP_DOMAIN)" ;;
+  esac
+  # hashu.me wallet PWA, built into this image at /srv/app. A single-page
+  # app: unknown paths get index.html. The service worker and manifest
+  # must not be cached, or installed wallets never see an update.
+  cat > "$GEN/app-site.caddy" <<SITE
+{\$HASHU_APP_DOMAIN} {
+	encode gzip
+	root * /srv/app
+	@fresh path /sw.js /manifest.json /index.html /
+	header @fresh Cache-Control "no-cache"
+	try_files {path} /index.html
+	file_server
+}
+SITE
+else
+  echo "# hashu.me wallet off (HASHU_APP_DOMAIN unset)" > "$GEN/app-site.caddy"
+fi
+
 exec "$@"

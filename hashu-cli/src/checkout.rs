@@ -42,6 +42,7 @@ use std::time::{Duration, Instant};
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
+use axum::middleware::{from_fn, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::Json;
@@ -303,17 +304,33 @@ pub fn router(state: Arc<CheckoutState>) -> axum::Router {
         .route("/checkout/", get(page))
         .route("/checkout/scan.js", get(scan_js))
         .route("/checkout/change.js", get(change_js))
-        .route("/checkout/api/info", get(info))
+        .route("/checkout/api/info", get(info).layer(from_fn(allow_any_origin)))
         .route("/checkout/api/buy", post(buy))
         .route("/checkout/api/buy/{id}", get(buy_status))
         .route("/checkout/api/token", post(check_token))
         .route("/checkout/api/redeem", post(redeem))
-        .route("/checkout/api/redemption/{id}", get(redemption))
+        .route(
+            "/checkout/api/redemption/{id}",
+            get(redemption).layer(from_fn(allow_any_origin)),
+        )
         .route("/api/redeem", post(paid_redeem))
         .route("/checkout/order/{id}", get(page))
         .route("/checkout/api/order/{id}", get(order))
         .route("/checkout/api/order/{id}/stop", post(stop_order))
         .with_state(state)
+}
+
+/// Lets wallets on other origins (the hashu.me PWA at its own host) read
+/// the public, read-only checkout APIs: price and limits, and a
+/// redemption's progress by its id. Plain GETs need no preflight. The
+/// Cashu `/v1` API gets the same header from cdk-axum.
+async fn allow_any_origin(req: axum::extract::Request, next: Next) -> Response {
+    let mut res = next.run(req).await;
+    res.headers_mut().insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        header::HeaderValue::from_static("*"),
+    );
+    res
 }
 
 async fn page() -> Html<&'static str> {
@@ -1452,6 +1469,23 @@ mod tests {
             n += 1;
         }
         assert!(n >= 5, "only {n} pools parsed");
+    }
+
+    /// Wallets on other origins can read the public checkout APIs.
+    #[tokio::test]
+    async fn public_api_allows_any_origin() {
+        use tower::ServiceExt;
+        let app = axum::Router::new().route(
+            "/x",
+            get(|| async { "ok" }).layer(from_fn(allow_any_origin)),
+        );
+        let req = axum::http::Request::get("/x")
+            .header(header::ORIGIN, "https://app.example")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
     }
 
     #[test]

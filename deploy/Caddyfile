@@ -107,3 +107,9 @@
 # HASHU_MDK_DOMAIN is set. serve.js in the mdk container serves the built
 # dashboard and forwards /auth, /apps, ... to the MDK Gateway.
 import /etc/caddy/generated/mdk-site.caddy
+
+# hashu.me wallet (optional, HASHU_APP_DOMAIN): the Cashu.me fork built
+# into the caddy image. It talks to mints from the browser, so the mint's
+# /v1 API (CORS from cdk-axum) and its public checkout APIs (CORS from the
+# checkout router) answer it cross-origin.
+import /etc/caddy/generated/app-site.caddy
