@@ -41,7 +41,7 @@ textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-siz
 .seg button { border: 0; background: transparent; color: var(--ink-2); padding: 8px 14px; cursor: pointer; font: inherit; font-size: 14px; }
 .seg button.on { background: var(--brand); color: var(--brand-ink); font-weight: 600; }
 .chips button { border: 1px solid var(--line); background: transparent; color: var(--ink-2); border-radius: 999px; padding: 4px 12px; cursor: pointer; font: inherit; font-size: 13px; }
-button.act { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 8px; padding: 10px 18px; cursor: pointer; font: inherit; }
+button.act, a.act { text-decoration: none; display: inline-block; border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 8px; padding: 10px 18px; cursor: pointer; font: inherit; }
 button.act.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
 button.act:disabled { opacity: 0.5; cursor: default; }
 .price { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
@@ -157,7 +157,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
       <div class="wbar"><span id="words-full-note">Take one screenshot; it reads back into the voucher.</span><button type="button" id="btn-close-words">Close</button></div>
       <div class="fit" id="words-full-fit"><p id="words-full-text"></p></div>
     </div>
-    <div class="row"><button class="act" id="btn-copy-token">Copy token</button><button class="act primary" id="btn-goto-redeem">Redeem now</button></div>
+    <div class="row"><button class="act" id="btn-copy-token">Copy token</button><a class="act" id="btn-open-token" hidden target="_blank" rel="noopener" style="text-decoration:none;color:inherit">Open in wallet</a><button class="act primary" id="btn-goto-redeem">Redeem now</button></div>
   </section>
 
   <!-- 4. redeem -->
@@ -172,7 +172,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
         <textarea id="r-token" placeholder="cashuB… or the words"></textarea>
       </label>
       <p class="tok-msg" id="r-token-msg" hidden></p>
-      <div class="row"><button class="act" type="button" id="btn-scan">Scan token QR</button><span class="note">From Cashu.me's send screen, or any Cashu wallet.</span></div>
+      <div class="row"><button class="act" type="button" id="btn-scan">Scan token QR</button><span class="note" id="scan-note">From Cashu.me's send screen, or any Cashu wallet.</span></div>
     </div>
     <label class="f">Your pool
       <select id="r-pool-pick">
@@ -212,7 +212,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
       <div class="qr" id="ch-qr"></div>
       <p class="note" id="ch-qr-note" style="text-align:center"></p>
       <textarea id="ch-token" readonly></textarea>
-      <div class="row"><button class="act primary" id="btn-copy-change">Copy token</button><button class="act" id="btn-dl-change">Download</button><a class="act" id="ch-redeem" href="../" style="text-decoration:none;color:inherit">Redeem it again</a></div>
+      <div class="row"><button class="act primary" id="btn-copy-change">Copy token</button><button class="act" id="btn-dl-change">Download</button><a class="act" id="btn-open-change" hidden target="_blank" rel="noopener" style="text-decoration:none;color:inherit">Open in wallet</a><a class="act" id="ch-redeem" href="../" style="text-decoration:none;color:inherit">Redeem it again</a></div>
     </div>
   </section>
 </main>
@@ -252,6 +252,17 @@ const HASHES_PER_TIH = 2 ** 40
 const TIH_PER_PIH = 1024
 const TIH_PER_THH = 3.6e15 / HASHES_PER_TIH
 const st = { info: null, method: null, checkout: null, redemption: null, pollT: null }
+
+// The operator's Hashu wallet (app_url in api/info), if it runs one.
+const appUrl = () => { const u = st.info && st.info.app_url; return u && /^https?:\/\//.test(u) ? u.replace(/\/+$/, '') : '' }
+const appHost = () => { try { return new URL(appUrl()).host } catch { return '' } }
+const walletName = () => appHost() || 'Cashu.me'
+// Point an "Open in wallet" link at the wallet's receive screen.
+function walletLink (a, token) {
+  const u = appUrl()
+  a.hidden = !(u && token)
+  if (u && token) a.href = `${u}/#token=${token}`
+}
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const fmtTih = (x, d) => { if (!Number.isFinite(x)) return '—'; d = d ?? (Math.abs(x) < 10 ? 2 : Math.abs(x) < 100 ? 1 : 0); return x.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) }
@@ -343,6 +354,7 @@ function etaText (n) {
 async function loadInfo () {
   try {
     st.info = await api('api/info')
+    if (appHost()) $('scan-note').textContent = `From ${appHost()} or any Cashu wallet's send screen.`
     const ms = st.info.methods
     if (!st.method || !ms.includes(st.method)) st.method = ms[0] || null
     $('methods').innerHTML = ms.map((m) => `<button data-m="${esc(m)}" class="${m === st.method ? 'on' : ''}">${esc(methodName(m))}</button>`).join('')
@@ -417,7 +429,7 @@ function playQr (box, note, frames) {
   clearInterval(box._t)
   frames = frames || []
   box.hidden = !frames.length
-  if (note) note.textContent = frames.length > 1 ? `Scan with a Cashu wallet such as Cashu.me. Animated QR: hold the camera steady until all ${frames.length} parts are read.` : frames.length ? 'Scan with a Cashu wallet such as Cashu.me.' : ''
+  if (note) note.textContent = frames.length > 1 ? `Scan with a Cashu wallet such as ${walletName()}. Animated QR: hold the camera steady until all ${frames.length} parts are read.` : frames.length ? `Scan with a Cashu wallet such as ${walletName()}.` : ''
   if (!frames.length) { box.innerHTML = ''; return }
   let i = 0
   box.innerHTML = frames[0]
@@ -428,6 +440,7 @@ function showToken () {
   $('pay-state').textContent = 'paid'; $('pay-state').className = 'pill ok'
   $('s-token').hidden = false
   $('token').value = c.token
+  walletLink($('btn-open-token'), c.token)
   $('token-amt').textContent = `${c.amount_tih.toLocaleString()} TiH`
   $('r-token').value = c.token
   checkToken()
@@ -800,6 +813,8 @@ async function openChange (r) {
   $('ch-token-box').hidden = false
   $('ch-token').value = token
   $('ch-redeem').href = `../#token=${encodeURIComponent(token)}`
+  if (!st.info) { try { st.info = await api('api/info') } catch {} }
+  walletLink($('btn-open-change'), token)
   playQr($('ch-qr'), $('ch-qr-note'), [C.qrSvg(token)])
 }
 $('btn-copy-change').addEventListener('click', (ev) => copy($('ch-token').value, ev.target))

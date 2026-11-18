@@ -35,6 +35,7 @@ nav .links a:hover { color: var(--ink); }
 .hero p { font-size: 19px; color: var(--ink-2); max-width: 60ch; margin: 0 0 28px; }
 .cta { display: flex; gap: 10px; flex-wrap: wrap; }
 .btn { display: inline-block; text-decoration: none; border: 1px solid var(--line); border-radius: 10px; padding: 12px 20px; font-weight: 600; font-size: 15px; }
+[hidden] { display: none !important; }
 .btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
 .btn:hover { filter: brightness(1.05); }
 .btn.soldout { background: transparent; border-color: var(--line); color: var(--ink-3, #888); cursor: not-allowed; pointer-events: none; }
@@ -82,6 +83,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       <a href="#why">Why</a>
       <a href="#developers">Developers</a>
       <a href="/checkout/" data-buy>Buy hashrate</a>
+      <a data-app hidden>Wallet</a>
       <a href="/slides/">Slides</a>
       <a href="https://github.com/asherp/hashu">GitHub</a>
       <a id="nav-waitlist" href="/waitlist/" hidden>Hosted mints</a>
@@ -94,6 +96,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     <p>Hashu is a Cashu mint fused with a mining proxy. It sells real hashes, counted in TiH (tebihash, 2<sup>40</sup> hashes), as Chaumian hashrate vouchers. Pay with Lightning or USDT, hold the tokens in any Cashu wallet, and redeem them whenever you like by pointing hashrate at your own pool.</p>
     <div class="cta">
       <a class="btn primary" href="/checkout/" data-buy>Buy hashrate</a>
+      <a class="btn" data-app hidden>Open wallet</a>
       <a class="btn" href="/v1/info">Mint API · /v1/info</a>
       <a class="btn" href="https://github.com/asherp/hashu">Source on GitHub</a>
     </div>
@@ -136,6 +139,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     <div class="grid2">
       <div class="card">
         <h3>Use any Cashu wallet</h3>
+        <p data-app-note hidden>The easiest is <a data-app class="mono" data-app-host></a>, Hashu's own wallet: it shows TiH and redeems straight to your pool.</p>
         <p>Add this mint and use the <span class="mono">tih</span> unit. Minting is over <span class="mono">bolt11</span> or <span class="mono">usdt</span>; melting is only over the <span class="mono">hashrate</span> method.</p>
         <div class="copy"><code class="mono" id="mint-url">—</code><button id="copy-url" type="button">Copy</button></div>
       </div>
@@ -177,6 +181,15 @@ $('copy-url').onclick = async () => {
   setTimeout(() => { $('copy-url').textContent = 'Copy'; }, 1500);
 };
 
+// The operator's Hashu wallet, when the mint is told about one (app_url).
+function showWallet(url) {
+  if (!url || !/^https?:\/\//.test(url)) return;
+  url = url.replace(/\/+$/, '') + '/';
+  document.querySelectorAll('[data-app]').forEach((a) => { a.href = url; a.hidden = false; });
+  document.querySelectorAll('[data-app-note]').forEach((p) => { p.hidden = false; });
+  document.querySelectorAll('[data-app-host]').forEach((a) => { a.textContent = new URL(url).host; });
+}
+
 // No hashrate left to sell: buy links say so instead of opening checkout.
 function markSoldOut(soldOut) {
   document.querySelectorAll('a[data-buy]').forEach((a) => {
@@ -210,6 +223,7 @@ async function load() {
       ? `0 <small>TiH · ${fmt(i.headroom_tih, 0)} TiH headroom, below the ${fmt(i.min_buy_tih || 1)} TiH minimum</small>`
       : `0 <small>TiH · no hashrate available${i.capacity_tih > 0 ? ` (all ${fmt(i.capacity_tih)} allocated)` : ''}</small>`;
     markSoldOut(soldOut || !!i.issuance_paused);
+    showWallet(i.app_url);
     if (i.mint_url && /^https?:\/\//.test(i.mint_url)) { mintUrl = i.mint_url.replace(/\/+$/, ''); showUrl(); }
   } catch (e) {
     $('s-sales').innerHTML = '<span class="pill no">unreachable</span>';

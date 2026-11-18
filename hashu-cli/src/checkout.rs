@@ -250,6 +250,8 @@ pub struct CheckoutState {
     pub meter: Arc<HashrateMeter>,
     /// Checkout redemptions and their wallet seeds, for returning change.
     pub orders: Arc<OrderBook>,
+    /// The operator's Hashu wallet, linked from the landing and checkout.
+    pub app_url: Option<String>,
     checkouts: Mutex<HashMap<String, Arc<Mutex<Checkout>>>>,
 }
 
@@ -282,8 +284,14 @@ impl CheckoutState {
             mint,
             meter,
             orders,
+            app_url: None,
             checkouts: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn with_app_url(mut self, app_url: Option<String>) -> Self {
+        self.app_url = app_url;
+        self
     }
 }
 
@@ -455,6 +463,8 @@ async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
         "min_redeem_tih": s.min_redeem_tih,
         "max_tih": s.max_tih,
         "mint_url": s.public_url,
+        // The operator's Hashu wallet; null when it runs none.
+        "app_url": s.app_url,
         "hashes_per_tih": HASHES_PER_TIH as f64,
         "delivery": delivery_json(&s, &cap.live),
     }))
