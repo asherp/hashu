@@ -33,17 +33,34 @@ Other password options still work and are passed to your pool, e.g.
 `d=512,pool=public-pool.io:21496`. The proxy only dials pools on its
 allow-list (`HASHU_HOME_POOLS`); any other `pool=` is ignored and logged.
 
-A user that isn't a Bitcoin address and has no `pool=` has no home pool.
-On `mint.hashu.io` (where `HASHU_OPERATOR_WORKER` is set) it is refused at
-authorize with "no home pool: use a Bitcoin address as the user, or add
-pool=host:port to the password". On a proxy without that setting it goes
-to the operator's default pool, as before.
+A user that isn't a Bitcoin address and has no `pool=` idles on the
+operator's default pool (`HASHU_UPSTREAM`), with its user passed through,
+so it must be valid there.
+
+### One rule for every rig
+
+Where a rig idles and whose orders it fills are separate settings, and
+they are the same for every rig on the port, the operator's included:
+
+| Field | Value |
+|---|---|
+| User | what your idle pool expects (Braiins `account.worker`, ckpool `address.worker`) |
+| Password | `pool=host:port[,pw=secret][,d=…]` |
+
+- **Idle pool:** `pool=` if its host is allowed, else solo.ckpool.org for a
+  mainnet address user, else the operator's default pool.
+- **Orders:** `pw=` with the operator's secret makes the rig one of the
+  mint's own, whatever its user is; a registered supplier's secret on
+  `<name>.<rig>` makes it that supplier's (see below). Without either it is
+  never borrowed on a mint that names its own rigs.
+
+`pool=` and `pw=` are never sent to any pool.
 
 ## What happens to your hashrate
 
 1. **Idle.** Your shares go to your home pool, under your user. Anything
    you find there is yours.
-2. **Borrowed** (only on a proxy without `HASHU_OPERATOR_WORKER`, or
+2. **Borrowed** (only on a proxy that doesn't name its own rigs, or
    once you have your own mint). When a TiH redemption needs hashrate, the proxy moves your
    connection to the redeemer's pool without reconnecting the Bitaxe
    (same socket, a new clean job). Your shares there count towards the
@@ -68,12 +85,16 @@ delivered to redemptions since the proxy started).
 | `HASHU_HOME_SOLO_UPSTREAM` | `solo.ckpool.org:3333` | Solo pool for address users; `off` turns address detection off |
 | `HASHU_HOME_POOLS` | ckpool solo (3 regions), public-pool.io, Braiins, OCEAN | Hosts allowed in `pool=` |
 | `HASHU_HOME_POOLS_OFF` | `false` | `true` restores the old behaviour: everyone idles on `HASHU_UPSTREAM` |
-| `HASHU_OPERATOR_WORKER` | unset | Hashu's own worker account (your Braiins user; MRR rentals mine as `<user>.<rig>`). Set: only those rigs are borrowed for this mint's redemptions, other miners stay on their home pool, and users with no home pool are refused. Unset: any rig may be borrowed |
+| `HASHU_OPERATOR_SECRET_SHA256` | unset | SHA-256 hex of your rig secret (`printf %s "$SECRET" \| sha256sum`). Rigs with `pw=$SECRET` in their password are your own, whatever their user: only they are borrowed for this mint's redemptions, other rigs stay where they idle. Unset: any rig may be borrowed |
+| `HASHU_OPERATOR_WORKER` | unset | **Deprecated**, kept for one release: users equal to it or starting with `<it>.` also count as your own rigs (logged with a deprecation line). Move your rigs to `pw=` |
 
 On `mint.hashu.io`, which is reserved for Hashu's own hashrate, set
-`HASHU_OPERATOR_WORKER`: a Bitaxe then mines to its home pool through the
-proxy and is not borrowed until it has its own mint
-(`<name>.mint.hashu.io`, see below).
+`HASHU_OPERATOR_SECRET_SHA256`: a stranger's Bitaxe then mines to its home
+pool through the proxy and is not borrowed until it has its own mint
+(`<name>.mint.hashu.io`, see below). Changing the default pool then needs
+no change to your rigs' identity: only their user changes, and only if the
+new pool demands it. MRR rentals take `pw=<secret>` in the rental's pool
+password.
 
 With home pools on, a new connection waits up to 2 s for the miner's
 `mining.authorize` before the proxy dials a pool. ESP-Miner sends
@@ -100,8 +121,8 @@ Orders bought from Alice's mint are filled only by rigs that log in as
 `alice.*` with the right `pw=`. Each rig serves one order at a time, and
 spare rigs join an order already being filled, so a large order on one
 invoice spreads over all of Alice's free rigs. `pw=` is never sent to any
-pool. A registered name with a wrong or missing secret is refused, and so
-is a supplier rig with no home pool.
+pool. A registered name with a wrong or missing secret is refused; a
+supplier rig with no home pool idles on the operator's default pool.
 
 ### Sign up
 

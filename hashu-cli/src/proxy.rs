@@ -79,11 +79,16 @@ pub struct HomePoolArgs {
     /// authorize.
     #[arg(long, env = "HASHU_HOME_POOLS_OFF")]
     pub home_pools_off: bool,
-    /// Hashu's own worker account (e.g. the operator's Braiins user). When
-    /// set, only users equal to it or starting with `<it>.` (the MRR
-    /// rentals) are borrowed for redemptions; other miners idle on their
-    /// home pool and are never borrowed, and a miner with no home pool is
-    /// refused. Unset: every rig may be borrowed, as before.
+    /// SHA-256 (hex) of the operator's rig secret. A rig with
+    /// `pw=<secret>` in its password is one of Hashu's own rigs whatever its
+    /// user is. When set, only Hashu's rigs are borrowed for this mint's
+    /// redemptions; other rigs idle where they chose (`pool=`, their
+    /// mainnet address, or the default pool) and are never borrowed.
+    /// Unset (and no --operator-worker): every rig may be borrowed.
+    #[arg(long, env = "HASHU_OPERATOR_SECRET_SHA256")]
+    pub operator_secret_sha256: Option<String>,
+    /// Deprecated, use --operator-secret-sha256: users equal to this or
+    /// starting with `<it>.` are also Hashu's own rigs.
     #[arg(long, env = "HASHU_OPERATOR_WORKER")]
     pub operator_worker: Option<String>,
     /// Registered suppliers (JSON, see `hashu_proxy::suppliers`): rigs
@@ -113,8 +118,26 @@ impl HomePoolArgs {
             .map(str::trim)
             .filter(|w| !w.is_empty())
             .map(str::to_string);
+        if operator_worker.is_some() {
+            tracing::warn!("HASHU_OPERATOR_WORKER is deprecated: give your rigs pw=<secret> and set HASHU_OPERATOR_SECRET_SHA256 to its SHA-256");
+        }
+        let operator_secret_sha256 = match self
+            .operator_secret_sha256
+            .as_deref()
+            .map(str::trim)
+            .filter(|h| !h.is_empty())
+        {
+            Some(h) if h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()) => {
+                Some(h.to_ascii_lowercase())
+            }
+            Some(_) => anyhow::bail!(
+                "HASHU_OPERATOR_SECRET_SHA256 must be 64 hex characters (printf %s '<secret>' | sha256sum)"
+            ),
+            None => None,
+        };
         if self.home_pools_off {
             return Ok(HomeConfig {
+                operator_secret_sha256,
                 operator_worker,
                 ..HomeConfig::off()
             });
@@ -136,6 +159,7 @@ impl HomePoolArgs {
         Ok(HomeConfig {
             solo_upstream,
             allowed_hosts,
+            operator_secret_sha256,
             operator_worker,
         })
     }

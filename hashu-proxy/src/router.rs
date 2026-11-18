@@ -183,11 +183,17 @@ impl Route {
 
     /// Rewrite a miner→pool line for this route. On a redemption route,
     /// `mining.authorize` and `mining.submit` carry the redeemer's worker
-    /// name instead of the miner's. Anything else (and every line on the
-    /// default route) is returned as-is.
+    /// name instead of the miner's. On the default route only the
+    /// proxy's own `pool=` / `pw=` options are taken out of the authorize
+    /// password, so a secret never reaches a pool. Anything else is
+    /// returned as-is (`None`).
     pub fn rewrite_miner_line(&self, line: &str) -> Option<String> {
-        let (worker_name, worker_password) = self.credentials()?;
-        rewrite_worker(line, worker_name, worker_password)
+        match self.credentials() {
+            Some((worker_name, worker_password)) => {
+                rewrite_worker(line, worker_name, worker_password)
+            }
+            None => strip_default_authorize(line),
+        }
     }
 
     /// Worker name and password this route authorizes with, or `None`
@@ -231,6 +237,20 @@ pub fn rewrite_worker(line: &str, worker: &str, password: &str) -> Option<String
             None => params.push(Value::String(password.to_string())),
         }
     }
+    let mut out = serde_json::to_string(&v).ok()?;
+    out.push('\n');
+    Some(out)
+}
+
+/// A `mining.authorize` line with the proxy's own password options
+/// removed, or `None` if it isn't one or has none.
+fn strip_default_authorize(line: &str) -> Option<String> {
+    let mut v: Value = serde_json::from_str(line.trim()).ok()?;
+    if v.get("method")?.as_str()? != "mining.authorize" {
+        return None;
+    }
+    let pw = v.get_mut("params")?.get_mut(1)?;
+    *pw = Value::String(crate::home::strip_proxy_options(pw.as_str()?)?);
     let mut out = serde_json::to_string(&v).ok()?;
     out.push('\n');
     Some(out)
@@ -306,8 +326,8 @@ struct Binding {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Serves {
     /// Orders from the operator's own mint (`supplier: None`): Hashu's
-    /// rigs, or any unregistered rig when no
-    /// [`crate::home::HomeConfig::operator_worker`] is set.
+    /// rigs, or any unregistered rig when the operator's rigs aren't
+    /// named (see [`crate::home::HomeConfig::has_operator`]).
     Operator,
     /// Orders from this registered supplier's mint only.
     Supplier(String),
@@ -535,29 +555,32 @@ impl Router {
     }
 
     /// `Some(reason)` if a miner with this authorize must be refused: a
-    /// registered supplier's name with a wrong or missing `pw=`, a
-    /// supplier rig with no home pool, or [`MinerIdentity::refusal`].
+    /// registered supplier's name with a wrong or missing `pw=`, or a
+    /// miner with no home pool when there is no default pool to idle on.
     pub fn refusal(&self, authorize: &Value) -> Option<String> {
         let id = MinerIdentity::from_params(authorize, &self.home)?;
+        if id.operator_by_worker {
+            tracing::warn!(user = ?authorize.get(0), "rig is Hashu's only through HASHU_OPERATOR_WORKER, which is deprecated: add pw=<operator secret> to its password and set HASHU_OPERATOR_SECRET_SHA256");
+        }
         // Hashu's own rigs never need a supplier secret, even if the
         // registry lists a supplier under the same name.
         if id.operator {
-            self.warn_if_operator_registered(&id.supplier);
-            return id.refusal(&self.home).map(str::to_string);
+            if id.operator_by_worker {
+                self.warn_if_operator_registered(&id.supplier);
+            }
+        } else if let Check::WrongSecret(n) =
+            self.registry.check(&id.supplier, id.secret.as_deref())
+        {
+            return Some(format!("{REFUSE_WRONG_SECRET} {n}"));
         }
-        match self.registry.check(&id.supplier, id.secret.as_deref()) {
-            Check::WrongSecret(n) => return Some(format!("{REFUSE_WRONG_SECRET} {n}")),
-            Check::Verified(_) if id.home.is_none() => return Some(REFUSE_NO_HOME.to_string()),
-            Check::Verified(_) => return None,
-            Check::Unregistered => {}
-        }
-        id.refusal(&self.home).map(str::to_string)
+        (id.home.is_none() && self.default_upstream.trim().is_empty())
+            .then(|| REFUSE_NO_HOME.to_string())
     }
 
-    /// Which orders a miner may fill. With Hashu's own rigs set, a miner
-    /// not yet identified fills none.
+    /// Which orders a miner may fill. With Hashu's own rigs named, a
+    /// miner not yet identified fills none.
     fn serves(&self, identity: Option<&MinerIdentity>) -> Serves {
-        let open = self.home.operator_worker.is_none();
+        let open = !self.home.has_operator();
         let Some(i) = identity else {
             return if open {
                 Serves::Operator
@@ -1653,12 +1676,26 @@ mod tests {
     }
 
     #[test]
-    fn refuses_account_users_without_a_home() {
-        let router = operator_router(Arc::new(RedemptionLedger::new()));
+    fn account_users_without_a_home_idle_on_the_default_pool() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = operator_router(ledger.clone());
+        assert_eq!(router.refusal(&serde_json::json!(["bob.rig1", "x"])), None);
+        open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
+        let bob = rig(&router, "bob.rig1", "x");
         assert_eq!(
-            router.refusal(&serde_json::json!(["bob.rig1", "x"])),
+            bob.route,
+            Route::Default {
+                upstream: "default:3333".into()
+            },
+            "a stranger idles on the default pool and is never borrowed"
+        );
+        // Only with no default pool at all is it refused.
+        let nowhere = Router::new("", ledger).with_home_pools(HomeConfig::default());
+        assert_eq!(
+            nowhere.refusal(&serde_json::json!(["bob.rig1", "x"])),
             Some(crate::home::REFUSE_NO_HOME.to_string())
         );
+        assert_eq!(nowhere.refusal(&serde_json::json!([ADDR, "x"])), None);
         assert_eq!(
             router.refusal(&serde_json::json!(["hashu.mrr1", "x"])),
             None
@@ -1791,10 +1828,51 @@ mod tests {
             refuse("alice.rig1", "pool=public-pool.io:21496"),
             Some(format!("{REFUSE_WRONG_SECRET} alice"))
         );
-        assert_eq!(
-            refuse("alice.rig1", "pw=a-secret"),
-            Some(REFUSE_NO_HOME.to_string())
-        );
+        // No home pool: it idles on the default pool like any rig.
+        assert_eq!(refuse("alice.rig1", "pw=a-secret"), None);
+    }
+
+    fn secret_router(ledger: Arc<RedemptionLedger>) -> Router {
+        Router::new("default:3333", ledger)
+            .with_home_pools(HomeConfig {
+                operator_secret_sha256: Some(crate::suppliers::secret_hash("op-secret")),
+                ..HomeConfig::default()
+            })
+            .with_suppliers(Arc::new(SupplierRegistry::from_secrets([(
+                "alice", "a-secret",
+            )])))
+    }
+
+    #[test]
+    fn operator_secret_makes_any_user_one_of_hashus_rigs() {
+        let tb = "tb1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq.bitaxe1";
+        // (user, password, borrowed for the operator's order?)
+        let cases = [
+            (tb, "pw=op-secret,pool=public-pool.io:21496", true),
+            ("acct.hashu.bitaxe1", "pw=op-secret", true),
+            // The operator secret wins even on a supplier's name.
+            ("alice.rig9", "pw=op-secret", true),
+            ("acct.hashu.bitaxe2", "pw=nope", false),
+            ("acct.hashu.bitaxe3", "x", false),
+            (tb, "pool=public-pool.io:21496", false),
+        ];
+        for (user, pw, borrowed) in cases {
+            let ledger = Arc::new(RedemptionLedger::new());
+            let router = secret_router(ledger.clone());
+            open_for(&ledger, 1, None);
+            assert_eq!(
+                router.refusal(&serde_json::json!([user, pw])),
+                None,
+                "{user} {pw}"
+            );
+            let r = rig(&router, user, pw);
+            assert_eq!(
+                r.route.redemption_id().is_some(),
+                borrowed,
+                "{user} {pw}: {:?}",
+                r.route
+            );
+        }
     }
 
     #[test]
