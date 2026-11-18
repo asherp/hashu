@@ -25,6 +25,11 @@ pub const HASHES_PER_TIH: u128 = 1 << 40;
 /// `TiH` in one `PiH` (2^50 hashes), the unit prices are quoted per.
 pub const TIH_PER_PIH: u64 = 1024;
 
+/// `TiH` in one `EiH` (exbihash, 2^60 hashes = 1,024 PiH), the unit
+/// supplier asks are quoted per: whole sats per EiH (≈ 600 today) carry
+/// the same resolution as msat per PiH (1 sat/EiH ≈ 0.98 msat/PiH).
+pub const TIH_PER_EIH: u64 = 1 << 20;
+
 /// Hashes in one terahash-hour (1 TH/s for 3,600 s), for display only.
 pub const HASHES_PER_THH: f64 = 3.6e15;
 
@@ -51,6 +56,26 @@ pub fn msat_for_tih(amount_tih: u64, msat_per_pih: u64) -> Option<u64> {
     u64::try_from(msat).ok()
 }
 
+/// Millisats for `amount_tih` at `sats_per_eih`, rounded up.
+/// `None` on overflow.
+pub fn msat_for_tih_at_sats_per_eih(amount_tih: u64, sats_per_eih: u64) -> Option<u64> {
+    let msat = (amount_tih as u128)
+        .checked_mul(sats_per_eih as u128)?
+        .checked_mul(1000)?
+        .div_ceil(TIH_PER_EIH as u128);
+    u64::try_from(msat).ok()
+}
+
+/// Millisats per PiH equal to `sats_per_eih`.
+pub fn msat_per_pih_from_sats_per_eih(sats_per_eih: f64) -> f64 {
+    sats_per_eih * 1000.0 / 1024.0
+}
+
+/// Sats per EiH equal to `msat_per_pih`, rounded to the nearest sat.
+pub fn sats_per_eih_from_msat_per_pih(msat_per_pih: u64) -> u64 {
+    ((msat_per_pih as u128 * 1024 + 500) / 1000) as u64
+}
+
 /// Millisats per PiH from a hashprice in sats per TH·s.
 pub fn msat_per_pih_from_sats_per_ths(sats_per_ths: f64) -> f64 {
     // 1 PiH = 2^50 hashes = 2^50 / 10^12 TH·s.
@@ -67,6 +92,21 @@ pub fn sats_per_th_day(msat_per_pih: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sats_per_eih_prices_to_the_millisat() {
+        // 1 EiH (2^20 TiH) at 604 sats/EiH costs 604,000 msat.
+        assert_eq!(
+            msat_for_tih_at_sats_per_eih(TIH_PER_EIH, 604),
+            Some(604_000)
+        );
+        // 4,096 TiH (a 2^12 minimum purchase) = 1/256 EiH: 2,359.375 msat, rounded up.
+        assert_eq!(msat_for_tih_at_sats_per_eih(4096, 604), Some(2_360));
+        assert_eq!(msat_for_tih_at_sats_per_eih(u64::MAX, u64::MAX), None);
+        // ~590 msat/PiH is ~604 sats/EiH, and back.
+        assert_eq!(sats_per_eih_from_msat_per_pih(590), 604);
+        assert!((msat_per_pih_from_sats_per_eih(604.0) - 589.84375).abs() < 1e-9);
+    }
 
     #[test]
     fn one_tih_is_256_difficulty_one_shares() {

@@ -366,8 +366,8 @@ impl Tenants {
                 "a Lightning address is required, so buyers can pay you".into(),
             ));
         };
-        if settings.ask_msat_per_pih.is_none() {
-            return Err(bad("set your ask in msat per PiH".into()));
+        if settings.ask_sats_per_eih.is_none() {
+            return Err(bad("set your ask in sats per EiH".into()));
         }
         if !valid_name(name) {
             return Err(bad(RegisterError::InvalidName.to_string()));
@@ -476,10 +476,12 @@ async fn supplier_status(State(ctx): State<SupplierCtx>) -> Response {
     Json(json!({
         "name": ctx.name,
         "mint_url": format!("https://{}", tenants.host_for(&ctx.name)),
-        "selling": s.ask_msat_per_pih.is_some() && s.lightning_address.is_some() && cap.available_tih > 0,
-        "ask_msat_per_pih": s.ask_msat_per_pih,
+        "selling": s.ask_sats_per_eih.is_some() && s.lightning_address.is_some() && cap.available_tih > 0,
+        "ask_sats_per_eih": s.ask_sats_per_eih,
         // The same ask in sats per TH/s per day, to compare with markets.
-        "ask_sats_per_th_day": s.ask_msat_per_pih.map(|m| hashu_core::denom::sats_per_th_day(m as f64)),
+        "ask_sats_per_th_day": s.ask_sats_per_eih.map(|a| {
+            hashu_core::denom::sats_per_th_day(hashu_core::denom::msat_per_pih_from_sats_per_eih(a as f64))
+        }),
         "pays_by_lightning": s.lightning_address.is_some(),
         "capacity": cap,
     }))
@@ -768,7 +770,7 @@ mod tests {
         let t = tenants(dir.path());
         let app = app(&t);
         let op = "mint.example.com";
-        let join = |name: &str, ln: &str| json!({"name": name, "lightning_address": ln, "ask_msat_per_pih": 40_000, "horizon_hours": 24});
+        let join = |name: &str, ln: &str| json!({"name": name, "lightning_address": ln, "ask_sats_per_eih": 600, "horizon_hours": 24});
         let (s, body) = send(
             &app,
             "POST",
@@ -818,8 +820,8 @@ mod tests {
         assert_eq!(s, StatusCode::OK, "{body}");
         let st: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(
-            (st["name"].as_str(), st["ask_msat_per_pih"].as_u64()),
-            (Some("bob"), Some(40_000))
+            (st["name"].as_str(), st["ask_sats_per_eih"].as_u64()),
+            (Some("bob"), Some(600))
         );
         assert_eq!(st["pays_by_lightning"], true);
         // No rigs online: not selling.
@@ -835,7 +837,7 @@ mod tests {
         assert_eq!(s, StatusCode::UNAUTHORIZED);
         let (s, body) = send(&app, "GET", bob, "/api/settings", Some(&secret), None).await;
         assert_eq!(s, StatusCode::OK, "{body}");
-        let short = json!({"ask_msat_per_pih": 45_500, "horizon_hours": 0.5, "lightning_address": "bob@wallet.example"});
+        let short = json!({"ask_sats_per_eih": 620, "horizon_hours": 0.5, "lightning_address": "bob@wallet.example"});
         let (s, _) = send(
             &app,
             "POST",
@@ -846,14 +848,14 @@ mod tests {
         )
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
-        let ok = json!({"ask_msat_per_pih": 45_500, "horizon_hours": 1, "lightning_address": "bob@wallet.example"});
+        let ok = json!({"ask_sats_per_eih": 620, "horizon_hours": 1, "lightning_address": "bob@wallet.example"});
         let (s, body) = send(&app, "POST", bob, "/api/settings", Some(&secret), Some(ok)).await;
         assert_eq!(s, StatusCode::OK, "{body}");
         assert_eq!(
             SupplierSettings::load(&dir.path().join("mints/bob"))
                 .unwrap()
-                .ask_msat_per_pih,
-            Some(45_500)
+                .ask_sats_per_eih,
+            Some(620)
         );
         t.stop_all().await;
     }
@@ -878,7 +880,7 @@ mod tests {
         .await;
         assert_ne!(s, StatusCode::OK);
 
-        let set = json!({"ask_msat_per_pih": 2_500, "horizon_hours": 2});
+        let set = json!({"ask_sats_per_eih": 2_560, "horizon_hours": 2});
         let (s, body) = send(
             &app,
             "POST",
