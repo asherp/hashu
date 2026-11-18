@@ -96,12 +96,12 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
 .mflow .s-pay { stroke: var(--pay); } .mflow .f-pay { fill: var(--pay); }
 .mflow .s-btc { stroke: var(--good); } .mflow .f-btc { fill: var(--good); }
 .mflow .s-kyc { stroke: var(--bad); } .mflow .f-kyc { fill: var(--bad); }
-.mflow .lbl { font: 600 13px ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle; paint-order: stroke; stroke: var(--surface); stroke-width: 5px; }
+.mflow .lbl { font: 600 16px ui-monospace, SFMono-Regular, Menlo, monospace; text-anchor: middle; paint-order: stroke; stroke: var(--surface); stroke-width: 5px; }
 .mflow .node rect { fill: var(--bg); stroke: var(--line); stroke-width: 1.5; }
 .mflow .node.ring-kyc rect { stroke: var(--bad); stroke-width: 2.5; }
 .mflow .node.faded { opacity: 0.4; } .mflow .node.faded rect { stroke-dasharray: 5 4; }
-.mflow .nm { fill: var(--ink); font: 700 16px system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle; }
-.mflow .sub { fill: var(--ink-3); font: 600 10.5px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; text-anchor: middle; }
+.mflow .nm { fill: var(--ink); font: 700 19px system-ui, -apple-system, "Segoe UI", sans-serif; text-anchor: middle; }
+.mflow .sub { fill: var(--ink-3); font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.06em; text-anchor: middle; }
 .mflow .ring-kyc .sub { fill: var(--bad); }
 .flow-key { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 16px 0 0; font-size: 14px; color: var(--ink-2); }
 .flow-key span { display: inline-flex; align-items: center; gap: 8px; }
@@ -179,43 +179,43 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     <div class="flows">
       <div class="card">
         <h3>Today</h3>
-        <svg class="mflow" viewBox="0 0 540 400" role="img" aria-label="Today: the miner sends hashes to a pool for BTC and sells that BTC to an exchange for fiat. A pleb sends fiat to the exchange and gets KYC'd BTC.">
+        <svg class="mflow" viewBox="0 0 640 330" role="img" aria-label="Today: the miner sends hashes to a pool for BTC and sells that BTC to an exchange for fiat. You send fiat to the exchange and gets KYC'd BTC.">
 <defs><marker id="mf-today-hash" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-hash" d="M0,0 L10,5 L0,10 z"/></marker><marker id="mf-today-pay" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-pay" d="M0,0 L10,5 L0,10 z"/></marker><marker id="mf-today-btc" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-btc" d="M0,0 L10,5 L0,10 z"/></marker><marker id="mf-today-kyc" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-kyc" d="M0,0 L10,5 L0,10 z"/></marker></defs>
-<path class="e s-hash" d="M154,190.2 Q203.3,169.2 250.8,90" marker-end="url(#mf-today-hash)"/>
-<path class="e s-btc" d="M200,87.8 Q150.7,108.8 103.2,188" marker-end="url(#mf-today-btc)"/>
-<path class="e s-btc" d="M154,236.1 Q198.7,246.4 245.6,308" marker-end="url(#mf-today-btc)"/>
-<path class="e s-pay" d="M200,323.9 Q155.3,313.6 108.4,252" marker-end="url(#mf-today-pay)"/>
-<path class="e s-pay" d="M386,236.1 Q341.3,246.4 294.4,308" marker-end="url(#mf-today-pay)"/>
-<path class="e s-kyc" d="M340,323.9 Q384.7,313.6 431.6,252" marker-end="url(#mf-today-kyc)"/>
-<text class="lbl f-hash" x="212" y="169.2">hashes</text>
-<text class="lbl f-btc" x="142" y="116.8">BTC</text>
-<text class="lbl f-btc" x="191.7" y="275">BTC</text>
-<text class="lbl f-pay" x="162.3" y="293">fiat</text>
-<text class="lbl f-pay" x="333.2" y="251.5">fiat</text>
-<text class="lbl f-kyc" x="392.8" y="316.5">KYC'd BTC</text>
-<g class="node"><rect x="206" y="32" width="128" height="52" rx="10"/><text class="nm" x="270" y="63">Pool</text></g>
-<g class="node"><rect x="20" y="194" width="128" height="52" rx="10"/><text class="nm" x="84" y="225">Miner</text></g>
-<g class="node ring-kyc"><rect x="206" y="314" width="128" height="52" rx="10"/><text class="nm" x="270" y="338">Exchange</text><text class="sub" x="270" y="355">KYC</text></g>
-<g class="node"><rect x="392" y="194" width="128" height="52" rx="10"/><text class="nm" x="456" y="225">Pleb</text></g>
+<path class="e s-hash" d="M128,209.1 Q216,172 292.4,78" marker-end="url(#mf-today-hash)"/>
+<path class="e s-btc" d="M256,70.9 Q168,108 91.6,202" marker-end="url(#mf-today-btc)"/>
+<path class="e s-btc" d="M128,216 Q192,196 256,216" marker-end="url(#mf-today-btc)"/>
+<path class="e s-pay" d="M256,256 Q192,276 128,256" marker-end="url(#mf-today-pay)"/>
+<path class="e s-pay" d="M512,216 Q448,196 384,216" marker-end="url(#mf-today-pay)"/>
+<path class="e s-kyc" d="M384,256 Q448,276 512,256" marker-end="url(#mf-today-kyc)"/>
+<text class="lbl f-hash" x="221.5" y="175.6">hashes</text>
+<text class="lbl f-btc" x="162.5" y="114.4">BTC</text>
+<text class="lbl f-btc" x="192" y="227">BTC</text>
+<text class="lbl f-pay" x="192" y="255">fiat</text>
+<text class="lbl f-pay" x="448" y="195">fiat</text>
+<text class="lbl f-kyc" x="448" y="287">KYC'd BTC</text>
+<g class="node"><rect x="262" y="16" width="116" height="56" rx="10"/><text class="nm" x="320" y="49">Pool</text></g>
+<g class="node"><rect x="6" y="208" width="116" height="56" rx="10"/><text class="nm" x="64" y="241">Miner</text></g>
+<g class="node ring-kyc"><rect x="262" y="208" width="116" height="56" rx="10"/><text class="nm" x="320" y="234">Exchange</text><text class="sub" x="320" y="251">KYC</text></g>
+<g class="node"><rect x="518" y="208" width="116" height="56" rx="10"/><text class="nm" x="576" y="241">You</text></g>
 </svg>
-        <p>Miners earn bitcoin at the pool, then sell it to an exchange to pay their bills. Everyone else buys those coins back from the exchange, tied to their identity.</p>
+        <p>Miners earn bitcoin at the pool, then sell it to an exchange to pay their bills. You buy those coins back from the exchange, tied to your identity.</p>
       </div>
       <div class="card us">
         <h3>With Hashu</h3>
-        <svg class="mflow" viewBox="0 0 540 400" role="img" aria-label="With Hashu: the miner sells TiH vouchers to the user for sats or USDT. The user redeems the TiH at a pool and receives BTC with no KYC. No exchange is involved.">
+        <svg class="mflow" viewBox="0 0 640 330" role="img" aria-label="With Hashu: the miner sells TiH vouchers to the user for sats or USDT. The user redeems the TiH at a pool and receives BTC with no KYC. No exchange is involved.">
 <defs><marker id="mf-hashu-hash" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-hash" d="M0,0 L10,5 L0,10 z"/></marker><marker id="mf-hashu-pay" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-pay" d="M0,0 L10,5 L0,10 z"/></marker><marker id="mf-hashu-btc" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-btc" d="M0,0 L10,5 L0,10 z"/></marker><marker id="mf-hashu-kyc" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="f-kyc" d="M0,0 L10,5 L0,10 z"/></marker></defs>
-<path class="e s-hash" d="M154,205.7 Q270,182 386,205.7" marker-end="url(#mf-hashu-hash)"/>
-<path class="e s-pay" d="M386,234.3 Q270,258 154,234.3" marker-end="url(#mf-hashu-pay)"/>
-<path class="e s-hash" d="M436.8,188 Q389.3,108.8 340,87.8" marker-end="url(#mf-hashu-hash)"/>
-<path class="e s-btc" d="M289.2,90 Q336.7,169.2 386,190.2" marker-end="url(#mf-hashu-btc)"/>
-<text class="lbl f-hash" x="270" y="211.8">TiH vouchers</text>
-<text class="lbl f-pay" x="270" y="236.2">sats / USDT</text>
-<text class="lbl f-hash" x="398" y="116.8">redeem TiH</text>
-<text class="lbl f-btc" x="328" y="169.2">BTC, no KYC</text>
-<g class="node"><rect x="206" y="32" width="128" height="52" rx="10"/><text class="nm" x="270" y="63">Pool</text></g>
-<g class="node"><rect x="20" y="194" width="128" height="52" rx="10"/><text class="nm" x="84" y="218">Miner</text><text class="sub" x="84" y="235">Hashu mint</text></g>
-<g class="node faded"><rect x="206" y="314" width="128" height="52" rx="10"/><text class="nm" x="270" y="338">Exchange</text><text class="sub" x="270" y="355">NOT NEEDED</text></g>
-<g class="node"><rect x="392" y="194" width="128" height="52" rx="10"/><text class="nm" x="456" y="225">You</text></g>
+<path class="e s-hash" d="M128,217 Q192,198 256,217" marker-end="url(#mf-hashu-hash)"/>
+<path class="e s-pay" d="M256,255 Q192,274 128,255" marker-end="url(#mf-hashu-pay)"/>
+<path class="e s-hash" d="M341.3,202 Q380,140 341.3,78" marker-end="url(#mf-hashu-hash)"/>
+<path class="e s-btc" d="M298.8,78 Q260,140 298.8,202" marker-end="url(#mf-hashu-btc)"/>
+<text class="lbl f-hash" x="192" y="228.5">TiH vouchers</text>
+<text class="lbl f-pay" x="192" y="253.5">sats / USDT</text>
+<text class="lbl f-hash" x="374.6" y="145">redeem TiH</text>
+<text class="lbl f-btc" x="265.4" y="145">BTC, no KYC</text>
+<g class="node"><rect x="262" y="16" width="116" height="56" rx="10"/><text class="nm" x="320" y="49">Pool</text></g>
+<g class="node"><rect x="6" y="208" width="116" height="56" rx="10"/><text class="nm" x="64" y="234">Miner</text><text class="sub" x="64" y="251">Hashu mint</text></g>
+<g class="node faded"><rect x="518" y="208" width="116" height="56" rx="10"/><text class="nm" x="576" y="234">Exchange</text><text class="sub" x="576" y="251">NOT NEEDED</text></g>
+<g class="node"><rect x="262" y="208" width="116" height="56" rx="10"/><text class="nm" x="320" y="241">You</text></g>
 </svg>
         <p>You pay the miner in sats or USDT and get TiH vouchers. Redeeming them points the miner's hashrate at your pool, which pays you bitcoin directly. No exchange in between.</p>
       </div>
