@@ -304,7 +304,10 @@ pub fn router(state: Arc<CheckoutState>) -> axum::Router {
         .route("/checkout/", get(page))
         .route("/checkout/scan.js", get(scan_js))
         .route("/checkout/change.js", get(change_js))
-        .route("/checkout/api/info", get(info).layer(from_fn(allow_any_origin)))
+        .route(
+            "/checkout/api/info",
+            get(info).layer(from_fn(allow_any_origin)),
+        )
         .route("/checkout/api/buy", post(buy))
         .route("/checkout/api/buy/{id}", get(buy_status))
         .route("/checkout/api/token", post(check_token))
