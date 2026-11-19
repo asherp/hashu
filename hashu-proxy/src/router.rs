@@ -36,7 +36,15 @@
 //! - **Fairness.** An order with no rig waiting longer than
 //!   [`STARVE_AFTER`] is served first (oldest first), then orders with no
 //!   rig at all, then the rest.
-//! - **Fallback.** Until a rig has a hashrate estimate ([`MIN_RATE_SHARES`]
+//! - **Fallback pools.** A redemption lists its pool and up to
+//!   [`hashu_core::redemption::MAX_FALLBACK_POOLS`] fallbacks. A pool that
+//!   can't be dialed, refuses the authorize, drops the session or rejects
+//!   [`REJECT_LIMIT`] shares in a row is marked down for that redemption
+//!   for [`FALLBACK_HOLD`], and its rigs move to the next pool on the
+//!   list. Shares on any of its pools fill the same redemption. Once the
+//!   hold ends, rigs on a fallback try the earlier pool again (seamless
+//!   mode only). With every pool down the rig idles.
+//! - **Unrated rigs.** Until a rig has a hashrate estimate ([`MIN_RATE_SHARES`]
 //!   shares over [`MIN_RATE_WINDOW`]) it goes to the order with the fewest
 //!   connections, oldest first, as before. With one miner, redemptions are
 //!   served in melt order.
@@ -65,10 +73,16 @@ use crate::suppliers::{Check, SupplierRegistry};
 pub const REFUSE_WRONG_SECRET: &str = "wrong or missing pw= for supplier";
 use crate::upstream::normalize_upstream;
 
-/// How long a connection that fell back to the default pool (redeemer's
-/// pool unreachable) stays there before it is retried. Stops a dead pool
-/// URL from turning into a reconnect loop on every reconcile tick.
+/// How long a redeemer's pool that failed (unreachable, refused the
+/// authorize, dropped the session or kept rejecting shares) is skipped for
+/// that redemption, and how long a connection with no pool left to try
+/// stays on its idle pool. Stops a dead pool URL from turning into a
+/// reconnect loop on every reconcile tick.
 pub const FALLBACK_HOLD: Duration = Duration::from_secs(60);
+
+/// Shares in a row a redeemer's pool may reject, with none accepted,
+/// before the proxy treats it as refusing the work and fails over.
+pub const REJECT_LIMIT: u32 = 10;
 
 /// How long the rigs on an order should take to finish it. Orders whose
 /// assigned hashrate would finish sooner are capped, and a rig fits an
@@ -155,6 +169,9 @@ pub enum Route {
     /// the authorize password to `worker_password`.
     Redemption {
         id: RedemptionId,
+        /// Which of the redemption's pools: 0 = its primary, then its
+        /// fallbacks in order (see [`Redemption::pools`]).
+        pool: usize,
         upstream: String,
         worker_name: String,
         worker_password: String,
@@ -169,6 +186,14 @@ impl Route {
             Route::Default { upstream }
             | Route::Home { upstream, .. }
             | Route::Redemption { upstream, .. } => upstream,
+        }
+    }
+
+    /// The redemption this route serves and which of its pools, if any.
+    pub fn redemption_pool(&self) -> Option<(RedemptionId, usize)> {
+        match self {
+            Route::Redemption { id, pool, .. } => Some((*id, *pool)),
+            _ => None,
         }
     }
 
@@ -379,6 +404,9 @@ struct Inner {
     unserved_since: HashMap<RedemptionId, Instant>,
     /// Work each supplier delivered to redemptions, in hashes.
     delivered: HashMap<String, f64>,
+    /// When each (redemption, pool index) last failed. Skipped while
+    /// younger than [`FALLBACK_HOLD`].
+    pool_down: HashMap<(RedemptionId, usize), Instant>,
 }
 
 /// Shared routing state. One per proxy process.
@@ -513,21 +541,53 @@ impl Router {
         }
     }
 
-    /// The redeemer's pool could not be dialed: put this connection on
-    /// the default pool instead so the miner keeps working. The
-    /// redemption stays open and the next connection tries it again.
-    /// "Default" here is the connection's idle route: its home pool if it
-    /// has one.
-    pub fn fall_back_to_default(&self, conn: ConnectionId) -> Route {
+    /// The redeemer's pool this connection is on could not be dialed:
+    /// mark it down for the redemption and move the connection to the
+    /// redemption's next healthy fallback pool, or, with none left, to
+    /// its idle route (its home pool if it has one, else the default
+    /// pool) so the miner keeps working. The redemption stays open.
+    pub fn fail_over(&self, conn: ConnectionId) -> Route {
+        let now = Instant::now();
+        let current = self.lock().conns.get(&conn).map(|b| b.route.clone());
+        let Some(current) = current else {
+            return self.idle_route(None);
+        };
+        let next = current.redemption_pool().and_then(|(id, pool)| {
+            let r = self.ledger.get(&id)?;
+            let mut inner = self.lock();
+            inner.mark_down(id, pool, now);
+            redemption_route(&r, &inner, now)
+        });
         let mut inner = self.lock();
         match inner.conns.get_mut(&conn) {
             Some(b) => {
-                b.route = b.idle.clone();
-                b.fell_back_at = Some(Instant::now());
+                match next {
+                    Some(route) => {
+                        tracing::warn!(%conn, redemption = ?route.redemption_id().map(|i| i.to_string()), upstream = route.upstream(), "failing over to the redeemer's next pool");
+                        b.route = route;
+                    }
+                    None => {
+                        b.route = b.idle.clone();
+                        b.fell_back_at = Some(now);
+                    }
+                }
                 b.route.clone()
             }
             None => self.idle_route(None),
         }
+    }
+
+    /// The redeemer's pool `route` points at failed for this connection
+    /// while it was in use: it closed the session, refused the authorize
+    /// or kept rejecting shares. Mark it down for the redemption so this
+    /// and other connections move to the next pool on the list (on the
+    /// next reconcile, or when the miner reconnects).
+    pub fn pool_failed(&self, conn: ConnectionId, route: &Route, why: &str) {
+        let Some((id, pool)) = route.redemption_pool() else {
+            return;
+        };
+        tracing::warn!(%conn, redemption = %id, pool, upstream = route.upstream(), reason = %why, "redeemer's pool failed; marking it down");
+        self.lock().mark_down(id, pool, Instant::now());
     }
 
     /// The miner's authorize arrived after the connection was placed
@@ -752,13 +812,22 @@ impl Router {
     }
 
     /// A seamless switch to `target` failed and `conn` stayed where it
-    /// was. A redeemer's pool that failed is not retried on this
-    /// connection for [`FALLBACK_HOLD`].
+    /// was. A redeemer's pool that failed is marked down for that
+    /// redemption for [`FALLBACK_HOLD`], so the next reconcile tries its
+    /// next fallback pool; with none left, this connection is not moved
+    /// to a redemption for that long.
     pub fn switch_failed(&self, conn: ConnectionId, target: &Route) {
+        let now = Instant::now();
+        let left = target.redemption_pool().and_then(|(id, pool)| {
+            let r = self.ledger.get(&id)?;
+            let mut inner = self.lock();
+            inner.mark_down(id, pool, now);
+            redemption_route(&r, &inner, now)
+        });
         if let Some(b) = self.lock().conns.get_mut(&conn) {
             b.pending = None;
-            if target.redemption_id().is_some() {
-                b.fell_back_at = Some(Instant::now());
+            if target.redemption_id().is_some() && left.is_none() {
+                b.fell_back_at = Some(now);
             }
             b.quiet();
         }
@@ -807,11 +876,28 @@ impl Router {
                 }
                 let mine = b.serves.filter(&active);
                 match &b.route {
-                    Route::Redemption { id, .. } => {
-                        if mine.iter().any(|r| r.id == *id) {
-                            continue;
-                        }
-                        if b.holding() {
+                    Route::Redemption { id, pool, .. } => {
+                        if let Some(r) = mine.iter().find(|r| r.id == *id) {
+                            // Still open: stay unless its pool went down
+                            // (move to the next one) or an earlier pool is
+                            // back (try it again, in place only).
+                            match redemption_route(r, &inner, now) {
+                                Some(best) => {
+                                    let to = best.redemption_pool().map_or(0, |(_, p)| p);
+                                    if to == *pool
+                                        || (to < *pool && self.mode != SwitchMode::Seamless)
+                                    {
+                                        continue;
+                                    }
+                                    if to > *pool && !inner.is_down(*id, *pool, now) {
+                                        continue;
+                                    }
+                                    best
+                                }
+                                // Every pool of it is down.
+                                None => pick_route(&mine, &inner, Some(conn), now, &b.idle),
+                            }
+                        } else if b.holding() {
                             b.idle.clone()
                         } else {
                             pick_route(&mine, &inner, Some(conn), now, &b.idle)
@@ -846,6 +932,20 @@ impl Router {
             }
             signalled += 1;
         }
+        // Tell the ledger which pool each redemption's rigs are on (the
+        // earliest one if they are split), for status pages.
+        let mut serving: HashMap<RedemptionId, usize> = HashMap::new();
+        for b in inner.conns.values() {
+            if let Some((id, pool)) = b.route.redemption_pool() {
+                let e = serving.entry(id).or_insert(pool);
+                *e = (*e).min(pool);
+            }
+        }
+        inner.pool_down.retain(|(id, _), t| {
+            active.iter().any(|r| r.id == *id) && now.saturating_duration_since(*t) < FALLBACK_HOLD
+        });
+        drop(inner);
+        self.ledger.set_serving_pools(serving);
         signalled
     }
 
@@ -878,13 +978,17 @@ impl Router {
         }
     }
 
-    /// Active redemptions the proxy can actually dial, oldest first.
+    /// Active redemptions with at least one pool the proxy can dial,
+    /// oldest first.
     fn routable_active(&self) -> Vec<Redemption> {
         self.ledger
             .active()
             .into_iter()
             .filter(|r| {
-                let ok = upstream_for_pool_url(&r.pool_url).is_some();
+                let ok = r
+                    .pools()
+                    .iter()
+                    .any(|p| upstream_for_pool_url(&p.pool_url).is_some());
                 if !ok {
                     tracing::warn!(redemption = %r.id, pool_url = %r.pool_url, "redemption pool URL not routable (needs stratum+tcp:// or stratum+ssl:// with a port); skipping");
                 }
@@ -915,6 +1019,16 @@ impl RedemptionBinding for Router {
 }
 
 impl Inner {
+    fn mark_down(&mut self, id: RedemptionId, pool: usize, now: Instant) {
+        self.pool_down.insert((id, pool), now);
+    }
+
+    fn is_down(&self, id: RedemptionId, pool: usize, now: Instant) -> bool {
+        self.pool_down
+            .get(&(id, pool))
+            .is_some_and(|t| now.saturating_duration_since(*t) < FALLBACK_HOLD)
+    }
+
     /// Keep [`Inner::unserved_since`] in step with `active`: start the
     /// clock for an order that has no rig heading to it, stop it once one
     /// is, forget orders that are gone.
@@ -934,9 +1048,28 @@ impl Inner {
     }
 }
 
+/// The route to `r`'s first pool that the proxy can dial and that is not
+/// marked down, or `None` if every one is.
+fn redemption_route(r: &Redemption, inner: &Inner, now: Instant) -> Option<Route> {
+    r.pools().into_iter().enumerate().find_map(|(pool, p)| {
+        if inner.is_down(r.id, pool, now) {
+            return None;
+        }
+        let upstream = upstream_for_pool_url(&p.pool_url)?;
+        Some(Route::Redemption {
+            id: r.id,
+            pool,
+            upstream,
+            worker_password: p.authorize_password().to_string(),
+            worker_name: p.worker_name,
+        })
+    })
+}
+
 /// One active order as [`pick_route`] sees it.
-struct Order<'a> {
-    r: &'a Redemption,
+struct Order {
+    /// Where its rigs go: its first healthy pool.
+    route: Route,
     /// Index in melt order (oldest first).
     age: usize,
     /// Connections heading to it, other than the one being placed.
@@ -966,7 +1099,8 @@ fn pick_route(
     let orders: Vec<Order> = active
         .iter()
         .enumerate()
-        .map(|(age, r)| {
+        .filter_map(|(age, r)| Some((age, r, redemption_route(r, inner, now)?)))
+        .map(|(age, r, route)| {
             let mut load = 0;
             let mut assigned = 0.0;
             for (c, b) in &inner.conns {
@@ -983,7 +1117,7 @@ fn pick_route(
                     .get(&r.id)
                     .is_some_and(|t| now.saturating_duration_since(*t) >= STARVE_AFTER);
             Order {
-                r,
+                route,
                 age,
                 load,
                 room: remaining / target_run - assigned,
@@ -1023,13 +1157,8 @@ fn pick_route(
             fit.then(a.age.cmp(&b.age))
         });
 
-    match best.and_then(|o| upstream_for_pool_url(&o.r.pool_url).map(|u| (o.r, u))) {
-        Some((r, upstream)) => Route::Redemption {
-            id: r.id,
-            upstream,
-            worker_name: r.worker_name.clone(),
-            worker_password: r.authorize_password().to_string(),
-        },
+    match best {
+        Some(o) => o.route.clone(),
         None => idle.clone(),
     }
 }
@@ -1163,6 +1292,7 @@ mod tests {
             a.route,
             Route::Redemption {
                 id: rid(1),
+                pool: 0,
                 upstream: "alice:3333".into(),
                 worker_name: "alice.w".into(),
                 worker_password: "x".into(),
@@ -1251,12 +1381,141 @@ mod tests {
         let router = Router::new("default:3333", ledger);
         let a = router.assign(ConnectionId::next());
         assert_eq!(router.current(a.conn), Some(rid(1)));
-        let r = router.fall_back_to_default(a.conn);
+        let r = router.fail_over(a.conn);
         assert_eq!(router.current(a.conn), None);
         assert_eq!(r.redemption_id(), None);
         assert_eq!(router.route_of(a.conn), Some(r));
         // A fresh fallback is not kicked straight back onto the dead pool.
         assert_eq!(router.reconcile(), 0);
+    }
+
+    fn open_with_fallbacks(ledger: &RedemptionLedger, n: u8, pools: &[&str]) {
+        let fallbacks = pools[1..]
+            .iter()
+            .enumerate()
+            .map(|(i, p)| hashu_core::redemption::PoolTarget {
+                pool_url: (*p).into(),
+                worker_name: format!("w{}", i + 1),
+                worker_password: None,
+            })
+            .collect();
+        ledger
+            .open(
+                Redemption::new(rid(n), 1, pools[0].into(), "w0".into()).with_fallbacks(fallbacks),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn unreachable_primary_fails_over_to_the_next_pool() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        open_with_fallbacks(
+            &ledger,
+            1,
+            &[
+                "stratum+tcp://main:3333",
+                "stratum+tcp://backup:3333",
+                "stratum+tcp://third:3333",
+            ],
+        );
+        let router = Router::new("default:3333", ledger.clone());
+        let a = router.assign(ConnectionId::next());
+        assert_eq!(a.route.redemption_pool(), Some((rid(1), 0)));
+        // Dial fails: next pool, with its own worker, same redemption.
+        let r = router.fail_over(a.conn);
+        assert_eq!(r.redemption_pool(), Some((rid(1), 1)));
+        assert_eq!(r.upstream(), "backup:3333");
+        assert_eq!(r.credentials(), Some(("w1", "x")));
+        assert_eq!(router.current(a.conn), Some(rid(1)));
+        // A new rig skips the dead primary too.
+        let b = router.assign(ConnectionId::next());
+        assert_eq!(b.route.redemption_pool(), Some((rid(1), 1)));
+        // Then the third pool, then the default pool.
+        assert_eq!(
+            router.fail_over(a.conn).redemption_pool(),
+            Some((rid(1), 2))
+        );
+        assert_eq!(router.fail_over(a.conn).redemption_id(), None);
+        assert_eq!(router.reconcile(), 1, "b moves off the dead backup");
+    }
+
+    #[test]
+    fn a_failing_pool_moves_live_rigs_to_the_fallback_and_back() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        open_with_fallbacks(
+            &ledger,
+            1,
+            &["stratum+tcp://main:3333", "stratum+tcp://backup:3333"],
+        );
+        let router = Router::new("default:3333", ledger.clone());
+        let a = router.assign(ConnectionId::next());
+        let b = router.assign(ConnectionId::next());
+        assert_eq!(router.reconcile(), 0);
+        assert_eq!(ledger.serving_pool(&rid(1)), Some(0));
+
+        // The primary starts rejecting a's work: both rigs move over.
+        router.pool_failed(a.conn, &a.route, "rejects");
+        assert_eq!(router.reconcile(), 2);
+        for x in [&a, &b] {
+            let t = switch_target(x);
+            assert_eq!(t.redemption_pool(), Some((rid(1), 1)));
+            router.switched(x.conn, t);
+        }
+        assert_eq!(router.reconcile(), 0);
+        assert_eq!(ledger.serving_pool(&rid(1)), Some(1));
+        // Shares on the fallback still fill the same redemption.
+        assert_eq!(router.current(a.conn), Some(rid(1)));
+
+        // Once the hold is over the primary is tried again.
+        let later = Instant::now() + FALLBACK_HOLD + Duration::from_secs(1);
+        assert_eq!(router.reconcile_at(later), 2);
+        assert_eq!(switch_target(&a).redemption_pool(), Some((rid(1), 0)));
+        // That probe fails: the rig stays on the fallback.
+        router.switch_failed(a.conn, &switch_target(&a));
+        assert_eq!(
+            router.route_of(a.conn).unwrap().redemption_pool(),
+            Some((rid(1), 1))
+        );
+        assert_eq!(router.current(a.conn), Some(rid(1)));
+    }
+
+    #[test]
+    fn failed_switch_tries_the_fallback_next() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let a = router.assign(ConnectionId::next());
+        open_with_fallbacks(
+            &ledger,
+            1,
+            &["stratum+tcp://dead:3333", "stratum+tcp://backup:3333"],
+        );
+        assert_eq!(router.reconcile(), 1);
+        let t = switch_target(&a);
+        assert_eq!(t.redemption_pool(), Some((rid(1), 0)));
+        router.switch_failed(a.conn, &t);
+        // Not held on the default pool: the backup is tried right away.
+        assert_eq!(router.reconcile(), 1);
+        assert_eq!(switch_target(&a).redemption_pool(), Some((rid(1), 1)));
+    }
+
+    #[test]
+    fn reconnect_mode_stays_on_the_fallback() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        open_with_fallbacks(
+            &ledger,
+            1,
+            &["stratum+tcp://main:3333", "stratum+tcp://backup:3333"],
+        );
+        let router =
+            Router::new("default:3333", ledger.clone()).with_switch_mode(SwitchMode::Reconnect);
+        let a = router.assign(ConnectionId::next());
+        assert_eq!(
+            router.fail_over(a.conn).redemption_pool(),
+            Some((rid(1), 1))
+        );
+        let later = Instant::now() + FALLBACK_HOLD + Duration::from_secs(1);
+        // No kick just to probe the primary again.
+        assert_eq!(router.reconcile_at(later), 0);
     }
 
     fn switch_target(a: &Assignment) -> Route {
@@ -1605,7 +1864,7 @@ mod tests {
         open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
         let a = router.assign_with(ConnectionId::next(), Some(&serde_json::json!([ADDR, "x"])));
         assert_eq!(a.route.redemption_id(), Some(rid(1)));
-        let r = router.fall_back_to_default(a.conn);
+        let r = router.fail_over(a.conn);
         assert!(matches!(r, Route::Home { .. }), "{r:?}");
     }
 

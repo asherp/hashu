@@ -10,7 +10,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use hashu_core::redemption::{Redemption, RedemptionId, RedemptionLedger, RedemptionState};
+use hashu_core::redemption::{
+    PoolTarget, Redemption, RedemptionId, RedemptionLedger, RedemptionState,
+};
 use hashu_proxy::credit::{CreditContext, ShareCrediter};
 use hashu_proxy::router::{Router, SwitchMode};
 use hashu_proxy::stratum::run_routed_listener;
@@ -31,6 +33,11 @@ type Seen = mpsc::UnboundedSender<(&'static str, String, String)>;
 /// A pool that answers subscribe/authorize, then sends `difficulty` and
 /// one job, and accepts every submit. Reports each authorize and submit.
 async fn fake_pool(name: &'static str, difficulty: f64, seen: Seen) -> String {
+    pool_with(name, difficulty, seen, true).await
+}
+
+/// Like [`fake_pool`], but `accept: false` refuses every authorize.
+async fn pool_with(name: &'static str, difficulty: f64, seen: Seen, accept: bool) -> String {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap().to_string();
     tokio::spawn(async move {
@@ -53,6 +60,14 @@ async fn fake_pool(name: &'static str, difficulty: f64, seen: Seen) -> String {
                         "mining.authorize" | "mining.submit" => {
                             let worker = v["params"][0].as_str().unwrap().to_string();
                             let _ = seen.send((name, method.clone(), worker));
+                            if !accept {
+                                out.push(serde_json::json!({"id": id, "result": false, "error": [24, "unknown worker", null]}));
+                                for o in out.drain(..) {
+                                    w.write_all(format!("{o}\n").as_bytes()).await.unwrap();
+                                }
+                                line.clear();
+                                continue;
+                            }
                             out.push(serde_json::json!({"id": id, "result": true, "error": null}));
                             if method == "mining.authorize" {
                                 out.push(serde_json::json!({"id": null, "method": "mining.set_difficulty", "params": [difficulty]}));
@@ -242,4 +257,109 @@ async fn unreachable_redeemer_pool_falls_back_to_default() {
     // Held on the default pool rather than kicked straight back.
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(seen.try_recv().is_err());
+}
+
+fn backup(addr: &str, worker: &str) -> PoolTarget {
+    PoolTarget {
+        pool_url: format!("stratum+tcp://{addr}"),
+        worker_name: worker.into(),
+        worker_password: None,
+    }
+}
+
+#[tokio::test]
+async fn unreachable_primary_fails_over_to_the_redeemers_backup_pool() {
+    let (tx, mut seen) = mpsc::unbounded_channel();
+    let default_pool = fake_pool("default", 1.0, tx.clone()).await;
+    let backup_pool = fake_pool("backup", 256.0, tx).await;
+    let dead = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead_addr = dead.local_addr().unwrap();
+    drop(dead);
+
+    let ledger = Arc::new(RedemptionLedger::new());
+    let id = RedemptionId::from_bytes([2; 16]);
+    ledger
+        .open(
+            Redemption::new(
+                id,
+                4,
+                format!("stratum+tcp://{dead_addr}"),
+                "alice.rig".into(),
+            )
+            .with_fallbacks(vec![backup(&backup_pool, "alice.backup")]),
+        )
+        .unwrap();
+    let router = Arc::new(Router::new(default_pool, ledger.clone()));
+    let credit = CreditContext::new(Arc::new(ShareCrediter::new(ledger.clone())), router.clone());
+    let proxy = spawn_proxy(router, Some(credit)).await;
+
+    // The primary can't be dialed: the miner lands on the backup pool as
+    // the backup's worker, not on the operator's pool.
+    let mut m = Miner::connect(&proxy).await;
+    assert_eq!(
+        seen.recv().await.unwrap(),
+        seen_auth("backup", "alice.backup")
+    );
+
+    // Its shares fill the same redemption (difficulty 256 = 1 TiH).
+    m.submit(3).await;
+    assert!(m.line().await.unwrap().contains("true"));
+    assert_eq!(
+        seen.recv().await.unwrap(),
+        ("backup", "mining.submit".into(), "alice.backup".into())
+    );
+    assert_eq!(ledger.get(&id).unwrap().delivered_tih(), 1);
+}
+
+#[tokio::test]
+async fn refused_authorize_fails_over_to_the_backup_pool() {
+    let (tx, mut seen) = mpsc::unbounded_channel();
+    let default_pool = fake_pool("default", 1.0, tx.clone()).await;
+    let refusing = pool_with("refusing", 256.0, tx.clone(), false).await;
+    let backup_pool = fake_pool("backup", 256.0, tx).await;
+
+    let ledger = Arc::new(RedemptionLedger::new());
+    let id = RedemptionId::from_bytes([3; 16]);
+    ledger
+        .open(
+            Redemption::new(
+                id,
+                4,
+                format!("stratum+tcp://{refusing}"),
+                "typo.rig".into(),
+            )
+            .with_fallbacks(vec![backup(&backup_pool, "alice.backup")]),
+        )
+        .unwrap();
+    let router =
+        Arc::new(Router::new(default_pool, ledger.clone()).with_switch_mode(SwitchMode::Reconnect));
+    let credit = CreditContext::new(Arc::new(ShareCrediter::new(ledger.clone())), router.clone());
+    let proxy = spawn_proxy(router, Some(credit)).await;
+
+    // The primary refuses the worker; the proxy marks it down and drops
+    // the miner, which reconnects onto the backup.
+    let sock = TcpStream::connect(&proxy).await.unwrap();
+    let (r, w) = sock.into_split();
+    let mut m = Miner {
+        r: BufReader::new(r),
+        w,
+    };
+    m.send(r#"{"id":1,"method":"mining.subscribe","params":["test/1.0"]}"#)
+        .await;
+    m.send(r#"{"id":2,"method":"mining.authorize","params":["miner.1","pw"]}"#)
+        .await;
+    assert_eq!(
+        seen.recv().await.unwrap(),
+        seen_auth("refusing", "typo.rig")
+    );
+    m.wait_closed().await;
+
+    let mut m = Miner::connect(&proxy).await;
+    assert_eq!(
+        seen.recv().await.unwrap(),
+        seen_auth("backup", "alice.backup")
+    );
+    m.submit(3).await;
+    assert!(m.line().await.unwrap().contains("true"));
+    assert_eq!(ledger.get(&id).unwrap().delivered_tih(), 1);
 }

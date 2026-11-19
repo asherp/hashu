@@ -461,6 +461,9 @@ async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
         "tih_per_pih": hashu_core::denom::TIH_PER_PIH,
         "tih_per_thh": hashu_core::denom::TIH_PER_THH,
         "min_redeem_tih": s.min_redeem_tih,
+        // Backup pools a redemption may list after its own (melt request
+        // field `fallback_pools`).
+        "max_fallback_pools": hashu_core::redemption::MAX_FALLBACK_POOLS,
         "max_tih": s.max_tih,
         "mint_url": s.public_url,
         // The operator's Hashu wallet; null when it runs none.
@@ -853,12 +856,56 @@ pub(crate) struct RedeemTarget {
     pub pool_url: String,
     pub worker: String,
     pub password: Option<String>,
+    /// Pools to fail over to, in order (see `HashrateRequest`).
+    pub fallbacks: Vec<hashu_core::redemption::PoolTarget>,
 }
 
 impl RedeemTarget {
-    /// `{ pool_url, worker_name, worker_password? }` from a request body.
+    /// `{ pool_url, worker_name, worker_password?, fallback_pools? }` from
+    /// a request body. `fallback_pools` is a list of `{ pool_url,
+    /// worker_name, worker_password? }`; entries with an empty URL are
+    /// skipped.
     #[allow(clippy::result_large_err)]
     fn from_json(v: &Value) -> Result<Self, Response> {
+        let mut t = Self::primary_from_json(v)?;
+        let list = match &v["fallback_pools"] {
+            Value::Null => Vec::new(),
+            Value::Array(a) => a.clone(),
+            _ => {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "fallback_pools must be a list",
+                ))
+            }
+        };
+        for (i, p) in list.iter().enumerate() {
+            if p["pool_url"].as_str().unwrap_or_default().trim().is_empty() {
+                continue;
+            }
+            let f = Self::primary_from_json(p).map_err(|_| {
+                err(
+                    StatusCode::BAD_REQUEST,
+                    format!("backup pool {}: needs a stratum+tcp:// or stratum+ssl:// URL with a port, and a worker name", i + 1),
+                )
+            })?;
+            t.fallbacks.push(hashu_core::redemption::PoolTarget {
+                pool_url: f.pool_url,
+                worker_name: f.worker,
+                worker_password: f.password,
+            });
+        }
+        let max = hashu_core::redemption::MAX_FALLBACK_POOLS;
+        if t.fallbacks.len() > max {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                format!("at most {max} backup pools"),
+            ));
+        }
+        Ok(t)
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn primary_from_json(v: &Value) -> Result<Self, Response> {
         let field = |k: &str| v[k].as_str().unwrap_or_default().trim().to_string();
         let pool_url = field("pool_url");
         let worker = field("worker_name");
@@ -877,6 +924,7 @@ impl RedeemTarget {
             pool_url,
             worker,
             password,
+            fallbacks: Vec::new(),
         })
     }
 }
@@ -902,6 +950,9 @@ async fn spend_for_hashrate(
     });
     if let Some(pw) = &target.password {
         request["worker_password"] = json!(pw);
+    }
+    if !target.fallbacks.is_empty() {
+        request["fallback_pools"] = json!(target.fallbacks);
     }
     let request = request.to_string();
     let rid = redemption_id_for(&request);
@@ -1427,10 +1478,21 @@ fn redemption_json(s: &CheckoutState, rid: &RedemptionId) -> Option<Value> {
     let id = rid.to_string();
     let track = s.meter.tracks().into_iter().find(|t| t.id == id);
     let filled = r.accumulated_hashes as f64 / HASHES_PER_TIH as f64;
+    let pools = r.pools();
+    // Which pool is getting the hashrate now: 0 = `pool_url`, then the
+    // fallbacks in order; null while no rig is on it.
+    let serving = s.ledger.serving_pool(rid).filter(|i| *i < pools.len());
     Some(json!({
             "id": id,
             "pool_url": r.pool_url,
             "worker_name": r.worker_name,
+            // Passwords stay out: this route is public.
+            "fallback_pools": r.fallbacks.iter().map(|p| json!({
+                "pool_url": p.pool_url,
+                "worker_name": p.worker_name,
+            })).collect::<Vec<_>>(),
+            "serving_pool": serving,
+            "serving_pool_url": serving.map(|i| pools[i].pool_url.clone()),
             "amount_tih": r.amount_tih,
             "floor_tih": r.floor_tih,
             "filled_tih": filled,
@@ -1763,6 +1825,61 @@ mod tests {
             let (code, _, v) = call(&s, paying(&t), body(Some(4))).await;
             assert_eq!(code, StatusCode::BAD_REQUEST, "{v}");
             assert_eq!(s.ledger.all().len(), 1);
+        }
+
+        #[tokio::test]
+        async fn backup_pools_ride_along_with_the_redemption() {
+            let s = start().await;
+            let t = token(&s, 4).await;
+            let req = Bytes::from(
+                json!({
+                    "pool_url": "stratum+tcp://pool.example:3333",
+                    "worker_name": "alice.rig1",
+                    "amount_tih": 4,
+                    "fallback_pools": [
+                        { "pool_url": "stratum+ssl://backup.example:443", "worker_name": "alice.b", "worker_password": "pw" },
+                        { "pool_url": "", "worker_name": "" },
+                    ],
+                })
+                .to_string(),
+            );
+            let (code, _, v) = call(&s, paying(&t), req).await;
+            assert_eq!(code, StatusCode::OK, "{v}");
+            let rid = parse_id(v["redemption_id"].as_str().unwrap()).unwrap();
+            let mut r = None;
+            for _ in 0..100 {
+                r = s.ledger.get(&rid);
+                if r.is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            let r = r.expect("redemption in the ledger");
+            assert_eq!(r.fallbacks.len(), 1);
+            assert_eq!(r.fallbacks[0].pool_url, "stratum+ssl://backup.example:443");
+            assert_eq!(r.fallbacks[0].authorize_password(), "pw");
+            // The public status lists the backup, without its password.
+            let st = redemption_json(&s, &rid).unwrap();
+            assert_eq!(st["fallback_pools"][0]["worker_name"], "alice.b");
+            assert!(!st.to_string().contains("\"pw\""));
+            assert_eq!(st["serving_pool"], Value::Null);
+            s.ledger.set_serving_pools([(rid, 1)].into_iter().collect());
+            let st = redemption_json(&s, &rid).unwrap();
+            assert_eq!(st["serving_pool_url"], "stratum+ssl://backup.example:443");
+
+            // A bad backup is a 400 before any payment.
+            let bad = Bytes::from(
+                json!({
+                    "pool_url": "stratum+tcp://pool.example:3333",
+                    "worker_name": "w",
+                    "fallback_pools": [{ "pool_url": "https://x", "worker_name": "w" }],
+                })
+                .to_string(),
+            );
+            assert_eq!(
+                call(&s, HeaderMap::new(), bad).await.0,
+                StatusCode::BAD_REQUEST
+            );
         }
 
         #[tokio::test]
