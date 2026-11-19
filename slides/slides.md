@@ -17,7 +17,7 @@ transition: slide-left
 mdc: true
 ---
 
-<div class="flex items-center gap-3 text-2xl font-bold"><svg viewBox="0 0 32 32" style="width:44px;height:44px" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#f7931a"/><path d="M10 7v18M22 7v18M10 16h12" stroke="#111" stroke-width="3.4" stroke-linecap="round"/></svg> Hashu</div>
+<div class="flex items-center gap-3 text-2xl font-bold"><svg viewBox="0 0 32 32" style="width:44px;height:44px" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#f7931a"/><path d="M10.5 6V20A5.5 5.5 0 0 0 21.5 20V6" stroke="#111" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M5 11.5H27M5 18H27" stroke="#111" stroke-width="2.6" stroke-linecap="round"/></svg> Hashu</div>
 
 <h1 class="hashu-h1">Chaumian vouchers for <span>hashrate</span>.</h1>
 
