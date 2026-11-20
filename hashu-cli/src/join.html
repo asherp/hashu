@@ -56,10 +56,11 @@ code { font:14px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-a
 
   <div class="card" id="done" hidden>
     <h2 style="margin-top:0">Your mint is live</h2>
-    <div class="warn">Save your worker secret now. It is shown once and only its hash is stored.</div>
+    <div class="warn">Save both secrets now. They are shown once and only their hashes are stored.</div>
     <table>
       <tr><td>Mint</td><td><a id="mint"></a></td></tr>
-      <tr><td>Worker secret</td><td><code id="secret"></code></td></tr>
+      <tr><td>Dashboard key</td><td><code id="key"></code> <span class="hint">opens your mint's settings; keep it private and never put it in a rig</span></td></tr>
+      <tr><td>Rig secret</td><td><code id="secret"></code> <span class="hint">goes in each rig's password; it only proves the rig is yours</span></td></tr>
     </table>
     <h3>AxeOS settings for each rig</h3>
     <table>
@@ -68,7 +69,7 @@ code { font:14px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-a
       <tr><td>User</td><td><code id="s-user"></code> <span class="hint">one name per rig, e.g. rig1</span></td></tr>
       <tr><td>Password</td><td><code id="s-pass"></code> <span class="hint">add <code>,pool=host:port</code> for your own pool while idle</span></td></tr>
     </table>
-    <p>Your mint sells as soon as your rigs are online. Change your ask, horizon or address on your mint's page.</p>
+    <p>Your mint sells as soon as your rigs are online. Change your ask, horizon or address on your mint's page with your dashboard key.</p>
   </div>
 </main>
 <script>
@@ -104,6 +105,7 @@ $('join').addEventListener('submit', async (e) => {
     $('mint').textContent = j.mint_url;
     $('mint').href = j.mint_url;
     $('secret').textContent = j.secret;
+    $('key').textContent = j.dashboard_key;
     $('s-url').textContent = j.stratum.url;
     $('s-port').textContent = j.stratum.port;
     $('s-user').textContent = j.stratum.user;
