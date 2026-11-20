@@ -45,6 +45,8 @@ tower = { version = "0.5", features = ["util"] }
 futures = "0.3"
 cdk-fake-wallet = "0.16"
 rand = "0.8"
+# Operator login: verifies the bcrypt hash `caddy hash-password` makes.
+bcrypt = "0.17"
 qrcode = { version = "0.14", default-features = false }
 crc32fast = "1"
 ciborium = "0.2"

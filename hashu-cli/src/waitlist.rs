@@ -653,7 +653,7 @@ async fn remove(State(w): State<Arc<Waitlist>>, Path(id): Path<String>) -> Respo
 }
 
 /// Operator routes, merged into the control API (served at
-/// `/operator/waitlist` through Caddy's basic auth).
+/// `/operator/waitlist`, behind the operator login).
 pub fn operator_router<S: Clone + Send + Sync + 'static>(w: Arc<Waitlist>) -> Router<S> {
     Router::new()
         .route("/waitlist", get(|| async { Html(OPERATOR_PAGE) }))

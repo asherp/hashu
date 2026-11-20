@@ -20,6 +20,7 @@ pub mod mint;
 pub mod mrr_sync;
 pub mod network;
 pub mod operator;
+pub mod operator_auth;
 pub mod oracle;
 pub mod orders;
 pub mod paid;

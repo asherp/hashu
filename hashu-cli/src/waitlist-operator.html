@@ -100,6 +100,7 @@ const list = document.getElementById('list');
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 async function load() {
   const r = await fetch('api/waitlist', { cache: 'no-store' });
+  if (r.status === 401) { location.reload(); return; }
   if (!r.ok) { document.getElementById('count').textContent = 'Could not load the waitlist (' + r.status + ').'; return; }
   const j = await r.json();
   document.getElementById('count').textContent = j.count + ' miner' + (j.count === 1 ? '' : 's') + ' waiting (newest first, at most ' + j.max + ').';

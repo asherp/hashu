@@ -7,7 +7,6 @@ set -eu
 fail() { printf 'hashu-caddy: %s\n' "$*" >&2; exit 1; }
 
 [ -n "${HASHU_DOMAIN:-}" ] || fail "HASHU_DOMAIN is not set: the public DNS name of this mint (e.g. mint.example.com), pointing at this machine"
-[ -n "${OPERATOR_PASSWORD_HASH:-}" ] || fail "OPERATOR_PASSWORD_HASH is not set: run 'caddy hash-password' and put the hash in .env"
 case "$HASHU_DOMAIN" in
   *://*|*/*) fail "HASHU_DOMAIN must be a bare host name like mint.example.com (got $HASHU_DOMAIN)" ;;
 esac
@@ -41,6 +40,7 @@ if [ -n "${HASHU_APP_DOMAIN:-}" ]; then
   # must not be cached, or installed wallets never see an update.
   cat > "$GEN/app-site.caddy" <<SITE
 {\$HASHU_APP_DOMAIN} {
+	import security_headers
 	encode gzip
 	root * /srv/app
 	@fresh path /sw.js /manifest.json /index.html /

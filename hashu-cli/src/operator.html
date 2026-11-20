@@ -24,6 +24,8 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 main { max-width: 1400px; margin: 0 auto; padding: 20px 16px 48px; display: flex; flex-direction: column; gap: 16px; }
+.logout { margin: 0; }
+.btn-quiet { font: inherit; font-size: 12px; color: var(--ink-2); background: none; border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; cursor: pointer; }
 header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
 h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
 h1 span { color: var(--brand); }
@@ -99,7 +101,10 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
       <h1><span>Hashu</span> mint operator</h1>
       <div class="sub" id="sub">connecting…</div>
     </div>
-    <div class="row" id="badges"></div>
+    <div class="row">
+      <div class="row" id="badges"></div>
+      <form method="post" action="logout" class="logout" id="logout" hidden><button type="submit" class="btn-quiet">Log out</button></form>
+    </div>
   </header>
 
   <div class="alert" id="alert"></div>
@@ -313,6 +318,8 @@ const hostOf = (u) => (u || '').replace(/^stratum\+tcp:\/\//, '')
 
 async function api (path, opts) {
   const r = await fetch(path, opts)
+  // Session expired or logged out elsewhere: the page itself shows the login.
+  if (r.status === 401) { location.reload(); throw new Error('logged out') }
   const body = await r.json().catch(() => ({}))
   if (!r.ok) throw Object.assign(new Error(body.error || `${r.status} ${r.statusText}`), { body })
   return body
@@ -668,6 +675,7 @@ async function poll () {
   state.polling = true
   try {
     const [op, hr] = await Promise.all([api('api/operator'), api(`api/hashrate?since=${state.lastT}`)])
+    $('logout').hidden = !op.login
     // A restarted daemon starts a new series; drop the old one.
     if (state.op && op.started_ms !== state.op.started_ms) { state.samples = []; state.lastT = 0 }
     state.op = op

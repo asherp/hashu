@@ -16,7 +16,21 @@
 	}
 }
 
+# Response headers for every site: HTTPS only from now on (HSTS), no MIME
+# sniffing, no framing by other sites, and no full URLs in Referer (order
+# and checkout URLs carry ids).
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options SAMEORIGIN
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}
+
 {$HASHU_DOMAIN} {$HASHU_EXTRA_DOMAINS} {
+	import security_headers
 	encode gzip
 
 	# Hashu project splash page (site/, built into the caddy image) at / on
@@ -59,19 +73,22 @@
 	# paths are absolute). The entrypoint writes these redirects, or nothing.
 	import /etc/caddy/generated/mdk-routes.caddy
 
-	# Operator GUI (served by the control API). Password protected: its
-	# POST api/controls pauses issuance and changes the markup.
+	# Operator GUI (served by the control API). The mint itself asks for
+	# the operator login (HASHU_OPERATOR_PASSWORD_HASH), rate limits wrong
+	# passwords and refuses cross-site POSTs; X-Forwarded-Prefix scopes its
+	# session cookie to /operator/.
 	redir /operator /operator/
 	handle_path /operator/* {
-		basic_auth {
-			{$OPERATOR_USER} {$OPERATOR_PASSWORD_HASH}
+		reverse_proxy hashu:3334 {
+			header_up X-Forwarded-Prefix /operator
 		}
-		reverse_proxy hashu:3334
 	}
 
 	# Read-only redemption status for the MDK heater app
 	# (hashuControlUrl = https://$HASHU_DOMAIN/control). GET only:
 	# POST /redemptions and everything else on the control API stays private.
+	# Without an operator session the mint leaves buyers' pools and workers
+	# out of it.
 	handle_path /control/* {
 		@status {
 			method GET HEAD
@@ -99,6 +116,7 @@
 	tls {
 		on_demand
 	}
+	import security_headers
 	encode gzip
 	reverse_proxy hashu:8085
 }

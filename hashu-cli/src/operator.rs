@@ -311,6 +311,8 @@ pub struct OperatorState {
     pub waitlist: Option<Arc<crate::waitlist::Waitlist>>,
     /// MRR rental sync, whose credentials the GUI can change.
     pub mrr: Arc<crate::mrr_sync::MrrSync>,
+    /// Operator login and cross-site request checks.
+    pub auth: Arc<crate::operator_auth::OperatorAuth>,
 }
 
 /// Largest test mint in one go: 2^22 TiH (≈ 1,281 THH).
@@ -321,7 +323,9 @@ pub fn router(state: Arc<OperatorState>) -> axum::Router {
     if let Some(w) = &state.waitlist {
         r = r.merge(crate::waitlist::operator_router(w.clone()));
     }
+    let auth = state.auth.clone();
     r.route("/", get(page))
+        .route("/status", get(public_status))
         .route("/scan.js", get(crate::checkout::scan_js))
         .route("/api/operator", get(operator))
         .route("/api/hashrate", get(hashrate))
@@ -333,6 +337,37 @@ pub fn router(state: Arc<OperatorState>) -> axum::Router {
         .route("/api/mrr", get(mrr_status).post(set_mrr))
         .fallback(proxy_control)
         .with_state(state)
+        .layer(axum::middleware::from_fn_with_state(
+            auth,
+            crate::operator_auth::guard,
+        ))
+}
+
+/// `GET /status`: the control API's status. Without an operator session
+/// (the public `/control/status` route the MDK app polls) each redemption
+/// leaves out its pool and worker, which name the buyer's pool account.
+async fn public_status(
+    State(s): State<Arc<OperatorState>>,
+    authed: Option<axum::Extension<crate::operator_auth::Authed>>,
+) -> Response {
+    let (code, mut v) = control_route("GET", "/status", &[], &s.control);
+    if !authed.is_some_and(|a| a.0 .0) {
+        redact_status(&mut v);
+    }
+    let code = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (code, Json(v)).into_response()
+}
+
+/// Drop what identifies a buyer from a control `/status` body.
+pub fn redact_status(v: &mut Value) {
+    if let Some(list) = v.get_mut("redemptions").and_then(Value::as_array_mut) {
+        for r in list {
+            if let Some(o) = r.as_object_mut() {
+                o.remove("pool_url");
+                o.remove("worker_name");
+            }
+        }
+    }
 }
 
 async fn page() -> Html<&'static str> {
@@ -614,7 +649,11 @@ fn now_ms() -> u64 {
 
 async fn operator(State(s): State<Arc<OperatorState>>) -> Response {
     match operator_json(&s).await {
-        Ok(v) => Json(v).into_response(),
+        Ok(mut v) => {
+            // Whether the page shows "Log out".
+            v["login"] = json!(s.auth.login_enabled());
+            Json(v).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
@@ -940,6 +979,19 @@ mod tests {
         fn price(&self, tih: u64) -> Result<u64, PricingError> {
             Ok(self.0 * tih)
         }
+    }
+
+    #[test]
+    fn public_status_leaves_out_buyers_pools() {
+        let mut v = json!({
+            "default_upstream": "pool:3333",
+            "redemptions": [{ "id": "ab", "pool_url": "stratum+tcp://p:3333", "worker_name": "alice.1", "progress": 0.5 }],
+        });
+        redact_status(&mut v);
+        let r = &v["redemptions"][0];
+        assert!(r.get("pool_url").is_none() && r.get("worker_name").is_none());
+        assert_eq!(r["progress"], 0.5);
+        assert_eq!(v["default_upstream"], "pool:3333");
     }
 
     #[test]
