@@ -92,7 +92,7 @@ impl HashrateRequest {
             .map_err(|e| Error::Custom(format!("invalid hashrate request: {e}")))?;
         if !is_routable_pool_url(&parsed.pool_url) {
             return Err(Error::Custom(
-                "pool_url must be stratum+tcp://host:port or stratum+ssl://host:port".into(),
+                "pool_url must be stratum+tcp://host:port, stratum+ssl://host:port or stratum2+tcp://host[:port]/<authority key>".into(),
             ));
         }
         if parsed.worker_name.is_empty() {
@@ -106,7 +106,7 @@ impl HashrateRequest {
         for (i, p) in parsed.fallback_pools.iter().enumerate() {
             if !is_routable_pool_url(&p.pool_url) {
                 return Err(Error::Custom(format!(
-                    "fallback_pools[{i}].pool_url must be stratum+tcp://host:port or stratum+ssl://host:port"
+                    "fallback_pools[{i}].pool_url must be stratum+tcp://host:port, stratum+ssl://host:port or stratum2+tcp://host[:port]/<authority key>"
                 )));
             }
             if p.worker_name.is_empty() {
@@ -127,11 +127,15 @@ impl HashrateRequest {
 }
 
 /// Whether the proxy can dial `pool_url`: `stratum+tcp://host:port` or
-/// `stratum+ssl://host:port`, with a port and no path. Checked at quote
-/// time so a wallet can't pay for a redemption the router would skip.
-/// Mirrors `hashu_proxy::upstream::normalize_upstream`, which this crate
-/// can't depend on.
+/// `stratum+ssl://host:port`, with a port and no path, or Stratum V2's
+/// `stratum2+tcp://host[:port]/<authority key>`. Checked at quote time so a
+/// wallet can't pay for a redemption the router would skip. Mirrors
+/// `hashu_proxy::upstream::normalize_upstream`, which this crate can't
+/// depend on.
 fn is_routable_pool_url(pool_url: &str) -> bool {
+    if let Some(rest) = pool_url.strip_prefix("stratum2+tcp://") {
+        return is_routable_sv2(rest);
+    }
     let Some(rest) = pool_url
         .strip_prefix("stratum+tcp://")
         .or_else(|| pool_url.strip_prefix("stratum+ssl://"))
@@ -144,6 +148,28 @@ fn is_routable_pool_url(pool_url: &str) -> bool {
         }
         None => false,
     }
+}
+
+/// `host[:port]/<key>` of a Stratum V2 URL. The key is SRI's encoding of
+/// the pool's Noise authority key: base58check of a 2-byte version (1)
+/// and a 32-byte x-only public key. The proxy checks the curve point when
+/// it dials.
+fn is_routable_sv2(rest: &str) -> bool {
+    let Some((hostport, key)) = rest.split_once('/') else {
+        return false;
+    };
+    let key = key.trim_end_matches('/');
+    let key_ok = bs58::decode(key)
+        .with_check(None)
+        .into_vec()
+        .is_ok_and(|b| b.len() == 34 && b[..2] == [1, 0]);
+    let host_ok = match hostport.rsplit_once(':') {
+        Some((h, p)) if !p.contains(']') => {
+            !h.is_empty() && p.parse::<u16>().is_ok_and(|p| p > 0)
+        }
+        _ => !hostport.is_empty(),
+    };
+    key_ok && host_ok && !key.contains('/')
 }
 
 /// `hashrate` melt backend. Holds a handle to the shared ledger so that
@@ -657,6 +683,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_sv2_pool() {
+        // SRI's example authority key; Braiins publishes URLs without a port.
+        let key = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72";
+        for url in [
+            format!("stratum2+tcp://pool.example:3336/{key}"),
+            format!("stratum2+tcp://v2.stratum.braiins.com/{key}"),
+        ] {
+            let req = format!(r#"{{"pool_url":"{url}","worker_name":"w","amount_tih":1}}"#);
+            assert!(HashrateRequest::parse(&req).is_ok(), "{url}");
+        }
+        let req = format!(r#"{{"pool_url":"stratum2+tcp://p:0/{key}","worker_name":"w","amount_tih":1}}"#);
+        assert!(HashrateRequest::parse(&req).is_err());
+    }
+
+    #[test]
     fn parse_rejects_bad_requests() {
         // Not JSON.
         assert!(HashrateRequest::parse("pool").is_err());
@@ -666,9 +707,11 @@ mod tests {
         // Wrong scheme.
         let http = r#"{"pool_url":"https://p","worker_name":"w","amount_tih":1}"#;
         assert!(HashrateRequest::parse(http).is_err());
-        // Stratum V2 isn't supported.
+        // Stratum V2 needs the pool's authority key, and a valid one.
         let sv2 = r#"{"pool_url":"stratum2+tcp://p:3333","worker_name":"w","amount_tih":1}"#;
         assert!(HashrateRequest::parse(sv2).is_err());
+        let bad_key = r#"{"pool_url":"stratum2+tcp://p:3333/abc","worker_name":"w","amount_tih":1}"#;
+        assert!(HashrateRequest::parse(bad_key).is_err());
         // No port, or a path (e.g. an SV2 URL with a key).
         let no_port = r#"{"pool_url":"stratum+tcp://p","worker_name":"w","amount_tih":1}"#;
         assert!(HashrateRequest::parse(no_port).is_err());

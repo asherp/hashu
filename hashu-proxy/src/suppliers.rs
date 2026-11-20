@@ -6,12 +6,18 @@
 //! before any pool sees the password). The registry stores only the
 //! SHA-256 of each secret.
 //!
+//! Stratum V1 is plaintext, so anyone on the path can read a rig's `pw=`.
+//! That secret therefore only proves a rig's name. The supplier's
+//! dashboard (ask, horizon, Lightning address) takes a separate key whose
+//! hash is `key_sha256` (see [`SupplierRegistry::check_key`]). An entry
+//! without one, from before the split, still accepts the rig secret there.
+//!
 //! The registry is a JSON file (`HASHU_SUPPLIERS_FILE`), re-read when its
 //! modification time changes, so sign-up can add suppliers without a
 //! restart:
 //!
 //! ```json
-//! { "suppliers": { "alice": { "secret_sha256": "<64 hex chars>" } } }
+//! { "suppliers": { "alice": { "secret_sha256": "<64 hex chars>", "key_sha256": "<64 hex chars>" } } }
 //! ```
 
 use std::collections::HashMap;
@@ -46,7 +52,12 @@ struct FileFormat {
 
 #[derive(Debug, Clone, Deserialize)]
 struct Entry {
+    /// Rig secret (`pw=`): proves a rig belongs to the supplier.
     secret_sha256: String,
+    /// Dashboard key: changes the supplier's settings. `None` for an entry
+    /// from before rig and dashboard secrets were split.
+    #[serde(default)]
+    key_sha256: Option<String>,
 }
 
 /// What [`SupplierRegistry::check`] says about a rig.
@@ -112,6 +123,7 @@ impl SupplierRegistry {
                     n.to_string(),
                     Entry {
                         secret_sha256: secret_hash(s),
+                        key_sha256: None,
                     },
                 )
             })
@@ -160,10 +172,28 @@ impl SupplierRegistry {
         }
     }
 
-    /// Add supplier `name` with the SHA-256 (hex) of its secret to the
-    /// registry file. Fails when no file is configured, the name is invalid
-    /// or already taken. Other content in the file is kept.
-    pub fn register(&self, name: &str, secret_sha256: &str) -> Result<(), RegisterError> {
+    /// Whether `key` opens supplier `name`'s dashboard: it matches the
+    /// entry's dashboard key, or, for an entry without one, its rig secret.
+    pub fn check_key(&self, name: &str, key: Option<&str>) -> bool {
+        self.refresh();
+        let st = self.lock();
+        let (Some(e), Some(key)) = (st.entries.get(name), key) else {
+            return false;
+        };
+        let want = e.key_sha256.as_ref().unwrap_or(&e.secret_sha256);
+        constant_time_eq(&secret_hash(key), &want.to_ascii_lowercase())
+    }
+
+    /// Add supplier `name` to the registry file with the SHA-256 (hex) of
+    /// its rig secret and, if given, of its dashboard key. Fails when no
+    /// file is configured, the name is invalid or already taken. Other
+    /// content in the file is kept.
+    pub fn register(
+        &self,
+        name: &str,
+        secret_sha256: &str,
+        key_sha256: Option<&str>,
+    ) -> Result<(), RegisterError> {
         let Some(path) = &self.path else {
             return Err(RegisterError::Closed);
         };
@@ -189,10 +219,11 @@ impl SupplierRegistry {
             .or_insert_with(|| serde_json::json!({}))
             .as_object_mut()
             .ok_or_else(|| RegisterError::Io("\"suppliers\" is not a JSON object".into()))?;
-        suppliers.insert(
-            name.to_string(),
-            serde_json::json!({ "secret_sha256": secret_sha256 }),
-        );
+        let mut entry = serde_json::json!({ "secret_sha256": secret_sha256 });
+        if let Some(k) = key_sha256 {
+            entry["key_sha256"] = serde_json::json!(k);
+        }
+        suppliers.insert(name.to_string(), entry);
         let tmp = path.with_extension("tmp");
         let body = serde_json::to_vec_pretty(&doc).map_err(|e| RegisterError::Io(e.to_string()))?;
         std::fs::write(&tmp, body).map_err(io)?;
@@ -201,6 +232,7 @@ impl SupplierRegistry {
             name.to_string(),
             Entry {
                 secret_sha256: secret_sha256.to_string(),
+                key_sha256: key_sha256.map(str::to_string),
             },
         );
         st.loaded_mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
@@ -299,25 +331,53 @@ mod tests {
     }
 
     #[test]
+    fn entry_without_a_dashboard_key_accepts_the_rig_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("suppliers.json");
+        let doc = format!(
+            r#"{{"suppliers":{{"alice":{{"secret_sha256":"{}"}}}}}}"#,
+            secret_hash("s3cret")
+        );
+        std::fs::write(&path, doc).unwrap();
+        let r = SupplierRegistry::from_file(&path);
+        assert!(r.check_key("alice", Some("s3cret")));
+        assert!(!r.check_key("alice", Some("nope")));
+    }
+
+    #[test]
     fn register_adds_a_name_to_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("suppliers.json");
         std::fs::write(&path, r#"{"note":"kept","suppliers":{}}"#).unwrap();
         let r = SupplierRegistry::from_file(&path);
-        r.register("alice", &secret_hash("s3cret")).unwrap();
+        r.register("alice", &secret_hash("s3cret"), Some(&secret_hash("k3y")))
+            .unwrap();
         assert_eq!(
             r.check("alice.rig1", Some("s3cret")),
             Check::Verified("alice".into())
         );
-        assert_eq!(r.register("alice", "00"), Err(RegisterError::Taken));
-        assert_eq!(r.register("Bad", "00"), Err(RegisterError::InvalidName));
+        // The dashboard key opens settings; the rig secret, sent in clear
+        // over Stratum, does not.
+        assert!(r.check_key("alice", Some("k3y")));
+        assert!(!r.check_key("alice", Some("s3cret")));
+        assert!(!r.check_key("alice", None));
+        assert!(!r.check_key("bob", Some("k3y")));
+        // Re-read from disk: the key hash was saved.
+        let again = SupplierRegistry::from_file(&path);
+        assert!(again.check_key("alice", Some("k3y")));
+        assert!(!again.check_key("alice", Some("s3cret")));
+        assert_eq!(r.register("alice", "00", None), Err(RegisterError::Taken));
+        assert_eq!(
+            r.register("Bad", "00", None),
+            Err(RegisterError::InvalidName)
+        );
         // On disk, other fields kept; a fresh reader sees alice.
         let raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(raw["note"], "kept");
         assert!(SupplierRegistry::from_file(&path).contains("alice"));
         assert_eq!(
-            SupplierRegistry::empty().register("bob", "00"),
+            SupplierRegistry::empty().register("bob", "00", None),
             Err(RegisterError::Closed)
         );
     }

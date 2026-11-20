@@ -20,7 +20,7 @@
 //! without an address sells over the fake wallet instead.
 //!
 //! Each supplier mint also serves its page at `/` (status, and settings
-//! behind the supplier's worker secret) and `/api/supplier`,
+//! behind the supplier's dashboard key) and `/api/supplier`,
 //! `/api/settings`. The operator's mint serves sign-up at `/join`.
 
 use std::collections::{HashMap, VecDeque};
@@ -44,7 +44,7 @@ use hashu_mint::lightning::add_lightning_issuance;
 use hashu_mint::lnaddress::{LightningAddress, LnAddressRail};
 use hashu_mint::melt::{reopen_pending_quotes_in, HashrateMelter, METHOD as HASHRATE};
 use hashu_mint::payment::{tih_unit, TihIssuer};
-use hashu_proxy::suppliers::{secret_hash, valid_name, Check, RegisterError, SupplierRegistry};
+use hashu_proxy::suppliers::{secret_hash, valid_name, RegisterError, SupplierRegistry};
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -66,8 +66,9 @@ pub fn lnurl_probe() -> ProbeFn {
 const JOINS_PER_HOUR: usize = 10;
 /// How often a supplier mint recounts what it owes.
 const OWED_REFRESH: Duration = Duration::from_secs(5);
-/// Header carrying the supplier's worker secret on `/api/settings`.
-const SECRET_HEADER: &str = "x-hashu-secret";
+/// Header carrying the supplier's dashboard key on `/api/settings` and
+/// `/api/restock`. Not the rig secret: that travels in clear over Stratum.
+const KEY_HEADER: &str = "x-hashu-key";
 
 const SUPPLIER_PAGE: &str = include_str!("supplier.html");
 const JOIN_PAGE: &str = include_str!("join.html");
@@ -353,12 +354,13 @@ impl Tenants {
         })
     }
 
-    /// Register `name` with fresh settings and a generated secret.
+    /// Register `name` with fresh settings, a generated rig secret and a
+    /// generated dashboard key; returns `(rig secret, dashboard key)`.
     async fn join(
         &self,
         name: &str,
         settings: SupplierSettings,
-    ) -> Result<String, (StatusCode, String)> {
+    ) -> Result<(String, String), (StatusCode, String)> {
         let bad = |e: String| (StatusCode::BAD_REQUEST, e);
         let settings = settings.validated().map_err(bad)?;
         let Some(addr) = settings.lightning_address.as_deref() else {
@@ -392,17 +394,18 @@ impl Tenants {
         (self.cfg.probe)(addr.parse().map_err(bad)?)
             .await
             .map_err(bad)?;
-        let secret = {
+        let random = || {
             let mut b = [0u8; 16];
             rand::Rng::fill(&mut rand::thread_rng(), &mut b[..]);
             hex::encode(b)
         };
+        let (secret, key) = (random(), random());
         let dir = self.cfg.dir.join(name);
         std::fs::create_dir_all(&dir)
             .and_then(|_| settings.save(&dir).map_err(std::io::Error::other))
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         self.registry
-            .register(name, &secret_hash(&secret))
+            .register(name, &secret_hash(&secret), Some(&secret_hash(&key)))
             .map_err(|e| match e {
                 RegisterError::Taken => (StatusCode::CONFLICT, e.to_string()),
                 RegisterError::InvalidName => bad(e.to_string()),
@@ -411,7 +414,7 @@ impl Tenants {
                 }
             })?;
         tracing::info!(supplier = %name, "supplier signed up");
-        Ok(secret)
+        Ok((secret, key))
     }
 }
 
@@ -488,10 +491,10 @@ async fn supplier_status(State(ctx): State<SupplierCtx>) -> Response {
     .into_response()
 }
 
-/// The supplier's own secret, from [`SECRET_HEADER`].
+/// The supplier's dashboard key, from [`KEY_HEADER`].
 fn authorized(tenants: &Tenants, name: &str, headers: &HeaderMap) -> bool {
-    let secret = headers.get(SECRET_HEADER).and_then(|v| v.to_str().ok());
-    matches!(tenants.registry.check(name, secret), Check::Verified(n) if n == name)
+    let key = headers.get(KEY_HEADER).and_then(|v| v.to_str().ok());
+    tenants.registry.check_key(name, key)
 }
 
 async fn get_settings(State(ctx): State<SupplierCtx>, headers: HeaderMap) -> Response {
@@ -499,7 +502,7 @@ async fn get_settings(State(ctx): State<SupplierCtx>, headers: HeaderMap) -> Res
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     if !authorized(&tenants, &ctx.name, &headers) {
-        return (StatusCode::UNAUTHORIZED, "wrong worker secret").into_response();
+        return (StatusCode::UNAUTHORIZED, "wrong dashboard key").into_response();
     }
     match tenants.get(&ctx.name).await {
         Ok(t) => Json(t.settings.read().unwrap_or_else(|e| e.into_inner()).clone()).into_response(),
@@ -516,7 +519,7 @@ async fn post_settings(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     if !authorized(&tenants, &ctx.name, &headers) {
-        return (StatusCode::UNAUTHORIZED, "wrong worker secret").into_response();
+        return (StatusCode::UNAUTHORIZED, "wrong dashboard key").into_response();
     }
     match tenants.update_settings(&ctx.name, new).await {
         Ok(s) => Json(s).into_response(),
@@ -531,7 +534,7 @@ async fn post_restock(State(ctx): State<SupplierCtx>, headers: HeaderMap) -> Res
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     if !authorized(&tenants, &ctx.name, &headers) {
-        return (StatusCode::UNAUTHORIZED, "wrong worker secret").into_response();
+        return (StatusCode::UNAUTHORIZED, "wrong dashboard key").into_response();
     }
     match tenants.get(&ctx.name).await {
         Ok(t) => match t.pricer.restock_now(hashu_mint::capacity::now_ms()) {
@@ -552,9 +555,10 @@ struct JoinRequest {
 async fn post_join(State(tenants): State<Arc<Tenants>>, Json(req): Json<JoinRequest>) -> Response {
     let name = req.name.trim().to_ascii_lowercase();
     match tenants.join(&name, req.settings).await {
-        Ok(secret) => Json(json!({
+        Ok((secret, key)) => Json(json!({
             "name": name,
             "secret": secret,
+            "dashboard_key": key,
             "mint_url": format!("https://{}", tenants.host_for(&name)),
             "stratum": {
                 "url": tenants.cfg.base,
@@ -624,11 +628,14 @@ pub fn operator_router(tenants: Arc<Tenants>) -> axum::Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hashu_proxy::suppliers::Check;
     use axum::body::Body;
 
     fn tenants_with(dir: &std::path::Path, ths: f64, fake: bool) -> Arc<Tenants> {
         let registry = SupplierRegistry::from_file(dir.join("suppliers.json"));
-        registry.register("alice", &secret_hash("s3cret")).unwrap();
+        registry
+            .register("alice", &secret_hash("s3cret"), Some(&secret_hash("k3y")))
+            .unwrap();
         Tenants::new(
             TenantConfig {
                 base: "Mint.Example.com.".into(),
@@ -747,7 +754,7 @@ mod tests {
             .header(header::HOST, host)
             .header(header::CONTENT_TYPE, "application/json");
         if let Some(s) = secret {
-            req = req.header(SECRET_HEADER, s);
+            req = req.header(KEY_HEADER, s);
         }
         let req = req
             .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
@@ -786,6 +793,8 @@ mod tests {
         assert_eq!(j["stratum"]["user"], "bob.<rig>");
         let secret = j["secret"].as_str().unwrap().to_string();
         assert_eq!(j["stratum"]["password"], format!("pw={secret}"));
+        let key = j["dashboard_key"].as_str().unwrap().to_string();
+        assert_ne!(key, secret);
         // The registry file now holds bob, so his rigs verify.
         assert_eq!(
             SupplierRegistry::from_file(dir.path().join("suppliers.json"))
@@ -835,21 +844,17 @@ mod tests {
         assert_eq!(s, StatusCode::UNAUTHORIZED);
         let (s, _) = send(&app, "GET", bob, "/api/settings", Some("wrong"), None).await;
         assert_eq!(s, StatusCode::UNAUTHORIZED);
-        let (s, body) = send(&app, "GET", bob, "/api/settings", Some(&secret), None).await;
+        // The rig secret travels in clear over Stratum: it must not open
+        // the dashboard.
+        let (s, _) = send(&app, "GET", bob, "/api/settings", Some(&secret), None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        let (s, body) = send(&app, "GET", bob, "/api/settings", Some(&key), None).await;
         assert_eq!(s, StatusCode::OK, "{body}");
         let short = json!({"ask_sats_per_eih": 620, "horizon_hours": 0.5, "lightning_address": "bob@wallet.example"});
-        let (s, _) = send(
-            &app,
-            "POST",
-            bob,
-            "/api/settings",
-            Some(&secret),
-            Some(short),
-        )
-        .await;
+        let (s, _) = send(&app, "POST", bob, "/api/settings", Some(&key), Some(short)).await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
         let ok = json!({"ask_sats_per_eih": 620, "horizon_hours": 1, "lightning_address": "bob@wallet.example"});
-        let (s, body) = send(&app, "POST", bob, "/api/settings", Some(&secret), Some(ok)).await;
+        let (s, body) = send(&app, "POST", bob, "/api/settings", Some(&key), Some(ok)).await;
         assert_eq!(s, StatusCode::OK, "{body}");
         assert_eq!(
             SupplierSettings::load(&dir.path().join("mints/bob"))
@@ -881,15 +886,7 @@ mod tests {
         assert_ne!(s, StatusCode::OK);
 
         let set = json!({"ask_sats_per_eih": 2_560, "horizon_hours": 2});
-        let (s, body) = send(
-            &app,
-            "POST",
-            alice,
-            "/api/settings",
-            Some("s3cret"),
-            Some(set),
-        )
-        .await;
+        let (s, body) = send(&app, "POST", alice, "/api/settings", Some("k3y"), Some(set)).await;
         assert_eq!(s, StatusCode::OK, "{body}");
         // 1 TH/s × 2 h = 2 THH ≈ 6,548 TiH, once the mint has counted
         // what it owes and stocked its first batch.

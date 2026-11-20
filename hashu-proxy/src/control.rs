@@ -324,7 +324,7 @@ fn open(body: &[u8], state: &ControlState) -> (u16, Value) {
     if upstream_for_pool_url(pool_url).is_none() {
         return (
             400,
-            json!({ "error": "pool_url must be host:port, stratum+tcp://host:port or stratum+ssl://host:port" }),
+            json!({ "error": "pool_url must be host:port, stratum+tcp://host:port, stratum+ssl://host:port or stratum2+tcp://host[:port]/<authority key>" }),
         );
     }
     let Some(worker_name) = v["worker_name"].as_str().filter(|s| !s.is_empty()) else {

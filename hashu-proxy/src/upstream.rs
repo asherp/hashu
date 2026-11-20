@@ -1,10 +1,12 @@
-//! Dialing upstream pools, over plain TCP or TLS.
+//! Dialing upstream pools, over plain TCP, TLS or Stratum V2.
 //!
 //! An upstream is kept as a string so routes stay cheap to clone and easy
-//! to log: `host:port` for plain TCP, `tls://host:port` for TLS.
+//! to log: `host:port` for plain TCP, `tls://host:port` for TLS, and
+//! `sv2://host:port/<authority key>` for Stratum V2 (see [`crate::sv2`]).
 //! [`normalize_upstream`] turns a user-facing pool URL
-//! (`stratum+tcp://…`, `stratum+ssl://…`) into that form, and [`dial`]
-//! opens it.
+//! (`stratum+tcp://…`, `stratum+ssl://…`, `stratum2+tcp://…`) into that
+//! form, and [`dial`] opens it. Every dialed upstream speaks Stratum V1
+//! lines to the caller; an SV2 one is translated.
 //!
 //! TLS verifies the pool's certificate against the Mozilla roots bundled
 //! by `webpki-roots`, with the URL's host as the server name. A pool with a
@@ -36,12 +38,15 @@ pub type PoolStream = Box<dyn PoolIo>;
 
 /// Turn a pool URL into a dialable upstream: `host:port` for
 /// `stratum+tcp://`, `stratum://` or a bare `host:port`, and
-/// `tls://host:port` for `stratum+ssl://`, `stratum+tcps://` or `tls://`.
-/// `None` if there is no port, the port is not a number, or there is a
-/// path (an SV2 URL such as `stratum2+tcp://host:port/key` is refused too,
-/// since its scheme is not one of the above).
+/// `tls://host:port` for `stratum+ssl://`, `stratum+tcps://` or `tls://`,
+/// and `sv2://host:port/<key>` for `stratum2+tcp://host[:port]/<key>`
+/// (see [`crate::sv2::normalize`]). `None` if there is no port, the port is
+/// not a number, or there is a path (other than an SV2 authority key).
 pub fn normalize_upstream(url: &str) -> Option<String> {
     let url = url.trim();
+    if url.starts_with("stratum2+tcp://") || crate::sv2::is_sv2(url) {
+        return crate::sv2::normalize(url);
+    }
     let (tls, rest) = if let Some(r) = url
         .strip_prefix("stratum+ssl://")
         .or_else(|| url.strip_prefix("stratum+tcps://"))
@@ -97,6 +102,9 @@ pub async fn dial_with(upstream: &str, tls: Arc<ClientConfig>) -> io::Result<Poo
 }
 
 async fn dial_inner(upstream: &str, tls: Arc<ClientConfig>) -> io::Result<PoolStream> {
+    if crate::sv2::is_sv2(upstream) {
+        return crate::sv2::dial(upstream).await;
+    }
     let Some(addr) = upstream.strip_prefix(TLS_PREFIX) else {
         let tcp = TcpStream::connect(upstream).await?;
         tcp.set_nodelay(true).ok();
@@ -183,6 +191,7 @@ mod tests {
         assert_eq!(n("stratum+tcp://p:0"), None);
         assert_eq!(n("stratum+tcp://p:x"), None);
         assert_eq!(n("stratum+tcp://p:3333/key"), None);
+        // SV2 needs a valid authority key (see `crate::sv2`).
         assert_eq!(n("stratum2+tcp://stratum.braiins.com:3333/abc"), None);
         assert_eq!(n("https://p:443"), None);
         assert_eq!(n(":3333"), None);
