@@ -189,6 +189,21 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
     <label class="f">Worker password <span style="color:var(--ink-3)">(optional, most pools accept x)</span>
       <input type="text" id="r-password" placeholder="x" autocomplete="off">
     </label>
+    <details class="words" id="r-backup">
+      <summary>Backup pool (optional)</summary>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+        <p class="note">If your pool can't be reached or refuses the work, the mint's miners switch here and keep filling the same redemption. They go back to your pool once it answers again.</p>
+        <label class="f">Backup pool URL
+          <input type="text" id="r-backup-pool" placeholder="stratum+tcp://backup.example:3333">
+        </label>
+        <label class="f">Worker name on the backup pool
+          <input type="text" id="r-backup-worker" placeholder="you.worker1">
+        </label>
+        <label class="f">Worker password <span style="color:var(--ink-3)">(optional)</span>
+          <input type="text" id="r-backup-password" placeholder="x" autocomplete="off">
+        </label>
+      </div>
+    </details>
     <button class="act primary" id="btn-redeem">Send me the hashrate</button>
     <p class="note">The mint's miners switch to your pool and mine under your worker name until the TiH in the token is delivered.</p>
   </section>
@@ -611,7 +626,10 @@ $('btn-redeem').addEventListener('click', async () => {
     if (!ks) throw new Error('The mint has no active TiH keyset.')
     const key = C.newKey(), n = C.blankCount(st.tokenAmount || 2 ** 20)
     const outputs = C.blanks(key, n, ks.id)
-    const r = await post('api/redeem', { token: $('r-token').value, pool_url: $('r-pool').value, worker_name: $('r-worker').value, worker_password: $('r-password').value, outputs, stop_hash: C.stopHash(key) })
+    const fallback_pools = $('r-backup-pool').value.trim()
+      ? [{ pool_url: $('r-backup-pool').value, worker_name: $('r-backup-worker').value, worker_password: $('r-backup-password').value }]
+      : []
+    const r = await post('api/redeem', { token: $('r-token').value, pool_url: $('r-pool').value, worker_name: $('r-worker').value, worker_password: $('r-password').value, fallback_pools, outputs, stop_hash: C.stopHash(key) })
     if (r.order_id) { location.href = `order/${r.order_id}#k=${key}&n=${n}&i=${ks.id}`; return }
     alertMsg('')
     st.tokenOk = false
@@ -688,7 +706,9 @@ async function pollRedemption () {
     $('p-state').className = `pill ${r.state === 'completed' || r.state === 'settled' ? 'ok' : 'wait'}`
     $('p-filled').textContent = `${fmtTih(r.filled_tih)} of ${r.amount_tih} TiH`
     $('p-bar').style.width = `${(r.progress * 100).toFixed(1)}%`
-    $('p-meta').innerHTML = `To <span class="mono">${esc(r.pool_url)}</span> as <b>${esc(r.worker_name)}</b>. Each share your pool accepts from this worker counts its difficulty × 2<sup>32</sup> hashes.`
+    const backups = (r.fallback_pools || []).map((p) => `<span class="mono">${esc(p.pool_url)}</span> as <b>${esc(p.worker_name)}</b>`).join(', then ')
+    const onBackup = r.serving_pool > 0 && r.state !== 'completed' && r.state !== 'settled'
+    $('p-meta').innerHTML = `To <span class="mono">${esc(r.pool_url)}</span> as <b>${esc(r.worker_name)}</b>${backups ? `, backup ${backups}` : ''}.${onBackup ? ` <b>Now mining to the backup <span class="mono">${esc(r.serving_pool_url)}</span></b>: your pool didn't answer or refused the work.` : ''} Each share your pool accepts from this worker counts its difficulty × 2<sup>32</sup> hashes.`
     const t = r.track
     if (t) {
       const end = t.completed_ms || r.now_ms

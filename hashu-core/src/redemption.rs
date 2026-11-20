@@ -105,6 +105,31 @@ impl RedemptionState {
     }
 }
 
+/// Most fallback pools a redemption may list after its primary pool.
+pub const MAX_FALLBACK_POOLS: usize = 3;
+
+/// A pool a redemption may send its hashrate to: the primary
+/// ([`Redemption::pool_url`] and friends) or one of its
+/// [`Redemption::fallbacks`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolTarget {
+    /// Stratum URL, e.g. `stratum+tcp://pool.example:3333`.
+    pub pool_url: String,
+    /// Worker name this pool expects.
+    pub worker_name: String,
+    /// Password for `worker_name`; `None` sends the conventional `x`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_password: Option<String>,
+}
+
+impl PoolTarget {
+    /// Password to send in `mining.authorize`.
+    pub fn authorize_password(&self) -> &str {
+        self.worker_password.as_deref().unwrap_or("x")
+    }
+}
+
 /// One redemption's target and progress.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Redemption {
@@ -116,6 +141,9 @@ pub struct Redemption {
     /// Password for `worker_name` in `mining.authorize`; `None` sends the
     /// conventional `x`.
     pub worker_password: Option<String>,
+    /// Pools to try, in order, when the primary pool is unreachable or
+    /// refuses the work. Shares on any of them credit this redemption.
+    pub fallbacks: Vec<PoolTarget>,
     /// `TiH` melted.
     pub amount_tih: u64,
     /// `TiH` the redeemer pays even if the redemption settles early: the
@@ -141,6 +169,7 @@ impl Redemption {
             pool_url,
             worker_name,
             worker_password: None,
+            fallbacks: Vec::new(),
             supplier: None,
             amount_tih,
             floor_tih: amount_tih,
@@ -154,6 +183,31 @@ impl Redemption {
     pub fn with_password(mut self, password: Option<String>) -> Self {
         self.worker_password = password.filter(|p| !p.is_empty());
         self
+    }
+
+    /// Set the fallback pools, tried in order after the primary. Entries
+    /// with an empty URL or worker are dropped.
+    pub fn with_fallbacks(mut self, fallbacks: Vec<PoolTarget>) -> Self {
+        self.fallbacks = fallbacks
+            .into_iter()
+            .filter(|p| !p.pool_url.trim().is_empty() && !p.worker_name.trim().is_empty())
+            .map(|mut p| {
+                p.worker_password = p.worker_password.filter(|pw| !pw.is_empty());
+                p
+            })
+            .collect();
+        self
+    }
+
+    /// Every pool this redemption may use, primary first.
+    pub fn pools(&self) -> Vec<PoolTarget> {
+        std::iter::once(PoolTarget {
+            pool_url: self.pool_url.clone(),
+            worker_name: self.worker_name.clone(),
+            worker_password: self.worker_password.clone(),
+        })
+        .chain(self.fallbacks.iter().cloned())
+        .collect()
     }
 
     /// Set the supplier whose rigs fill it (see [`Redemption::supplier`]).
@@ -302,6 +356,9 @@ enum LedgerRecord {
         worker_name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         worker_password: Option<String>,
+        /// Absent in journals from before fallback pools: none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        fallbacks: Vec<PoolTarget>,
         /// Absent in journals from before settling existed: no reserve.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         floor_tih: Option<u64>,
@@ -328,6 +385,10 @@ pub struct RedemptionLedger {
     /// Ids in the order they were opened, so routing can serve the oldest
     /// redemption first. Never shrinks; completed ids are skipped on read.
     order: Mutex<Vec<RedemptionId>>,
+    /// Which of each redemption's pools (0 = primary, then its fallbacks)
+    /// is receiving its hashrate right now, as the router last reported.
+    /// Not journaled.
+    serving: Mutex<HashMap<RedemptionId, usize>>,
     journal: Option<Journal>,
 }
 
@@ -353,6 +414,7 @@ impl RedemptionLedger {
                     pool_url,
                     worker_name,
                     worker_password,
+                    fallbacks,
                     floor_tih,
                     supplier,
                 } => {
@@ -361,6 +423,7 @@ impl RedemptionLedger {
                     let _ = ledger.open(
                         Redemption::new(id, amount_tih, pool_url, worker_name)
                             .with_password(worker_password)
+                            .with_fallbacks(fallbacks)
                             .with_supplier(supplier)
                             .with_floor(floor_tih.unwrap_or(amount_tih)),
                     );
@@ -390,6 +453,7 @@ impl RedemptionLedger {
                     pool_url: r.pool_url.clone(),
                     worker_name: r.worker_name.clone(),
                     worker_password: r.worker_password.clone(),
+                    fallbacks: r.fallbacks.clone(),
                     floor_tih: Some(r.floor_tih),
                     supplier: r.supplier.clone(),
                 };
@@ -434,6 +498,7 @@ impl RedemptionLedger {
             pool_url: redemption.pool_url.clone(),
             worker_name: redemption.worker_name.clone(),
             worker_password: redemption.worker_password.clone(),
+            fallbacks: redemption.fallbacks.clone(),
             floor_tih: Some(redemption.floor_tih),
             supplier: redemption.supplier.clone(),
         });
@@ -527,6 +592,23 @@ impl RedemptionLedger {
             spent_tih: redemption.spent_tih(),
             change_tih: redemption.change_tih(),
         })
+    }
+
+    /// Record which pool each redemption's rigs are on (index into
+    /// [`Redemption::pools`]), replacing the previous report. Redemptions
+    /// missing from `serving` have no rig right now.
+    pub fn set_serving_pools(&self, serving: HashMap<RedemptionId, usize>) {
+        *self.serving.lock().unwrap_or_else(|e| e.into_inner()) = serving;
+    }
+
+    /// The pool (index into [`Redemption::pools`]) `id`'s hashrate is
+    /// going to, or `None` while no rig is on it.
+    pub fn serving_pool(&self, id: &RedemptionId) -> Option<usize> {
+        self.serving
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .copied()
     }
 
     /// Snapshot of one redemption, or `None` if unknown.
@@ -858,6 +940,54 @@ mod tests {
         let ledger = RedemptionLedger::persistent(&path).unwrap();
         assert_eq!(ledger.get(&id(1)).unwrap().floor_tih, 4);
         assert_eq!(ledger.settle(&id(1)).unwrap().change_tih, 0);
+    }
+
+    #[test]
+    fn fallback_pools_survive_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.jsonl");
+        let fallback = PoolTarget {
+            pool_url: "stratum+tcp://backup:3333".into(),
+            worker_name: "me.backup".into(),
+            worker_password: Some("pw".into()),
+        };
+        {
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            let r = Redemption::new(id(1), 8, "stratum+tcp://main:3333".into(), "me".into())
+                .with_fallbacks(vec![
+                    fallback.clone(),
+                    PoolTarget {
+                        pool_url: "".into(),
+                        worker_name: "dropped".into(),
+                        worker_password: None,
+                    },
+                ]);
+            ledger.open(r).unwrap();
+        }
+        let ledger = RedemptionLedger::persistent(&path).unwrap();
+        let r = ledger.get(&id(1)).unwrap();
+        assert_eq!(r.fallbacks, vec![fallback.clone()]);
+        let pools = r.pools();
+        assert_eq!(pools.len(), 2);
+        assert_eq!(pools[0].pool_url, "stratum+tcp://main:3333");
+        assert_eq!(pools[0].authorize_password(), "x");
+        assert_eq!(pools[1], fallback);
+    }
+
+    #[test]
+    fn journal_from_before_fallbacks_has_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.jsonl");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"op":"open","id":"{}","amount_tih":4,"pool_url":"p","worker_name":"w"}}"#,
+                id(2)
+            ) + "\n",
+        )
+        .unwrap();
+        let ledger = RedemptionLedger::persistent(&path).unwrap();
+        assert!(ledger.get(&id(2)).unwrap().fallbacks.is_empty());
     }
 
     #[test]

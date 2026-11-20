@@ -36,7 +36,9 @@ use cdk::cdk_payment::{
 use cdk::nuts::{CurrencyUnit, MeltQuoteState};
 use cdk::Amount;
 use futures::stream::{self, BoxStream};
-use hashu_core::redemption::{Redemption, RedemptionId, RedemptionLedger, RedemptionState};
+use hashu_core::redemption::{
+    PoolTarget, Redemption, RedemptionId, RedemptionLedger, RedemptionState, MAX_FALLBACK_POOLS,
+};
 use serde::{Deserialize, Serialize};
 
 /// Method name as it appears in melt requests and NUT-05 settings.
@@ -69,6 +71,11 @@ pub struct HashrateRequest {
     pub worker_password: Option<String>,
     /// `TiH` to redeem. Must be covered by the melted proofs.
     pub amount_tih: u64,
+    /// Pools to fail over to, in order, when `pool_url` is unreachable or
+    /// refuses the work (at most [`MAX_FALLBACK_POOLS`]). Each names its
+    /// own worker. Shares on any of them fill this redemption.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_pools: Vec<PoolTarget>,
     /// Optional wallet-chosen value that makes the request unique. The
     /// redemption id is derived from the request string, and cdk refuses a
     /// second melt of an identical request, so a wallet that redeems the
@@ -91,7 +98,31 @@ impl HashrateRequest {
         if parsed.worker_name.is_empty() {
             return Err(Error::Custom("worker_name must not be empty".into()));
         }
+        if parsed.fallback_pools.len() > MAX_FALLBACK_POOLS {
+            return Err(Error::Custom(format!(
+                "at most {MAX_FALLBACK_POOLS} fallback_pools"
+            )));
+        }
+        for (i, p) in parsed.fallback_pools.iter().enumerate() {
+            if !is_routable_pool_url(&p.pool_url) {
+                return Err(Error::Custom(format!(
+                    "fallback_pools[{i}].pool_url must be stratum+tcp://host:port or stratum+ssl://host:port"
+                )));
+            }
+            if p.worker_name.is_empty() {
+                return Err(Error::Custom(format!(
+                    "fallback_pools[{i}].worker_name must not be empty"
+                )));
+            }
+        }
         Ok(parsed)
+    }
+
+    /// The redemption this request opens, before floor and supplier.
+    pub fn redemption(self, id: RedemptionId) -> Redemption {
+        Redemption::new(id, self.amount_tih, self.pool_url, self.worker_name)
+            .with_password(self.worker_password)
+            .with_fallbacks(self.fallback_pools)
     }
 }
 
@@ -291,8 +322,8 @@ pub fn reopen_pending_quotes_in(
             continue;
         };
         let floor = req.amount_tih.saturating_sub(quote.fee_reserve().value());
-        let r = Redemption::new(id, req.amount_tih, req.pool_url, req.worker_name)
-            .with_password(req.worker_password)
+        let r = req
+            .redemption(id)
             .with_floor(floor)
             .with_supplier(supplier.map(str::to_string));
         if ledger.open(r).is_ok() {
@@ -311,7 +342,7 @@ impl MintPayment for HashrateMelter {
         let mut custom = HashMap::new();
         custom.insert(
             METHOD.to_string(),
-            serde_json::json!({ "min_tih": self.min_tih }).to_string(),
+            serde_json::json!({ "min_tih": self.min_tih, "max_fallback_pools": MAX_FALLBACK_POOLS }).to_string(),
         );
         Ok(SettingsResponse {
             unit: TIH.to_string(),
@@ -374,14 +405,9 @@ impl MintPayment for HashrateMelter {
             // Already opened (cdk retrying): report where it stands.
             return self.check_outgoing_payment(&lookup_id(&id)).await;
         }
+        let amount_tih = req.amount_tih;
         self.ledger
-            .open(
-                self.open_redemption(
-                    Redemption::new(id, req.amount_tih, req.pool_url, req.worker_name)
-                        .with_password(req.worker_password)
-                        .with_floor(floor),
-                ),
-            )
+            .open(self.open_redemption(req.redemption(id).with_floor(floor)))
             .map_err(|e| Error::Custom(e.to_string()))?;
 
         Ok(MakePaymentResponse {
@@ -389,7 +415,7 @@ impl MintPayment for HashrateMelter {
             payment_proof: None,
             // Pending: proofs stay locked until the redemption completes.
             status: MeltQuoteState::Pending,
-            total_spent: Amount::new(req.amount_tih, unit.clone()),
+            total_spent: Amount::new(amount_tih, unit.clone()),
         })
     }
 
@@ -578,6 +604,50 @@ mod tests {
         assert_eq!(r.pool_url, POOL);
         assert_eq!(r.worker_name, "rig1");
         assert_eq!(r.amount_tih, 3);
+    }
+
+    #[test]
+    fn parse_reads_fallback_pools() {
+        let req = serde_json::json!({
+            "pool_url": POOL, "worker_name": "rig1", "amount_tih": 3,
+            "fallback_pools": [
+                {"pool_url": "stratum+ssl://backup.example:443", "worker_name": "me.b", "worker_password": "pw"},
+                {"pool_url": "stratum+tcp://third.example:3333", "worker_name": "me.c"},
+            ],
+        })
+        .to_string();
+        let r = HashrateRequest::parse(&req).unwrap();
+        assert_eq!(r.fallback_pools.len(), 2);
+        let red = r.redemption(redemption_id_for(&req));
+        let pools = red.pools();
+        assert_eq!(pools[0].pool_url, POOL);
+        assert_eq!(pools[1].pool_url, "stratum+ssl://backup.example:443");
+        assert_eq!(pools[1].authorize_password(), "pw");
+        assert_eq!(pools[2].authorize_password(), "x");
+        // Requests without fallbacks serialize as before.
+        let plain = HashrateRequest::parse(&request(3)).unwrap();
+        assert!(!serde_json::to_string(&plain).unwrap().contains("fallback"));
+    }
+
+    #[test]
+    fn parse_rejects_bad_fallback_pools() {
+        let with = |pools: serde_json::Value| {
+            serde_json::json!({
+                "pool_url": POOL, "worker_name": "rig1", "amount_tih": 3,
+                "fallback_pools": pools,
+            })
+            .to_string()
+        };
+        let ok = serde_json::json!({"pool_url": "stratum+tcp://b:1", "worker_name": "w"});
+        assert!(HashrateRequest::parse(&with(serde_json::json!(vec![ok.clone(); 3]))).is_ok());
+        assert!(HashrateRequest::parse(&with(serde_json::json!(vec![ok.clone(); 4]))).is_err());
+        let http = serde_json::json!([{"pool_url": "https://b", "worker_name": "w"}]);
+        assert!(HashrateRequest::parse(&with(http)).is_err());
+        let no_worker = serde_json::json!([{"pool_url": "stratum+tcp://b:1", "worker_name": ""}]);
+        assert!(HashrateRequest::parse(&with(no_worker)).is_err());
+        let extra =
+            serde_json::json!([{"pool_url": "stratum+tcp://b:1", "worker_name": "w", "x": 1}]);
+        assert!(HashrateRequest::parse(&with(extra)).is_err());
     }
 
     #[test]

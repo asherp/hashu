@@ -25,6 +25,8 @@ The checkout page (`/checkout/` on the mint, for example
 <https://mint.hashu.io/checkout/>) asks for four things. A Cashu wallet that
 melts with the `hashrate` method sends the same fields as JSON:
 `{"pool_url", "worker_name", "worker_password"?, "amount_tih"}`.
+Optionally add `"fallback_pools"`: up to three backup pools, each
+`{"pool_url", "worker_name", "worker_password"?}`.
 
 | Field | What Hashu accepts | Notes |
 |---|---|---|
@@ -32,6 +34,7 @@ melts with the `hashrate` method sends the same fields as JSON:
 | Pool URL | `stratum+tcp://host:port` or `stratum+ssl://host:port` | **Must have a port.** See the note below. |
 | Worker name | any non-empty string | Sent to your pool in `mining.authorize` in place of the miner's own name. This is how the pool knows the work is yours. |
 | Worker password | optional, defaults to `x` | Only matters if your pool checks it. |
+| Backup pool | optional: URL, worker name and password | Used when your pool can't be reached, refuses the worker, drops the connection or rejects 10 shares in a row. The miners go back to your pool when it answers again (it is retried after 60 s). Work on the backup fills the same redemption. |
 
 > **Plain TCP or TLS, with a port.** The proxy dials `stratum+ssl://` pools
 > over TLS and checks the pool's certificate against the public CA roots. A

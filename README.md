@@ -226,11 +226,15 @@ hashu mint run \
   Lightning invoices round the total up to whole sats. The smallest
   purchase and the default smallest redemption are 2^10 TiH = 1 PiH (≈ 0.31 THH).
 - **Redemption**: a wallet melts `TiH` with method `hashrate` and request
-  `{"pool_url", "worker_name", "amount_tih", "nonce"?}`. The proxy routes
+  `{"pool_url", "worker_name", "amount_tih", "nonce"?, "fallback_pools"?}`. The proxy routes
   miners to that pool under that worker until the amount is filled, then
-  the melt turns `PAID`. `--upstream` (`HASHU_UPSTREAM`, required) is where miners go otherwise.
+  the melt turns `PAID`. `fallback_pools` (up to 3 of
+  `{"pool_url", "worker_name", "worker_password"?}`) are tried in order
+  when the pool can't be dialed, refuses the authorize, drops the session
+  or rejects 10 shares in a row; that pool is skipped for 60 s, then
+  tried again. Shares on any of them fill the same redemption. `--upstream` (`HASHU_UPSTREAM`, required) is where miners go otherwise.
 - **Redeem over HTTP 402** ([NUT-24](https://github.com/cashubtc/nuts/blob/main/24.md)):
-  `POST /api/redeem` with `{"pool_url", "worker_name", "worker_password"?, "amount_tih"?}`.
+  `POST /api/redeem` with `{"pool_url", "worker_name", "worker_password"?, "amount_tih"?, "fallback_pools"?}`.
   Without payment it answers `402 Payment Required` and an `X-Cashu`
   header holding a NUT-18 request (`creqA…`: `a` = `amount_tih`, default
   the smallest redemption; `u` = `tih`; `m` = this mint). Retry with a

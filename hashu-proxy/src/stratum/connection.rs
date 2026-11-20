@@ -67,7 +67,7 @@ use super::replay::{force_clean, JobGate, PoolLine};
 use super::session::{SessionEvent, SessionState};
 use super::startdiff::{password_with_difficulty, WorkRate};
 use crate::credit::{ConnectionId, CreditContext, ShareEvidence};
-use crate::router::{Route, Router, Signal, SwitchMode};
+use crate::router::{Route, Router, Signal, SwitchMode, REJECT_LIMIT};
 use crate::upstream::{dial, PoolStream};
 use crate::ProxyMetrics;
 use hashu_core::redemption::RedemptionId;
@@ -242,22 +242,24 @@ pub async fn proxy_routed_connection(
     let assignment = router.assign_with(conn, authorize.as_ref());
     let result = async {
         let mut route = assignment.route;
-        let pool_socket = match dial(route.upstream()).await {
-            Ok(s) => s,
-            Err(e) if route.redemption_id().is_some() => {
-                tracing::warn!(
-                    %conn,
-                    upstream = route.upstream(),
-                    error = %e,
-                    "redeemer's pool unreachable; falling back to default pool",
-                );
-                route = router.fall_back_to_default(conn);
-                dial(route.upstream())
-                    .await
-                    .with_context(|| format!("connect default upstream {}", route.upstream()))?
-            }
-            Err(e) => {
-                return Err(e).with_context(|| format!("connect upstream {}", route.upstream()))
+        // A redeemer's pool that can't be dialed: try its fallback pools
+        // in order, then the idle pool.
+        let pool_socket = loop {
+            match dial(route.upstream()).await {
+                Ok(s) => break s,
+                Err(e) if route.redemption_id().is_some() => {
+                    tracing::warn!(
+                        %conn,
+                        upstream = route.upstream(),
+                        error = %e,
+                        "redeemer's pool unreachable; trying its next fallback pool, else the default pool",
+                    );
+                    route = router.fail_over(conn);
+                }
+                Err(e) => {
+                    return Err(e)
+                        .with_context(|| format!("connect upstream {}", route.upstream()))
+                }
             }
         };
         let ctx = Ctx {
@@ -309,6 +311,9 @@ struct MinerFacts {
     /// Version-rolling mask the miner was granted.
     version_mask: Option<u32>,
     authorize_params: Option<Value>,
+    authorize_id: Option<i64>,
+    /// The first pool answered the miner's authorize.
+    authorize_answered: bool,
     extranonce_subscribed: bool,
     suggest_difficulty: Option<Value>,
     /// Extranonce the miner is working with.
@@ -371,6 +376,8 @@ struct Leg {
     /// Redemption each in-flight `mining.submit` on this leg was sent
     /// for, keyed by request id.
     submits: HashMap<i64, Option<RedemptionId>>,
+    /// Shares rejected in a row since the last accepted one.
+    reject_streak: u32,
 }
 
 impl Leg {
@@ -385,6 +392,7 @@ impl Leg {
             session: SessionState::default(),
             map: None,
             submits: HashMap::new(),
+            reject_streak: 0,
         }
     }
 
@@ -429,6 +437,7 @@ impl Leg {
         match self.session.ingest(line, Direction::P2M) {
             SessionEvent::SubmitRejected { id } => {
                 self.submits.remove(&id);
+                self.reject_streak = self.reject_streak.saturating_add(1);
                 None
             }
             SessionEvent::SubmitAccepted {
@@ -462,6 +471,7 @@ impl Leg {
                 // Credit only shares that made it into the commitment
                 // tree, so every credited hash has a leaf behind it
                 // (§4.7.2).
+                self.reject_streak = 0;
                 let bound = self.submits.remove(&id).flatten();
                 if let Some(credit) = &ctx.credit {
                     credit.credit_accepted(
@@ -649,8 +659,14 @@ async fn relay(
                         break format!("miner side error: {e}");
                     }
                 }
-                Some(Ev::Closed(r)) => break format!("pool {r}"),
-                None => break "pool closed".into(),
+                Some(Ev::Closed(r)) => {
+                    c.report_pool_failed(&format!("pool {r}"));
+                    break format!("pool {r}");
+                }
+                None => {
+                    c.report_pool_failed("pool closed");
+                    break "pool closed".into();
+                }
             },
             ev = drain_event(&mut c.old) => match ev {
                 DrainEv::Line(l) => {
@@ -715,6 +731,14 @@ async fn relay(
 }
 
 impl Conn {
+    /// The current pool failed while serving a redemption: let the router
+    /// fail it over to the redemption's next pool.
+    fn report_pool_failed(&self, why: &str) {
+        if let Some(r) = &self.ctx.router {
+            r.pool_failed(self.ctx.conn, &self.cur.route, why);
+        }
+    }
+
     async fn write_miner(&mut self, lines: &[String]) -> io::Result<()> {
         if lines.is_empty() {
             return Ok(());
@@ -762,6 +786,7 @@ impl Conn {
                     router.identify(self.ctx.conn, p);
                 }
                 m.authorize_params = params;
+                m.authorize_id = id;
             }
             Some("mining.extranonce.subscribe") => m.extranonce_subscribed = true,
             Some("mining.suggest_difficulty") => m.suggest_difficulty = params,
@@ -804,6 +829,9 @@ impl Conn {
         if let Some(d) = self.cur.ingest_pool(line, &self.ctx, &mut self.committer) {
             self.work.accepted(Instant::now(), d);
         }
+        if self.cur.reject_streak == REJECT_LIMIT {
+            self.report_pool_failed(&format!("{REJECT_LIMIT} shares rejected in a row"));
+        }
         let v = parse(line);
         let method = v
             .as_ref()
@@ -811,6 +839,17 @@ impl Conn {
             .and_then(Value::as_str);
         let id = v.as_ref().and_then(|v| v.get("id")).and_then(Value::as_i64);
         let mut out = line.to_string();
+        if method.is_none()
+            && id.is_some()
+            && id == self.miner.authorize_id
+            && !self.miner.authorize_answered
+        {
+            self.miner.authorize_answered = true;
+            let ok = v.as_ref().and_then(|v| v.get("result")) == Some(&Value::Bool(true));
+            if !ok {
+                self.report_pool_failed("authorize refused");
+            }
+        }
 
         if method.is_none() {
             if id.is_some_and(|i| PROXY_IDS.contains(&i)) {
