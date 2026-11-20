@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Hashu operator login</title>
+<style>
+:root {
+  --bg: #f6f6f4; --surface: #ffffff; --ink: #1b1b1a; --ink-2: #55534f; --ink-3: #8a8782;
+  --line: rgba(27,27,26,0.12); --brand: #e8850c; --brand-ink: #111;
+  --bad: #c2403a; --bad-bg: rgba(194,64,58,0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111110; --surface: #1a1a19; --ink: #f1efea; --ink-2: #b5b2ab; --ink-3: #85827c;
+    --line: rgba(241,239,234,0.14); --brand: #f7931a;
+    --bad: #e06c6c; --bad-bg: rgba(224,108,108,0.14);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+form { width: 100%; max-width: 360px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 24px; display: flex; flex-direction: column; gap: 14px; }
+h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+h1 span { color: var(--brand); }
+p { margin: 0; color: var(--ink-2); }
+label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; font-size: 13px; color: var(--ink-2); }
+input { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; }
+input:focus { outline: 2px solid var(--brand); outline-offset: 1px; }
+button { font: inherit; font-weight: 600; color: var(--brand-ink); background: var(--brand); border: 0; border-radius: 8px; padding: 10px; cursor: pointer; }
+.err { background: var(--bad-bg); color: var(--bad); border-radius: 8px; padding: 8px 10px; }
+small { color: var(--ink-3); }
+</style>
+</head>
+<body>
+<form method="post" action="login">
+  <h1><span>Hashu</span> mint operator</h1>
+  <p>Log in to manage this mint.</p>
+  <!--NOTE-->
+  <label>User <input name="user" autocomplete="username" required autofocus></label>
+  <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+  <button type="submit">Log in</button>
+  <small>Five wrong passwords lock this address out for 15 minutes.</small>
+</form>
+</body>
+</html>

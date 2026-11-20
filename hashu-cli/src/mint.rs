@@ -264,6 +264,14 @@ pub struct RunArgs {
     /// hashrate; keep it on loopback.
     #[arg(long)]
     pub control_allow_open: bool,
+    /// Operator login for the GUI and control API: bcrypt hash of the
+    /// password (`caddy hash-password` makes one). Required when
+    /// `--control-bind` is not loopback, unless `--control-allow-open`.
+    #[arg(long, env = "HASHU_OPERATOR_PASSWORD_HASH", hide_env_values = true)]
+    pub operator_password_hash: Option<String>,
+    /// User name for the operator login.
+    #[arg(long, env = "HASHU_OPERATOR_USER", default_value = "operator")]
+    pub operator_user: String,
     /// Periodic proxy metrics log interval (seconds). 0 disables.
     #[arg(long, default_value_t = 30)]
     pub metrics_interval: u64,
@@ -911,6 +919,24 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         let bind: SocketAddr = bind
             .parse()
             .with_context(|| format!("--control-bind {bind:?}"))?;
+        let auth = match args
+            .operator_password_hash
+            .as_deref()
+            .filter(|h| !h.trim().is_empty())
+        {
+            Some(hash) => {
+                crate::operator_auth::OperatorAuth::with_password_hash(&args.operator_user, hash)
+                    .context("--operator-password-hash")?
+            }
+            None => {
+                anyhow::ensure!(
+                    bind.ip().is_loopback() || args.control_allow_open,
+                    "--control-bind {bind} is reachable from other machines but has no \
+                     operator login: set HASHU_OPERATOR_PASSWORD_HASH (caddy hash-password)"
+                );
+                crate::operator_auth::OperatorAuth::open()
+            }
+        };
         let control = ControlState {
             ledger: ledger.clone(),
             metrics: metrics.clone(),
@@ -939,6 +965,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             checkout: checkout.clone(),
             waitlist: waitlist.clone(),
             mrr: mrr_sync.clone(),
+            auth: Arc::new(auth),
         });
         let listener = tokio::net::TcpListener::bind(bind)
             .await

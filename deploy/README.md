@@ -20,7 +20,7 @@ mint and phoenixd state): see [DIGITALOCEAN.md](DIGITALOCEAN.md).
              ┌────────────┐  :8085 mint API     ┌──────────────┐  ──► redeemer's pool
              │   Caddy    │ ──────────────────► │    hashu     │  ──► default pool
              │  80 / 443  │  :3334 /operator/   │  mint run    │
-             └────────────┘   (basic auth)      └──────┬───────┘
+             └────────────┘   (login)           └──────┬───────┘
                                                        │ :9740 (limited password)
                                                 ┌──────▼───────┐
                                                 │   phoenixd   │ ──► Lightning (mainnet)
@@ -54,7 +54,7 @@ again at startup, so running them without compose fails the same way.
 | `HASHU_UPSTREAM` | **yes** | Fallback idle pool (`stratum+tcp://host:port`): where a rig mines when no redemption needs it and it named no `pool=` and isn't a mainnet address. The miner's username passes through, so it must be valid there. Changing it doesn't change which rigs are yours. |
 | `PHOENIXD_PASSWORD` | **yes** | phoenixd full-access password (stays inside phoenixd). `openssl rand -hex 32` |
 | `PHOENIXD_LIMITED_PASSWORD` | **yes** | phoenixd limited password given to hashu (invoices only, cannot send). |
-| `OPERATOR_PASSWORD_HASH` | **yes** | bcrypt hash for the operator GUI at `/operator/` (`caddy hash-password`). |
+| `OPERATOR_PASSWORD_HASH` | **yes** | bcrypt hash for the operator login at `/operator/` (`caddy hash-password`). The mint checks it: five wrong passwords per address lock that address out for 15 minutes, sessions last 12 hours, and cross-site POSTs are refused. |
 | `OPERATOR_USER` | no | Operator GUI user, default `operator`. |
 | `HASHU_EXTRA_DOMAINS` | no | More host names for the same site, with the splash page (`site/`) at `/`. Default none. |
 | `HASHU_MINT_NAME`, `HASHU_MINT_DESCRIPTION` | no | NUT-06 name and description (defaults: `Hashu` and a generic description). |
@@ -488,7 +488,10 @@ Bitaxe-class rig (≈ 1.1 TiH/s) 1,024 TiH is about 15 minutes of hashing. Three
   rentals; it lists any left over so you can remove them):
 
   ```sh
-  curl -s -u operator:$OPERATOR_PASSWORD -XPOST \
+  # Log in once (the session cookie lasts 12 hours), then reuse it.
+  curl -s -c ~/.hashu-op -d user=operator --data-urlencode "password=$OPERATOR_PASSWORD" \
+    https://mint.hashu.io/operator/login -o /dev/null
+  curl -s -b ~/.hashu-op -XPOST \
     https://mint.hashu.io/operator/api/capacity \
     -d '{"rentals":[{"ths":100,"hours":3,"label":"MRR 123"}]}'
   ```
