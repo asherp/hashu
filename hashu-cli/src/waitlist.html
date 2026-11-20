@@ -94,6 +94,7 @@ label.sub { font-weight: 400; font-size: 13px; color: var(--ink-2); gap: 4px; }
 .unit-row input { flex: 1 1 0; width: 0; min-width: 0; }
 .cap-row > label { min-width: 0; }
 .unit-row .suffix { color: var(--ink-3); font-size: 14px; }
+.unit-row select { flex: 0 0 auto; width: auto; padding: 10px 8px; }
 .est { margin: 0; font-size: 14px; color: var(--ink-2); background: var(--brand-fill); border-radius: 8px; padding: 8px 12px; }
 .est b { color: var(--ink); }
 fieldset.pay { border: 0; margin: 0; padding: 0; display: grid; gap: 8px; min-width: 0; }
@@ -140,10 +141,18 @@ button.btn[disabled] { opacity: 0.6; cursor: wait; }
       </ul>
 
       <form class="card" id="join" novalidate>
-        <label>How to reach you
-          <small>Email, Nostr npub, Signal, Telegram or X handle. Just one.</small>
-          <input name="contact" required maxlength="200" autocomplete="off" placeholder="npub1… or you@example.com">
-        </label>
+        <fieldset class="pay">
+          <legend>How to reach you <small>(at least one)</small></legend>
+          <label class="sub">Email
+            <input name="email" type="email" maxlength="200" autocomplete="email" autocapitalize="none" spellcheck="false" placeholder="you@example.com">
+          </label>
+          <label class="sub">Nostr npub
+            <input name="npub" maxlength="71" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="npub1…">
+          </label>
+          <label class="sub">Other <small>(Signal, Telegram or X)</small>
+            <input name="contact" maxlength="200" autocomplete="off" placeholder="@handle">
+          </label>
+        </fieldset>
         <label><span>Mint name you'd like <small>(optional)</small></span>
           <span class="name-row"><input name="mint_name" maxlength="32" pattern="[a-z0-9][a-z0-9\-]*[a-z0-9]" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="alice"><span class="suffix" id="suffix">.this-mint</span></span>
         </label>
@@ -151,7 +160,7 @@ button.btn[disabled] { opacity: 0.6; cursor: wait; }
           <legend>What you'd sell <small>(optional)</small></legend>
           <div class="cap-row">
             <label class="sub">Hashrate
-              <span class="unit-row"><input name="hashrate_ths" type="number" inputmode="decimal" min="0" step="any" placeholder="1.2"><span class="suffix">TH/s</span></span>
+              <span class="unit-row"><input name="hashrate_ths" type="number" inputmode="decimal" min="0" step="any" placeholder="1.2" aria-label="Hashrate"><select name="hashrate_unit" aria-label="Hashrate unit"><option value="TH/s" data-ths="1" selected>TH/s</option><option value="PH/s" data-ths="1000">PH/s</option><option value="EH/s" data-ths="1000000">EH/s</option></select></span>
             </label>
             <label class="sub">For how long
               <select name="horizon">
@@ -173,11 +182,11 @@ button.btn[disabled] { opacity: 0.6; cursor: wait; }
           </label>
         </fieldset>
         <fieldset class="pay">
-          <legend>How would you like to be paid? <small>(optional)</small></legend>
-          <label class="opt"><input type="radio" name="payout" value="stablecoin"> USDC / USDT</label>
-          <label class="opt"><input type="radio" name="payout" value="lightning"> Lightning</label>
-          <label class="opt"><input type="radio" name="payout" value="onchain"> On-chain bitcoin</label>
-          <label class="opt"><input type="radio" name="payout" value="other"> Something else</label>
+          <legend>How would you like to be paid? <small>(optional, select all that apply)</small></legend>
+          <label class="opt"><input type="checkbox" name="payout" value="stablecoin"> USDC / USDT</label>
+          <label class="opt"><input type="checkbox" name="payout" value="lightning"> Lightning</label>
+          <label class="opt"><input type="checkbox" name="payout" value="onchain"> On-chain bitcoin</label>
+          <label class="opt"><input type="checkbox" name="payout" value="other"> Something else</label>
           <input name="payout_other" id="payout-other" maxlength="80" autocomplete="off" placeholder="Which? e.g. Liquid, eCash, bank transfer" hidden>
         </fieldset>
         <label><span>Anything else <small>(optional)</small></span>
@@ -209,37 +218,48 @@ fetch('/checkout/api/info', { cache: 'no-store' })
   .catch(() => {});
 
 const form = document.getElementById('join');
-// TiH for sale = TH/s × hours × 3,274.18 TiH per TH-hour (TiH = 2^40 hashes).
+// TiH for sale = TH/s × hours × 3,274.18 TiH per TH-hour (TiH = 2^40 hashes);
+// PH/s and EH/s convert to TH/s first.
 const est = document.getElementById('est');
 const estHint = est.textContent;
 function updateEstimate() {
-  const ths = parseFloat(form.hashrate_ths.value);
+  const val = parseFloat(form.hashrate_ths.value);
+  const unit = form.hashrate_unit.selectedOptions[0];
+  const ths = val * Number(unit.dataset.ths);
   const opt = form.horizon.selectedOptions[0];
   const hours = opt && opt.dataset.hours ? Number(opt.dataset.hours) : 0;
   if (!(ths > 0) || !hours) { est.textContent = estHint; return; }
   const tih = ths * hours * 3.6e15 / 2 ** 40;
   est.innerHTML = '';
-  est.append(ths + ' TH/s × ' + hours.toLocaleString() + ' h ≈ ');
+  est.append(val + ' ' + unit.value + ' × ' + hours.toLocaleString() + ' h ≈ ');
   const b = document.createElement('b');
   b.textContent = tih.toLocaleString(undefined, { maximumFractionDigits: tih < 10 ? 2 : 0 }) + ' TiH';
   est.append(b, ' for sale');
 }
 form.addEventListener('input', updateEstimate);
+form.addEventListener('change', updateEstimate);
 const other = document.getElementById('payout-other');
 form.addEventListener('change', (ev) => {
-  if (ev.target.name !== 'payout') return;
-  other.hidden = ev.target.value !== 'other';
+  if (ev.target.name !== 'payout' || ev.target.value !== 'other') return;
+  other.hidden = !ev.target.checked;
   if (!other.hidden) other.focus();
 });
 const msg = document.getElementById('msg');
 function say(text, ok) { msg.textContent = text; msg.className = 'msg ' + (ok ? 'ok' : 'no'); msg.hidden = false; }
 form.addEventListener('submit', async (ev) => {
   ev.preventDefault();
-  const data = Object.fromEntries(new FormData(form));
+  const fd = new FormData(form);
+  const data = Object.fromEntries(fd);
+  data.payout = fd.getAll('payout');
   data.mint_name = (data.mint_name || '').trim().toLowerCase();
-  if (!(data.contact || '').trim()) { say('Leave one way to reach you.', false); return; }
-  if (data.payout === 'other' && !(data.payout_other || '').trim()) { say("Say how you'd like to be paid.", false); other.focus(); return; }
-  if (data.payout !== 'other') delete data.payout_other;
+  data.email = (data.email || '').trim();
+  data.npub = (data.npub || '').trim().replace(/^nostr:/i, '').toLowerCase();
+  if (!data.email && !data.npub && !(data.contact || '').trim()) { say('Leave an email, an npub or another way to reach you.', false); form.email.focus(); return; }
+  if (data.email && !form.email.checkValidity()) { say("That email doesn't look right.", false); form.email.focus(); return; }
+  if (data.npub && !/^npub1[02-9ac-hj-np-z]{58}$/.test(data.npub)) { say('An npub starts with npub1 and is 63 characters long.', false); form.npub.focus(); return; }
+  const wantsOther = data.payout.includes('other');
+  if (wantsOther && !(data.payout_other || '').trim()) { say("Say how you'd like to be paid.", false); other.focus(); return; }
+  if (!wantsOther) delete data.payout_other;
   const btn = form.querySelector('button');
   btn.disabled = true;
   try {

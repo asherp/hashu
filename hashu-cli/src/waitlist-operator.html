@@ -107,20 +107,26 @@ async function load() {
   if (!j.entries.length) { list.append(el('p', 'empty', 'Nobody yet. Share /waitlist/.')); return; }
   for (const e of j.entries) {
     const row = el('div', 'row');
-    row.append(el('div', 'c', e.contact));
+    const who = [e.email, e.npub, e.contact].filter(Boolean).join(' · ');
+    row.append(el('div', 'c', who));
     const meta = [new Date(e.at * 1000).toLocaleString()];
     if (e.mint_name) meta.push('mint: ' + e.mint_name);
     if (e.hashrate) meta.push(e.hashrate);
     const HOR = { hour: '1 hour', '6-hours': '6 hours', day: '1 day', week: '1 week', month: '1 month', quarter: '3 months', 'half-year': '6 months', year: '1 year' };
-    if (e.hashrate_ths) meta.push(e.hashrate_ths + ' TH/s');
+    const UNIT = { 'TH/s': 1, 'PH/s': 1e3, 'EH/s': 1e6 };
+    if (e.hashrate_ths) {
+      const u = UNIT[e.hashrate_unit] ? e.hashrate_unit : 'TH/s';
+      meta.push(+(e.hashrate_ths / UNIT[u]).toPrecision(12) + ' ' + u);
+    }
     if (e.horizon) meta.push('for ' + (HOR[e.horizon] || e.horizon));
     if (e.tih_for_sale != null) meta.push('≈ ' + Math.round(e.tih_for_sale).toLocaleString() + ' TiH for sale');
     const PAY = { stablecoin: 'USDC/USDT', lightning: 'Lightning', onchain: 'on-chain' };
-    if (e.payout) meta.push('paid in ' + (e.payout === 'other' ? (e.payout_other || 'other') : PAY[e.payout] || e.payout));
+    const pays = [].concat(e.payout || []).map((p) => (p === 'other' ? (e.payout_other || 'other') : PAY[p] || p));
+    if (pays.length) meta.push('paid in ' + pays.join(' or '));
     row.append(el('div', 'meta', meta.join(' · ')));
     const del = el('button', null, 'Delete');
     del.onclick = async () => {
-      if (!confirm('Delete ' + e.contact + ' from the waitlist?')) return;
+      if (!confirm('Delete ' + who + ' from the waitlist?')) return;
       const d = await fetch('api/waitlist/' + encodeURIComponent(e.id), { method: 'DELETE' });
       if (d.ok) load(); else alert('Delete failed (' + d.status + ')');
     };
