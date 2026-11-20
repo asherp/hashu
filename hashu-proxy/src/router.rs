@@ -282,8 +282,9 @@ fn strip_default_authorize(line: &str) -> Option<String> {
 }
 
 /// Turn a melt request's `pool_url` into an upstream the proxy can dial
-/// (`host:port`, or `tls://host:port` for `stratum+ssl://`), or `None` if
-/// it can't (no port, a path, or an unknown scheme such as Stratum V2).
+/// (`host:port`, `tls://host:port` for `stratum+ssl://`, or
+/// `sv2://host:port/<key>` for `stratum2+tcp://`), or `None` if it can't
+/// (no port, a path, or an unknown scheme).
 /// See [`crate::upstream::normalize_upstream`].
 pub fn upstream_for_pool_url(pool_url: &str) -> Option<String> {
     normalize_upstream(pool_url)

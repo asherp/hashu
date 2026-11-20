@@ -44,7 +44,8 @@ hashrate at their own pool. The mint never pays out bitcoin.
 | MDK heater stack: Worker + app switching pools on redeem, thermostat | done | [`mdk/`](mdk/README.md) |
 | Hosted mint per supplier (`alice.mint.hashu.io`) | in progress | — |
 | Streaming redemption with change via NUT-08 blanks | design ([#44](https://github.com/asherp/hashu/issues/44)) | — |
-| Stratum V2 and TLS | design ([#53](https://github.com/asherp/hashu/issues/53)) | — |
+| Redeem to TLS (`stratum+ssl://`) and Stratum V2 (`stratum2+tcp://host/<key>`) pools, translated per connection with SRI crates | done | `hashu-proxy::{upstream,sv2}` |
+| Stratum V2 for miners (encrypted miner-facing port) | design ([#53](https://github.com/asherp/hashu/issues/53)) | — |
 | TEE-held mint keys and attested share counting | design ([#47](https://github.com/asherp/hashu/issues/47)) | — |
 
 Over 350 tests across the workspace, including a loopback end-to-end test

@@ -885,7 +885,7 @@ impl RedeemTarget {
             let f = Self::primary_from_json(p).map_err(|_| {
                 err(
                     StatusCode::BAD_REQUEST,
-                    format!("backup pool {}: needs a stratum+tcp:// or stratum+ssl:// URL with a port, and a worker name", i + 1),
+                    format!("backup pool {}: needs a stratum+tcp://, stratum+ssl:// or stratum2+tcp:// URL, and a worker name", i + 1),
                 )
             })?;
             t.fallbacks.push(hashu_core::redemption::PoolTarget {
@@ -912,7 +912,7 @@ impl RedeemTarget {
         if upstream_for_pool_url(&pool_url).is_none() {
             return Err(err(
                 StatusCode::BAD_REQUEST,
-                "pool must be stratum+tcp://host:port or stratum+ssl://host:port",
+                "pool must be stratum+tcp://host:port, stratum+ssl://host:port or stratum2+tcp://host[:port]/<authority key>",
             ));
         }
         if worker.is_empty() {

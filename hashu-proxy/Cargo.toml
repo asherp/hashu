@@ -3,7 +3,7 @@ name = "hashu-proxy"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Stratum V1 (plain TCP or TLS upstream) hashrate proxy for Hashu that credits shares and redirects hashrate to a redeemer's pool"
+description = "Stratum V1 (plain TCP, TLS or Stratum V2 upstream) hashrate proxy for Hashu that credits shares and redirects hashrate to a redeemer's pool"
 homepage.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -24,7 +24,12 @@ hex = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 webpki-roots = "1"
+# Stratum V2 upstream (see src/sv2.rs). SRI's crate APIs churn, so pin exactly.
+stratum-core = { version = "=0.7.0", features = ["translation"] }
+stratum-apps = { version = "=0.9.0", default-features = false, features = ["network"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Same version as stratum-apps' key_utils, for the mock SV2 pool's keys.
+secp256k1 = "=0.28.2"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "net", "time"] }

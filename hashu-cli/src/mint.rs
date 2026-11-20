@@ -568,7 +568,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     }
     let Some(upstream) = normalize_upstream(raw_upstream) else {
         bail!(
-            "HASHU_UPSTREAM must be stratum+tcp://host:port or stratum+ssl://host:port (got {raw_upstream})"
+            "HASHU_UPSTREAM must be stratum+tcp://host:port, stratum+ssl://host:port or stratum2+tcp://host[:port]/<authority key> (got {raw_upstream})"
         );
     };
     let contacts = parse_contacts(&args.contact)?;

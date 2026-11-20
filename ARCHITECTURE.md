@@ -103,9 +103,15 @@ inbound Stratum connections it is authorized to direct.
 ### 4.2 Stratum proxy
 
 - **Stratum V1** for MVP — universal pool compatibility.
-- **Stratum V2** as fast-follow using SRI (Stratum Reference
-  Implementation, Rust). V2's job-declaration mode is a natural fit
-  because the proxy already wants to dictate work assignment.
+- **Stratum V2 pools** (upstream, done): a redemption's pool may be
+  `stratum2+tcp://host[:port]/<authority key>`. `hashu_proxy::sv2` dials
+  it with Noise (checking the key), opens one extended channel per miner
+  connection with the redeemer's worker as `user_identity`, and translates
+  to and from the SV1 lines the rest of the proxy speaks, using SRI's
+  protocol crates (`stratum-core`, not SRI's aggregating translator).
+  Seamless switching, crediting and the share audit are unchanged.
+- **Stratum V2 miners** (downstream) is next: see issue #53. Job
+  declaration stays out of scope.
 - Per-connection state: connection ID, hashrate EMA, current upstream
   pool binding, share counter.
 - **Operator config: default pool URL + credentials.** All inbound
