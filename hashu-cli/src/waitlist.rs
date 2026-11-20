@@ -7,7 +7,8 @@
 //! (and deletes) entries behind the operator password, at
 //! `/operator/waitlist`.
 //!
-//! Minimal data, on purpose: a contact handle (required), and optionally a
+//! Minimal data, on purpose: an email, a Nostr npub or another contact
+//! handle (at least one), and optionally a
 //! wished-for mint name, rough hashrate and a short note. No IP address, user
 //! agent or cookie is stored. Rate limiting keys on a salted hash of the
 //! client address that lives only in memory and is forgotten within the hour.
@@ -52,7 +53,15 @@ pub struct Entry {
     pub id: String,
     /// Unix seconds.
     pub at: u64,
-    /// How to reach the miner: email, Nostr npub, Signal, Telegram, X, ...
+    /// Email address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Nostr public key, `npub1...`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub npub: Option<String>,
+    /// Any other way to reach the miner (Signal, Telegram, X, ...). Before
+    /// the email and npub fields this held every contact, emails included.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub contact: String,
     /// Wished-for mint name, as in `<name>.<mint domain>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,9 +69,13 @@ pub struct Entry {
     /// Their rigs, free text ("2 Bitaxes", "1 S21").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hashrate: Option<String>,
-    /// Hashrate they'd put behind the mint, in TH/s.
+    /// Hashrate they'd put behind the mint, in TH/s (converted from the
+    /// unit they picked).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hashrate_ths: Option<f64>,
+    /// Unit they typed the hashrate in: a key of [`HASHRATE_UNITS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hashrate_unit: Option<String>,
     /// How long they'd commit it: a key of [`HORIZONS`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub horizon: Option<String>,
@@ -71,10 +84,16 @@ pub struct Entry {
     /// from before #90 (`thh_for_sale`) read in TiH too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tih_for_sale: Option<f64>,
-    /// How they'd like to be paid for sales: one of [`PAYOUTS`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payout: Option<String>,
-    /// What "other" means, when `payout` is "other".
+    /// How they'd like to be paid for sales: any of [`PAYOUTS`] (select
+    /// all that apply). Entries from before stored one string; those load
+    /// as a one-item list.
+    #[serde(
+        default,
+        deserialize_with = "one_or_many",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub payout: Vec<String>,
+    /// What "other" means, when `payout` includes "other".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payout_other: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,8 +119,28 @@ fn tih_for_sale(ths: Option<f64>, horizon: Option<&str>) -> Option<f64> {
     ths.map(|t| hashu_core::denom::tih_from_ths_hours(t, hours as f64).round())
 }
 
-/// Largest hashrate accepted, in TH/s (1 EH/s).
-pub const MAX_THS: f64 = 1_000_000.0;
+/// Hashrate units the form offers, with their size in TH/s.
+pub const HASHRATE_UNITS: [(&str, f64); 3] = [("TH/s", 1.0), ("PH/s", 1e3), ("EH/s", 1e6)];
+
+/// Largest hashrate accepted, in TH/s (1,000 EH/s, about the whole network).
+pub const MAX_THS: f64 = 1e9;
+
+/// A string or a list of strings, as a list (blank strings dropped).
+fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(Option<String>),
+        Many(Vec<String>),
+    }
+    Ok(match OneOrMany::deserialize(d)? {
+        OneOrMany::One(s) => s.into_iter().collect(),
+        OneOrMany::Many(v) => v,
+    }
+    .into_iter()
+    .filter(|s| !s.trim().is_empty())
+    .collect())
+}
 
 /// Payout preferences the form offers: stablecoins (USDC/USDT),
 /// Lightning, on-chain bitcoin, or something else (spelled out).
@@ -111,18 +150,27 @@ pub const PAYOUTS: [&str; 4] = ["stablecoin", "lightning", "onchain", "other"];
 #[derive(Debug, Default, Deserialize)]
 pub struct Submission {
     #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub npub: String,
+    /// Other contact (Signal, Telegram, X, ...).
+    #[serde(default)]
     pub contact: String,
     #[serde(default)]
     pub mint_name: String,
     #[serde(default)]
     pub hashrate: String,
-    /// TH/s, as typed (a number).
+    /// Hashrate, as typed (a number), in `hashrate_unit`.
     #[serde(default)]
     pub hashrate_ths: String,
+    /// "TH/s" (default), "PH/s" or "EH/s".
+    #[serde(default)]
+    pub hashrate_unit: String,
     #[serde(default)]
     pub horizon: String,
-    #[serde(default)]
-    pub payout: String,
+    /// One payout preference or a list of them.
+    #[serde(default, deserialize_with = "one_or_many")]
+    pub payout: Vec<String>,
     #[serde(default)]
     pub payout_other: String,
     #[serde(default)]
@@ -136,7 +184,7 @@ pub struct Submission {
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
     Added,
-    /// Same contact already on the list; nothing changed.
+    /// Same email, npub or contact already on the list; nothing changed.
     Duplicate,
     /// Honeypot filled; reported as success, nothing stored.
     Ignored,
@@ -256,8 +304,7 @@ impl Waitlist {
             return Err(Refusal::RateLimited);
         }
         let mut entries = self.entries.lock().unwrap();
-        let key = entry.contact.to_lowercase();
-        if entries.iter().any(|e| e.contact.to_lowercase() == key) {
+        if entries.iter().any(|e| same_person(e, &entry)) {
             return Ok(Outcome::Duplicate);
         }
         if entries.len() >= MAX_ENTRIES {
@@ -327,10 +374,75 @@ pub fn valid_mint_name(n: &str) -> bool {
         && !n.ends_with('-')
 }
 
+/// The ways to reach `e`, lowercased, for spotting repeat sign-ups. An
+/// older entry's `contact` may hold an email or npub, so every handle is
+/// compared with every other.
+fn handles(e: &Entry) -> Vec<String> {
+    [
+        e.email.as_deref(),
+        e.npub.as_deref(),
+        Some(e.contact.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|h| !h.is_empty())
+    .map(str::to_lowercase)
+    .collect()
+}
+
+fn same_person(a: &Entry, b: &Entry) -> bool {
+    let b = handles(b);
+    handles(a).iter().any(|h| b.contains(h))
+}
+
+/// Loose email check: one `@`, something before it, a dot after it.
+pub fn valid_email(e: &str) -> bool {
+    match e.split_once('@') {
+        Some((user, host)) => {
+            !user.is_empty()
+                && !host.contains('@')
+                && host.contains('.')
+                && !host.starts_with('.')
+                && !host.ends_with('.')
+                && !e.contains(char::is_whitespace)
+        }
+        None => false,
+    }
+}
+
+/// A bech32 npub: `npub1` then 58 data characters (32-byte key + checksum).
+pub fn valid_npub(n: &str) -> bool {
+    const CHARSET: &str = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    n.len() == 63 && n.starts_with("npub1") && n[5..].chars().all(|c| CHARSET.contains(c))
+}
+
 fn validate(s: Submission) -> Result<Entry, Refusal> {
-    let contact = clean(&s.contact, MAX_CONTACT, "contact")?
-        .filter(|c| c.chars().count() >= 3)
-        .ok_or_else(|| Refusal::Invalid("leave a way to reach you".into()))?;
+    let email = clean(&s.email, MAX_CONTACT, "email")?;
+    if let Some(e) = &email {
+        if !valid_email(e) {
+            return Err(Refusal::Invalid(
+                "email: that doesn't look like an address".into(),
+            ));
+        }
+    }
+    let npub = clean(&s.npub, 63 + 8, "npub")?
+        .map(|n| n.strip_prefix("nostr:").unwrap_or(&n).to_lowercase());
+    if let Some(n) = &npub {
+        if !valid_npub(n) {
+            return Err(Refusal::Invalid(
+                "npub: a Nostr public key starting npub1 (63 characters)".into(),
+            ));
+        }
+    }
+    let contact = clean(&s.contact, MAX_CONTACT, "contact")?.unwrap_or_default();
+    if !contact.is_empty() && contact.chars().count() < 3 {
+        return Err(Refusal::Invalid("other contact is too short".into()));
+    }
+    if email.is_none() && npub.is_none() && contact.is_empty() {
+        return Err(Refusal::Invalid(
+            "leave an email, an npub or another way to reach you".into(),
+        ));
+    }
     let mint_name = clean(&s.mint_name, 32, "mint name")?.map(|n| n.to_lowercase());
     if let Some(n) = &mint_name {
         if !valid_mint_name(n) {
@@ -349,28 +461,41 @@ fn validate(s: Submission) -> Result<Entry, Refusal> {
             )));
         }
     }
+    let unit = match s.hashrate_unit.trim() {
+        "" => HASHRATE_UNITS[0],
+        u => *HASHRATE_UNITS
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(u))
+            .ok_or_else(|| Refusal::Invalid("hashrate unit: TH/s, PH/s or EH/s".into()))?,
+    };
     let hashrate_ths = match s.hashrate_ths.trim() {
         "" => None,
-        t => match t.parse::<f64>() {
+        t => match t.parse::<f64>().map(|v| v * unit.1) {
             Ok(v) if v.is_finite() && v > 0.0 && v <= MAX_THS => Some(v),
             _ => {
-                return Err(Refusal::Invalid(format!(
-                    "hashrate: a number of TH/s above 0 and at most {MAX_THS}"
-                )))
+                return Err(Refusal::Invalid(
+                    "hashrate: a number above 0 and at most 1,000 EH/s".into(),
+                ))
             }
         },
     };
+    let hashrate_unit = hashrate_ths.map(|_| unit.0.to_string());
     let tih_for_sale = tih_for_sale(hashrate_ths, horizon.as_deref());
-    let payout = clean(&s.payout, 16, "payout")?;
-    if let Some(p) = &payout {
-        if !PAYOUTS.contains(&p.as_str()) {
-            return Err(Refusal::Invalid(format!(
-                "payout: one of {}",
-                PAYOUTS.join(", ")
-            )));
-        }
+    // Known keys only, each once, in the form's order.
+    let picked: Vec<String> = s.payout.iter().map(|p| p.trim().to_string()).collect();
+    if let Some(bad) = picked.iter().find(|p| !PAYOUTS.contains(&p.as_str())) {
+        let bad: String = bad.chars().take(16).collect();
+        return Err(Refusal::Invalid(format!(
+            "payout {bad:?}: pick from {}",
+            PAYOUTS.join(", ")
+        )));
     }
-    let payout_other = if payout.as_deref() == Some("other") {
+    let payout: Vec<String> = PAYOUTS
+        .iter()
+        .filter(|k| picked.iter().any(|p| p == *k))
+        .map(|k| k.to_string())
+        .collect();
+    let payout_other = if payout.iter().any(|p| p == "other") {
         Some(
             clean(&s.payout_other, MAX_HASHRATE, "payout")?
                 .ok_or_else(|| Refusal::Invalid("say how you'd like to be paid".into()))?,
@@ -384,10 +509,13 @@ fn validate(s: Submission) -> Result<Entry, Refusal> {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or_default(),
+        email,
+        npub,
         contact,
         mint_name,
         hashrate: clean(&s.hashrate, MAX_HASHRATE, "hashrate")?,
         hashrate_ths,
+        hashrate_unit,
         horizon,
         tih_for_sale,
         payout,
@@ -482,18 +610,21 @@ fn csv_field(s: &str) -> String {
 
 async fn csv(State(w): State<Arc<Waitlist>>) -> Response {
     let mut out =
-        String::from("id,at,contact,mint_name,hashrate,hashrate_ths,horizon,tih_for_sale,payout,payout_other,note\n");
+        String::from("id,at,email,npub,contact,mint_name,hashrate,hashrate_ths,hashrate_unit,horizon,tih_for_sale,payout,payout_other,note\n");
     for e in w.entries() {
         let row = [
             csv_field(&e.id),
             e.at.to_string(),
+            csv_field(e.email.as_deref().unwrap_or("")),
+            csv_field(e.npub.as_deref().unwrap_or("")),
             csv_field(&e.contact),
             csv_field(e.mint_name.as_deref().unwrap_or("")),
             csv_field(e.hashrate.as_deref().unwrap_or("")),
             e.hashrate_ths.map(|v| v.to_string()).unwrap_or_default(),
+            csv_field(e.hashrate_unit.as_deref().unwrap_or("")),
             csv_field(e.horizon.as_deref().unwrap_or("")),
             e.tih_for_sale.map(|v| v.to_string()).unwrap_or_default(),
-            csv_field(e.payout.as_deref().unwrap_or("")),
+            csv_field(&e.payout.join("; ")),
             csv_field(e.payout_other.as_deref().unwrap_or("")),
             csv_field(e.note.as_deref().unwrap_or("")),
         ];
@@ -594,7 +725,7 @@ mod tests {
         let w = Waitlist::open(dir.path().join("w")).unwrap();
         let with = |payout: &str, other: &str| Submission {
             contact: format!("{payout}{other}@x.io"),
-            payout: payout.into(),
+            payout: vec![payout.into()],
             payout_other: other.into(),
             ..Default::default()
         };
@@ -612,9 +743,66 @@ mod tests {
         ));
         assert_eq!(w.submit("a", with("other", "Liquid")), Ok(Outcome::Added));
         let e = w.entries();
-        assert_eq!(e[0].payout.as_deref(), Some("lightning"));
+        assert_eq!(e[0].payout, vec!["lightning"]);
         assert_eq!(e[0].payout_other, None);
         assert_eq!(e[1].payout_other.as_deref(), Some("Liquid"));
+    }
+
+    #[test]
+    fn payout_select_all_that_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("w");
+        // An entry from before multi-select stored one string.
+        std::fs::write(
+            &path,
+            "{\"id\":\"old\",\"at\":1,\"contact\":\"old@x.io\",\"payout\":\"onchain\"}\n",
+        )
+        .unwrap();
+        let w = Waitlist::open(path.clone()).unwrap();
+        assert_eq!(w.entries()[0].payout, vec!["onchain"]);
+        let s: Submission = serde_json::from_str(
+            r#"{"contact":"m@x.io","payout":["other","lightning","stablecoin","lightning"],"payout_other":"Liquid"}"#,
+        )
+        .unwrap();
+        assert_eq!(w.submit("a", s), Ok(Outcome::Added));
+        let bad: Submission =
+            serde_json::from_str(r#"{"contact":"n@x.io","payout":["lightning","paypal"]}"#)
+                .unwrap();
+        assert!(matches!(w.submit("a", bad), Err(Refusal::Invalid(_))));
+        let e = Waitlist::open(path).unwrap().entries();
+        // Form order, duplicates dropped.
+        assert_eq!(e[1].payout, vec!["stablecoin", "lightning", "other"]);
+        assert_eq!(e[1].payout_other.as_deref(), Some("Liquid"));
+    }
+
+    #[test]
+    fn hashrate_units() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = Waitlist::open(dir.path().join("w")).unwrap();
+        let with = |v: &str, u: &str| Submission {
+            contact: format!("{v}{u}@x.io"),
+            hashrate_ths: v.into(),
+            hashrate_unit: u.into(),
+            ..Default::default()
+        };
+        assert_eq!(w.submit("a", with("1.5", "PH/s")), Ok(Outcome::Added));
+        assert_eq!(w.submit("a", with("2", "eh/s")), Ok(Outcome::Added));
+        assert_eq!(w.submit("a", with("90", "")), Ok(Outcome::Added));
+        assert!(matches!(
+            w.submit("b", with("1", "GH/s")),
+            Err(Refusal::Invalid(_))
+        ));
+        assert!(matches!(
+            w.submit("b", with("1001", "EH/s")),
+            Err(Refusal::Invalid(_))
+        ));
+        let e = w.entries();
+        assert_eq!(e[0].hashrate_ths, Some(1_500.0));
+        assert_eq!(e[0].hashrate_unit.as_deref(), Some("PH/s"));
+        assert_eq!(e[1].hashrate_ths, Some(2_000_000.0));
+        assert_eq!(e[1].hashrate_unit.as_deref(), Some("EH/s"));
+        assert_eq!(e[2].hashrate_ths, Some(90.0));
+        assert_eq!(e[2].hashrate_unit.as_deref(), Some("TH/s"));
     }
 
     #[test]
@@ -651,6 +839,52 @@ mod tests {
         assert_eq!(e[0].tih_for_sale, Some(2_828_892.0));
         assert_eq!(e[1].horizon.as_deref(), Some("year"));
         assert_eq!(e[1].tih_for_sale, None);
+    }
+
+    #[test]
+    fn email_and_npub_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("w");
+        let w = Waitlist::open(path.clone()).unwrap();
+        let npub = "npub1sg6plzptd64u62a878hep2kev88swjh3tw00gjsfl8f237lmu63q0uf63m";
+        let s: Submission = serde_json::from_str(&format!(
+            r#"{{"email":" Miner@Example.com ","npub":"nostr:{}"}}"#,
+            npub.to_uppercase()
+        ))
+        .unwrap();
+        assert_eq!(w.submit("a", s), Ok(Outcome::Added));
+        let e = &w.entries()[0];
+        assert_eq!(e.email.as_deref(), Some("Miner@Example.com"));
+        assert_eq!(e.npub.as_deref(), Some(npub));
+        assert_eq!(e.contact, "");
+        // Same npub again, or the email typed in the old free-text field.
+        let again = Submission {
+            npub: npub.into(),
+            ..Default::default()
+        };
+        assert_eq!(w.submit("a", again), Ok(Outcome::Duplicate));
+        assert_eq!(
+            w.submit("a", sub("miner@example.com")),
+            Ok(Outcome::Duplicate)
+        );
+        let bad_email = Submission {
+            email: "not-an-email".into(),
+            ..Default::default()
+        };
+        assert!(matches!(w.submit("b", bad_email), Err(Refusal::Invalid(_))));
+        let bad_npub = Submission {
+            npub: "npub1short".into(),
+            ..Default::default()
+        };
+        assert!(matches!(w.submit("b", bad_npub), Err(Refusal::Invalid(_))));
+        assert!(matches!(
+            w.submit("b", Submission::default()),
+            Err(Refusal::Invalid(_))
+        ));
+        // Stored lines have no empty contact; old lines with only contact load.
+        let line = std::fs::read_to_string(&path).unwrap();
+        assert!(!line.contains("\"contact\""));
+        assert!(valid_email("a@b.co") && !valid_email("a@b") && !valid_email("a b@c.io"));
     }
 
     #[test]
