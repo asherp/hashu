@@ -346,6 +346,9 @@ struct Binding {
     supplier: Option<String>,
     /// Which orders this rig may fill.
     serves: Serves,
+    /// The miner's authorize user (e.g. `alice.rig1`), once seen: the
+    /// rig's label on the operator's hashrate chart.
+    rig: Option<String>,
 }
 
 /// Which orders a rig may fill.
@@ -408,6 +411,30 @@ struct Inner {
     /// When each (redemption, pool index) last failed. Skipped while
     /// younger than [`FALLBACK_HOLD`].
     pool_down: HashMap<(RedemptionId, usize), Instant>,
+    /// Accepted work per rig label since the proxy started, for the
+    /// operator's per-rig hashrate chart (see [`Router::rig_work`]).
+    rig_work: HashMap<String, RigWork>,
+}
+
+/// One rig's accepted work since the proxy started.
+#[derive(Debug, Clone, Copy)]
+struct RigWork {
+    hashes: f64,
+    last: Instant,
+}
+
+/// A rig that has sent no share for this long drops off the per-rig
+/// chart. Matches the meter's hour of history.
+pub const RIG_WORK_IDLE: Duration = Duration::from_secs(3600);
+
+/// Longest rig label kept; longer authorize users are cut.
+const RIG_LABEL_MAX: usize = 64;
+
+/// The rig label for an authorize: its user, trimmed and cut to
+/// [`RIG_LABEL_MAX`] characters.
+fn rig_label(authorize: &Value) -> Option<String> {
+    let user = authorize.get(0)?.as_str()?.trim();
+    (!user.is_empty()).then(|| user.chars().take(RIG_LABEL_MAX).collect())
 }
 
 /// Shared routing state. One per proxy process.
@@ -520,6 +547,7 @@ impl Router {
                     _ => i.supplier,
                 }),
                 serves,
+                rig: authorize.and_then(rig_label),
             },
         );
         match &route {
@@ -601,6 +629,9 @@ impl Router {
         let idle = self.idle_route(Some(&id));
         let serves = self.serves(Some(&id));
         if let Some(b) = self.lock().conns.get_mut(&conn) {
+            if b.rig.is_none() {
+                b.rig = rig_label(authorize);
+            }
             if b.supplier.is_none() {
                 b.supplier = Some(match &serves {
                     Serves::Supplier(n) => n.clone(),
@@ -778,11 +809,36 @@ impl Router {
             return;
         };
         b.rate.observe(hashes, at);
-        if bound_to.is_some() {
-            if let Some(k) = b.supplier.clone() {
-                *inner.delivered.entry(k).or_default() += hashes;
-            }
+        let rig = b.rig.clone().unwrap_or_else(|| conn.to_string());
+        let supplier = bound_to.and(b.supplier.clone());
+        if let Some(k) = supplier {
+            *inner.delivered.entry(k).or_default() += hashes;
         }
+        let w = inner.rig_work.entry(rig).or_insert(RigWork {
+            hashes: 0.0,
+            last: at,
+        });
+        w.hashes += hashes;
+        w.last = w.last.max(at);
+    }
+
+    /// Accepted work (hashes) of each rig since the proxy started, keyed
+    /// by its authorize user (`conn-<n>` before one is seen), sorted by
+    /// label. Reconnects under the same user add to the same rig. Rigs
+    /// with no share for [`RIG_WORK_IDLE`] are forgotten.
+    pub fn rig_work(&self) -> Vec<(String, f64)> {
+        let now = Instant::now();
+        let mut inner = self.lock();
+        inner
+            .rig_work
+            .retain(|_, w| now.saturating_duration_since(w.last) < RIG_WORK_IDLE);
+        let mut v: Vec<(String, f64)> = inner
+            .rig_work
+            .iter()
+            .map(|(k, w)| (k.clone(), w.hashes))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
     }
 
     /// Estimated hashrate of a live connection in hashes per second, once
@@ -1638,6 +1694,31 @@ mod tests {
     }
 
     use hashu_core::redemption::HASHES_PER_DIFF_ONE;
+
+    #[test]
+    fn rig_work_is_kept_per_authorize_user_across_reconnects() {
+        let router = Router::new("pool:3333", Arc::new(RedemptionLedger::new()));
+        let auth = serde_json::json!(["alice.rig1", "x"]);
+        let a = router.assign_with(ConnectionId::next(), Some(&auth));
+        router.observe_share(a.conn, 1.0, None);
+        router.release(a.conn);
+        let b = router.assign_with(ConnectionId::next(), Some(&auth));
+        router.observe_share(b.conn, 1.0, None);
+        // No authorize yet: labelled by connection until it sends one.
+        let c = router.assign(ConnectionId::next());
+        router.observe_share(c.conn, 2.0, None);
+        let one = hashu_core::redemption::hashes_for_difficulty(1.0) as f64;
+        assert_eq!(
+            router.rig_work(),
+            vec![
+                ("alice.rig1".to_string(), 2.0 * one),
+                (c.conn.to_string(), 2.0 * one),
+            ]
+        );
+        router.identify(c.conn, &serde_json::json!(["bob.rig2", "x"]));
+        router.observe_share(c.conn, 1.0, None);
+        assert!(router.rig_work().contains(&("bob.rig2".to_string(), one)));
+    }
 
     #[test]
     fn rig_rate_tracks_shares_and_decays() {

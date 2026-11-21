@@ -26,6 +26,7 @@ pub mod orders;
 pub mod paid;
 pub mod proxy;
 pub mod reliability;
+pub mod stratum_addr;
 pub mod supplier;
 pub mod tenants;
 mod ur;

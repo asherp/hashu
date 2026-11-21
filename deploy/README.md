@@ -67,6 +67,7 @@ again at startup, so running them without compose fails the same way.
 | `HASHU_NOSTR_RELAYS` | no | Nostr relays each hourly reliability record is posted to (comma separated). Default: damus, nos.lol, primal. Empty: records are only served by the mint. |
 | `HASHU_OTS_CALENDARS` | no | OpenTimestamps calendars that timestamp each hour (comma separated). Default: the two opentimestamps.org pools and eternitywall. Empty: no timestamps. |
 | `HASHU_STRATUM_PORT` | no | Host port for miners, default `3335`. |
+| `HASHU_STRATUM_URL` | no | The Stratum address miners are told to use: `/checkout/api/info` (`stratum`), the operator dashboard's Stratum tile, the waitlist page and supplier sign-up. Default `stratum+tcp://$HASHU_DOMAIN:$HASHU_STRATUM_PORT`; set it only if miners reach the proxy under another host or port (a load balancer, a different DNS name). |
 | `HASHU_PRICE`, `HASHU_MSAT_PER_PIH`, `HASHU_NETWORK` | no | Pricing: `mrr` (default), `esplora` or `fixed`; fallback 12,500 msat per PiH (≈ 40 sats per TH-hour). |
 | `HASHU_LIGHTNING`, `PHOENIXD_CHAIN` | no | `phoenixd` (default), `fake`, `off`; `mainnet`. |
 | `HASHU_USDT_DEPOSIT`, `HASHU_USDC_DEPOSIT` + `HASHU_USDT_PER_PIH` or `HASHU_USD_PER_BTC` | no | Stablecoin rails, each on when its deposit address is set. Token, RPC, chain id and confirmations default to the canonical USDT (Ethereum) and USDC (Base) contracts and public RPCs. |
@@ -479,7 +480,9 @@ Bitaxe-class rig (≈ 1.1 TiH/s) 1,024 TiH is about 15 minutes of hashing. Three
   quantity on sale holds still and the checkout ETA moves instead. The
   stock is kept in `capacity.json`. Only hashrate above what running
   rentals declare counts, so rented rigs are not counted twice. Rigs count
-  when they serve this mint: those with `pw=<operator secret>` (or the
+  when they serve this mint: those with `pw=<operator secret>`, pointed at
+  `$HASHU_STRATUM_URL` (by default `stratum+tcp://$HASHU_DOMAIN:3335`;
+  the dashboard's Stratum tile shows it) (or the
   deprecated `HASHU_OPERATOR_WORKER.<rig>`), or any unregistered rig when
   neither is set. Home-pool-only and
   supplier rigs do not. If the rigs go quiet the listed stock still
