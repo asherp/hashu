@@ -98,6 +98,12 @@ services:
       # Hosted-mint waitlist for miners at /waitlist/ (sign-ups in
       # /data/waitlist.jsonl, listed at /operator/waitlist). Off unless set.
       HASHU_WAITLIST: ${HASHU_WAITLIST:-false}
+      # Hourly reliability record (#109), always served at
+      # /v1/hashu/reliability and /reliability/. Each hour is also posted
+      # to these Nostr relays and timestamped by these OpenTimestamps
+      # calendars (public, free). Set either to "" to turn that part off.
+      HASHU_NOSTR_RELAYS: ${HASHU_NOSTR_RELAYS-wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net}
+      HASHU_OTS_CALENDARS: ${HASHU_OTS_CALENDARS-https://a.pool.opentimestamps.org,https://b.pool.opentimestamps.org,https://a.pool.eternitywall.com}
       # Operator login for /operator/ (the mint checks it, rate limited).
       HASHU_OPERATOR_USER: ${OPERATOR_USER:-operator}
       HASHU_OPERATOR_PASSWORD_HASH: ${OPERATOR_PASSWORD_HASH:?set OPERATOR_PASSWORD_HASH in .env (caddy hash-password)}

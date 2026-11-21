@@ -17,6 +17,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+ripemd = "0.1"
+sha1 = "0.10"
 tracing = { workspace = true }
 
 [dev-dependencies]

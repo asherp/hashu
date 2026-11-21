@@ -466,6 +466,50 @@ No pool URL. No worker name. The `oracle_samples_root` commits to the
 hashprice tick stream consumed by the integral, so a redeemer can
 audit the integration if Hashu later publishes the tick log.
 
+#### 4.7.4 Mint reliability record
+
+A mint's history of delivering what it sold is what the secondary market
+prices, and it cannot be backfilled, so every mint publishes it from the
+first hour it runs (issue #109). Each UTC hour the daemon was up, every
+mint it serves (the operator's and each supplier's, each under its own
+**receipt key**, a Nostr keypair in `reliability/receipt.nsec` that is
+never rotated) signs one **regular** Nostr event, kind `8333`, tagged
+`t=hashu-reliability`, `u=<mint url>`, `hour=<unix start>`. Its content:
+
+```
+{ "v": 1, "mint": "https://mint.example", "hour": 1795000000,
+  "shares": 812, "difficulty": 2.1e8, "work_tih": 820312.5,
+  "top": [ { "header": "<80-byte header hex>", "hash": "<hex>",
+             "difficulty": 4.2e6, "block": false }, … 16 hardest ],
+  "blocks": [ "<hash>", … every block-solving share ],
+  "redemptions": { "opened": 2, "completed": 1, "settled": 0, "open": 1,
+                   "stalled": 0, "finished_quoted_tih": 1024,
+                   "finished_delivered_tih": 1024,
+                   "minutes_to_finish_median": 41,
+                   "minutes_to_finish_worst": 41 },
+  "uptime_s": 3600, "hashrate_ths": 1.2 }
+```
+
+- **Top 16 shares:** anyone hashes each header and checks the difficulty
+  and whether it met its own nBits (a block). The hardest of N shares at
+  difficulty D is expected near N·D, which bounds the self-reported work.
+- **Blocks are always published.** No operator or redeemer setting drops
+  a share, since a missing block would look like withholding.
+- **Nothing identifies a redeemer:** no redemption id, pool, worker.
+- **Uptime:** an hour the daemon was down has no event, and nobody can
+  add one later (the timestamp would be late).
+- **OpenTimestamps:** the event id (SHA-256 over the signed event) is
+  submitted to the configured calendars; the `.ots` proof is upgraded
+  when a calendar commits it to Bitcoin, usually within a few hours.
+- **Key document:** `{mint, pubkey, keysets, created_at}`, also
+  timestamped, so the receipt key's age is provable.
+
+Served by each mint (CORS open): `GET /v1/hashu/reliability` (index:
+pubkey, relays, totals, newest hours), `/v1/hashu/reliability/{hour}`
+(the event), `/v1/hashu/reliability/{hour}.ots`, `/v1/hashu/reliability/key`
+(+ `key.ots`), and `/reliability/`, a page that checks signature, shares
+and timestamp in the browser (block headers from mempool.space).
+
 ## 5. Voucher types & lifecycle
 
 ### 5.1 Hash voucher (denomination: `TiH`)

@@ -90,6 +90,8 @@ pub struct TenantConfig {
     /// Port miners connect to, shown on sign-up.
     pub stratum_port: u16,
     pub probe: ProbeFn,
+    /// Serves each supplier mint's reliability record (#109).
+    pub reliability: Option<Arc<crate::reliability::Reliability>>,
 }
 
 struct Tenant {
@@ -332,13 +334,17 @@ impl Tenants {
             name.to_string(),
             pricer.clone(),
         ));
-        let app = cdk_axum::create_mint_router(mint.clone(), methods)
+        let mut app = cdk_axum::create_mint_router(mint.clone(), methods)
             .await
             .context("build mint HTTP router")?
             .merge(supplier_router(SupplierCtx {
                 name: name.to_string(),
                 tenants: self.me.clone(),
             }));
+        if let Some(rel) = &self.cfg.reliability {
+            rel.set_keysets(name, crate::mint::tih_keyset_ids(&mint));
+            app = app.merge(crate::reliability::router(rel.clone(), name));
+        }
         tracing::info!(
             supplier = %name,
             host = %self.host_for(name),
@@ -628,8 +634,8 @@ pub fn operator_router(tenants: Arc<Tenants>) -> axum::Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hashu_proxy::suppliers::Check;
     use axum::body::Body;
+    use hashu_proxy::suppliers::Check;
 
     fn tenants_with(dir: &std::path::Path, ths: f64, fake: bool) -> Arc<Tenants> {
         let registry = SupplierRegistry::from_file(dir.join("suppliers.json"));
@@ -646,6 +652,7 @@ mod tests {
                 fake_lightning: fake,
                 hashrate: Arc::new(move |n: &str| if n == "alice" { ths * 1e12 } else { 0.0 }),
                 stratum_port: 3335,
+                reliability: None,
                 probe: Arc::new(|a: LightningAddress| {
                     Box::pin(async move {
                         if a.domain == "wallet.example" {
