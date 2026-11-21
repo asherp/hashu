@@ -157,7 +157,11 @@ impl InclusionProof {
 }
 
 /// RFC 6962 §2.1.1 audit-path verification.
-pub fn verify_inclusion(leaf_hash: &Hash, proof: &InclusionProof, expected_root: &Hash) -> bool {
+pub fn verify_inclusion(
+    leaf_hash: &Hash,
+    proof: &InclusionProof,
+    expected_root: &Hash,
+) -> bool {
     if proof.tree_size == 0 || proof.leaf_index >= proof.tree_size {
         return false;
     }

@@ -217,8 +217,7 @@ mod tests {
     #[test]
     fn deserializes_luxor_response_shape() {
         // Documented response shape from /hashrateindex/hashprice/current
-        let body =
-            r#"{"data":{"priceBTC":0.0005,"priceUSD":50.0,"timestamp":"2026-05-07T12:00:00Z"}}"#;
+        let body = r#"{"data":{"priceBTC":0.0005,"priceUSD":50.0,"timestamp":"2026-05-07T12:00:00Z"}}"#;
         let parsed: CurrentResponse = serde_json::from_str(body).unwrap();
         assert_eq!(parsed.data.price_btc, 0.0005);
         assert_eq!(parsed.data.timestamp, "2026-05-07T12:00:00Z");
