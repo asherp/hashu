@@ -164,6 +164,14 @@ pub struct RunArgs {
     /// `/waitlist` on the control API). Off: `/waitlist/` is a 404.
     #[arg(long, env = "HASHU_WAITLIST", default_value_t = false)]
     pub waitlist: bool,
+    /// Nostr relays the hourly reliability record is posted to (comma
+    /// separated). Empty: served only at /v1/hashu/reliability.
+    #[arg(long, env = "HASHU_NOSTR_RELAYS", default_value = "")]
+    pub nostr_relays: String,
+    /// OpenTimestamps calendars that timestamp each hour (comma separated
+    /// https URLs). Empty: hours are not timestamped.
+    #[arg(long, env = "HASHU_OTS_CALENDARS", default_value = "")]
+    pub ots_calendars: String,
 
     // ---- pricing ----------------------------------------------------
     /// Where the price of hashes comes from.
@@ -819,7 +827,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let checkout = Arc::new(
         CheckoutState::new(
             internal_url.clone(),
-            args.mint_url.clone().unwrap_or(internal_url),
+            args.mint_url.clone().unwrap_or(internal_url.clone()),
             controls.clone(),
             Some(sats_controlled.clone()),
             usdt_controlled.clone(),
@@ -861,8 +869,49 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         let r = router.clone();
         capacity.set_live_source(Arc::new(move || r.operator_hashrate() / 1e12));
     }
+    // The hourly reliability record of every mint served here (#109).
+    let reliability = {
+        let r = router.clone();
+        let hashrate: crate::reliability::HashrateFn = Arc::new(move |mint: &str| {
+            if mint.is_empty() {
+                r.operator_hashrate()
+            } else {
+                r.supplier_hashrate(mint)
+            }
+        });
+        let suppliers = supplier_base(&args, &registry).map(|base| {
+            let reg = registry.clone();
+            crate::reliability::SupplierMints {
+                base,
+                dir: args.data_dir.join("mints"),
+                names: Arc::new(move || reg.names()),
+            }
+        });
+        let url = args
+            .mint_url
+            .clone()
+            .unwrap_or_else(|| internal_url.clone());
+        let rel = crate::reliability::Reliability::open(
+            &args.data_dir,
+            &url,
+            hashu_mint::reliability::PublishConfig::parse(&args.nostr_relays, &args.ots_calendars),
+            ledger.clone(),
+            hashrate,
+            suppliers,
+        )
+        .context("open reliability record")?;
+        rel.set_keysets("", tih_keyset_ids(&mint));
+        rel
+    };
     // Registered suppliers' mints, on <name>.<this mint's host>.
-    let tenants = supplier_mints(&args, &registry, &ledger, fake_lightning, &router);
+    let tenants = supplier_mints(
+        &args,
+        &registry,
+        &ledger,
+        fake_lightning,
+        &router,
+        &reliability,
+    );
     if let Some(t) = &tenants {
         t.start_all().await;
     }
@@ -871,6 +920,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         .await
         .context("build mint HTTP router")?
         .merge(checkout::router(checkout.clone()))
+        .merge(crate::reliability::router(reliability.clone(), ""))
         .merge(landing::router());
     if let Some(w) = &waitlist {
         app = app.merge(waitlist::router(w.clone()));
@@ -886,7 +936,11 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let http_task = tokio::spawn(async move { axum::serve(http, app).await });
 
     // ---- proxy --------------------------------------------------------
-    let crediter = Arc::new(ShareCrediter::with_audit(ledger.clone(), audit.clone()));
+    let crediter = Arc::new(
+        ShareCrediter::with_audit(ledger.clone(), audit.clone())
+            .with_reliability(reliability.recorder()),
+    );
+    tokio::spawn(reliability.clone().run());
     let credit = CreditContext::new(crediter, router.clone());
 
     if args.metrics_interval > 0 {
@@ -1021,16 +1075,12 @@ fn supplier_mints(
     ledger: &Arc<RedemptionLedger>,
     fake_lightning: bool,
     router: &Arc<Router>,
+    reliability: &Arc<crate::reliability::Reliability>,
 ) -> Option<Arc<Tenants>> {
     if !registry.path_configured() {
         return None;
     }
-    let base = args
-        .mint_url
-        .as_deref()
-        .and_then(|u| u.trim().parse::<axum::http::Uri>().ok())
-        .and_then(|u| u.host().map(str::to_string));
-    let Some(base) = base else {
+    let Some(base) = supplier_base(args, registry) else {
         tracing::warn!(
             "HASHU_SUPPLIERS_FILE is set but HASHU_MINT_URL is not a URL: supplier mints \
              (<name>.<mint host>) are off"
@@ -1050,9 +1100,43 @@ fn supplier_mints(
             hashrate: Arc::new(move |name: &str| r.supplier_hashrate(name)),
             stratum_port: args.stratum_bind.port(),
             probe: tenants::lnurl_probe(),
+            reliability: Some(reliability.clone()),
         },
         registry.clone(),
     ))
+}
+
+/// Host supplier mints are named under (`<name>.<base>`), when a supplier
+/// registry is configured and the mint has a public URL.
+fn supplier_base(
+    args: &RunArgs,
+    registry: &Arc<hashu_proxy::suppliers::SupplierRegistry>,
+) -> Option<String> {
+    if !registry.path_configured() {
+        return None;
+    }
+    args.mint_url
+        .as_deref()
+        .and_then(|u| u.trim().parse::<axum::http::Uri>().ok())
+        .and_then(|u| {
+            u.host()
+                .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
+        })
+}
+
+/// Ids of a mint's TiH keysets (active and retired), for the reliability
+/// key document.
+pub(crate) fn tih_keyset_ids(mint: &cdk::mint::Mint) -> Vec<String> {
+    let unit = CurrencyUnit::Custom("tih".into());
+    let mut ids: Vec<String> = mint
+        .keysets()
+        .keysets
+        .into_iter()
+        .filter(|k| k.unit == unit)
+        .map(|k| k.id.to_string())
+        .collect();
+    ids.sort();
+    ids
 }
 
 #[cfg(test)]

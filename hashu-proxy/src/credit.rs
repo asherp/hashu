@@ -27,6 +27,7 @@ use hashu_core::redemption::{CreditOutcome, LedgerError, RedemptionId, Redemptio
 use tokio::sync::broadcast;
 
 use crate::audit::ShareAudit;
+use crate::reliability::ReliabilityRecorder;
 use crate::ProxyMetrics;
 
 /// Listener-assigned id of one accepted miner connection. Unique for the
@@ -101,6 +102,7 @@ const COMPLETION_CHANNEL_CAPACITY: usize = 64;
 pub struct ShareCrediter {
     ledger: Arc<RedemptionLedger>,
     audit: Arc<ShareAudit>,
+    reliability: Option<Arc<ReliabilityRecorder>>,
     completions: broadcast::Sender<RedemptionId>,
 }
 
@@ -124,8 +126,15 @@ impl ShareCrediter {
         Self {
             ledger,
             audit,
+            reliability: None,
             completions,
         }
+    }
+
+    /// Also offer every credited share to the mint reliability record.
+    pub fn with_reliability(mut self, recorder: Arc<ReliabilityRecorder>) -> Self {
+        self.reliability = Some(recorder);
+        self
     }
 
     pub fn ledger(&self) -> &Arc<RedemptionLedger> {
@@ -150,6 +159,18 @@ impl ShareCrediter {
         let outcome = self.credit(id, difficulty)?;
         let ignored = outcome.state.is_finished() && !outcome.newly_completed;
         if !ignored {
+            if let Some(r) = &self.reliability {
+                let mint = self
+                    .ledger
+                    .get(id)
+                    .and_then(|r| r.supplier)
+                    .unwrap_or_default();
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default();
+                r.record(&mint, now, difficulty, &evidence.preimage);
+            }
             self.audit
                 .append(*id, evidence.preimage, evidence.target_bits, evidence.ntime);
         }

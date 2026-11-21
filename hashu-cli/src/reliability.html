@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hashu reliability record</title>
+<style>
+:root { --bg:#f6f6f4; --surface:#fff; --ink:#1b1b1a; --ink-2:#55534f; --line:rgba(27,27,26,.12); --brand:#e8850c; --bad:#c2403a; --good:#2f8a57; }
+@media (prefers-color-scheme: dark) { :root { --bg:#111110; --surface:#1a1a19; --ink:#f1efea; --ink-2:#b5b2ab; --line:rgba(241,239,234,.14); --brand:#f7931a; --bad:#e06c6c; --good:#5cc28a; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
+.wrap { max-width:820px; margin:0 auto; padding:32px 16px 64px; }
+h1 { font-size:30px; margin:0 0 4px; letter-spacing:-.01em; }
+h2 { font-size:18px; margin:0 0 12px; }
+.sub { color:var(--ink-2); margin:0 0 20px; overflow-wrap:anywhere; }
+.card { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
+.stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; }
+.stat b { display:block; font-size:22px; font-variant-numeric:tabular-nums; }
+.stat span { color:var(--ink-2); font-size:13px; }
+.hint { color:var(--ink-2); font-size:13px; }
+table { width:100%; border-collapse:collapse; font-size:14px; font-variant-numeric:tabular-nums; }
+th { text-align:left; color:var(--ink-2); font-weight:600; font-size:12px; padding:6px 6px; border-bottom:1px solid var(--line); }
+td { padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+td.num, th.num { text-align:right; }
+.scroll { overflow-x:auto; }
+.pill { display:inline-block; font-size:12px; font-weight:600; padding:1px 8px; border-radius:99px; white-space:nowrap; }
+.pill.good { color:var(--good); background:rgba(47,138,87,.14); }
+.pill.wait { color:var(--brand); background:rgba(232,133,12,.14); }
+.pill.off { color:var(--ink-2); background:var(--line); }
+button { font:inherit; font-size:13px; font-weight:600; padding:4px 10px; border-radius:8px; border:1px solid var(--brand); background:transparent; color:var(--ink); cursor:pointer; }
+.check { list-style:none; padding:0; margin:0; }
+.check li { padding:4px 0 4px 26px; position:relative; overflow-wrap:anywhere; }
+.check li::before { position:absolute; left:0; font-weight:700; }
+.check li.ok::before { content:"✓"; color:var(--good); }
+.check li.bad::before { content:"✗"; color:var(--bad); }
+.check li.wait::before { content:"…"; color:var(--brand); }
+code { font-size:12px; overflow-wrap:anywhere; }
+a { color:var(--brand); }
+td:first-child { white-space:nowrap; }
+tr[data-hour] { cursor:pointer; }
+tr[data-hour]:hover td { background:var(--line); }
+@media (max-width:560px) { .wide { display:none; } td, th { padding:8px 4px; } }
+[hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <h1>Reliability record</h1>
+  <p class="sub" id="who">Loading…</p>
+
+  <div class="card">
+    <div class="stats">
+      <div class="stat"><b id="t-hours">–</b><span id="t-hours-sub">hours published</span></div>
+      <div class="stat"><b id="t-work">–</b><span>TiH delivered</span></div>
+      <div class="stat"><b id="t-done">–</b><span>redemptions finished</span></div>
+      <div class="stat"><b id="t-blocks">–</b><span>blocks found</span></div>
+    </div>
+    <p class="hint" id="current"></p>
+    <p class="hint" style="margin-bottom:0">Every hour this mint signs a record of the work it delivered: the 16 hardest shares it sent to redeemers' pools (block headers anyone can hash), the summed work, and how its redemptions went. Each hour is timestamped on Bitcoin with OpenTimestamps, so the history can't be rewritten, and an hour the mint was down stays missing. Nothing in it names a redeemer or a pool.</p>
+  </div>
+
+  <div class="card" id="result" hidden>
+    <h2 id="r-title">Checking</h2>
+    <ul class="check" id="r-list"></ul>
+  </div>
+
+  <div class="card">
+    <h2>Hours</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Hour</th><th class="num">TiH</th><th class="num wide">Best share</th><th class="num wide">Blocks</th><th class="num">Redeemed</th><th>Proof</th><th class="wide"></th></tr></thead>
+        <tbody id="rows"><tr><td colspan="7" class="hint">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <p class="hint">Tap an hour to check its signature, shares and timestamp here in your browser.</p>
+    <p class="hint" style="margin-bottom:0">Raw data: <a href="/v1/hashu/reliability">/v1/hashu/reliability</a> · key document <a href="/v1/hashu/reliability/key">key</a> (<a href="/v1/hashu/reliability/key.ots">.ots</a>). Check proofs offline with <code>ots verify -d &lt;event id&gt; &lt;hour&gt;.ots</code>.</p>
+  </div>
+</main>
+<script>
+"use strict";
+const API = "/v1/hashu/reliability";
+const ESPLORA = "https://mempool.space/api";
+const $ = (id) => document.getElementById(id);
+const fmt = (n, d = 0) => Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
+const fmtDiff = (d) => d == null ? "–" : d < 1 ? Number(d).toPrecision(2) : d >= 1e12 ? fmt(d / 1e12, 2) + "T" : d >= 1e9 ? fmt(d / 1e9, 2) + "G" : d >= 1e6 ? fmt(d / 1e6, 2) + "M" : d >= 1e3 ? fmt(d / 1e3, 1) + "k" : fmt(d, 1);
+const fmtTih = (n) => n > 0 && n < 1 ? Number(n).toPrecision(2) : fmt(n, 1);
+const hourLabel = (h) => new Date(h * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric" });
+const hex2b = (h) => new Uint8Array(h.match(/../g).map((x) => parseInt(x, 16)));
+const b2hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+const sha256 = async (b) => new Uint8Array(await crypto.subtle.digest("SHA-256", b));
+const cat = (...a) => { const o = new Uint8Array(a.reduce((n, x) => n + x.length, 0)); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; };
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// ---- BIP-340 Schnorr verify (secp256k1), for the event signature ----
+const P = 2n ** 256n - 2n ** 32n - 977n;
+const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+const G = [0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n, 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8n];
+const mod = (a, m = P) => ((a % m) + m) % m;
+function inv(a) { let [lo, hi, x0, x1] = [mod(a), P, 1n, 0n]; while (lo > 1n) { const q = hi / lo; [lo, hi] = [hi % lo, lo]; [x0, x1] = [x1 - q * x0, x0]; } return mod(x0); }
+function add(a, b) {
+  if (!a) return b; if (!b) return a;
+  if (a[0] === b[0] && mod(a[1] + b[1]) === 0n) return null;
+  const l = a[0] === b[0] ? mod(3n * a[0] * a[0] * inv(2n * a[1])) : mod((b[1] - a[1]) * inv(b[0] - a[0]));
+  const x = mod(l * l - a[0] - b[0]);
+  return [x, mod(l * (a[0] - x) - a[1])];
+}
+function mul(pt, k) { let r = null; while (k > 0n) { if (k & 1n) r = add(r, pt); pt = add(pt, pt); k >>= 1n; } return r; }
+function powmod(b, e) { let r = 1n; b = mod(b); while (e > 0n) { if (e & 1n) r = mod(r * b); b = mod(b * b); e >>= 1n; } return r; }
+const big = (b) => BigInt("0x" + (b2hex(b) || "0"));
+async function tagged(tag, msg) { const t = await sha256(new TextEncoder().encode(tag)); return sha256(cat(t, t, msg)); }
+async function schnorrVerify(pkHex, msg, sigHex) {
+  const x = BigInt("0x" + pkHex), sig = hex2b(sigHex);
+  if (x >= P) return false;
+  const c = mod(x ** 3n + 7n), y0 = powmod(c, (P + 1n) / 4n);
+  if (mod(y0 * y0) !== c) return false;
+  const Pk = [x, y0 & 1n ? P - y0 : y0];
+  const r = big(sig.slice(0, 32)), s = big(sig.slice(32));
+  if (r >= P || s >= N) return false;
+  const e = mod(big(await tagged("BIP0340/challenge", cat(sig.slice(0, 32), hex2b(pkHex), msg))), N);
+  const R = add(mul(G, s), mul([Pk[0], P - Pk[1]], e));
+  return !!R && (R[1] & 1n) === 0n && R[0] === r;
+}
+
+// ---- proof of work ----
+async function shareCheck(s) {
+  const h = hex2b(s.header);
+  if (h.length !== 80) return { ok: false };
+  const hash = (await sha256(await sha256(h))).reverse();
+  const v = big(hash);
+  const diff = v === 0n ? Infinity : 65535 * 2 ** 208 / Number(v);
+  const bits = h[72] | h[73] << 8 | h[74] << 16 | h[75] << 24;
+  const target = BigInt(bits & 0x7fffff) * 256n ** BigInt((bits >>> 24) - 3);
+  const block = v <= target;
+  return { ok: b2hex(hash) === s.hash && Math.abs(diff - s.difficulty) <= diff * 1e-9 && block === s.block, diff, block };
+}
+
+// ---- OpenTimestamps ----
+const MAGIC = hex2b("004f70656e54696d657374616d7073000050726f6f6600bf89e2e884e89294");
+function reader(b) {
+  let i = 0;
+  const r = {
+    byte() { if (i >= b.length) throw new Error("truncated"); return b[i++]; },
+    take(n) { if (i + n > b.length) throw new Error("truncated"); const s = b.slice(i, i + n); i += n; return s; },
+    varuint() { let v = 0, sh = 0, x; do { x = r.byte(); v += (x & 0x7f) * 2 ** sh; sh += 7; } while (x & 0x80); return v; },
+    varbytes() { return r.take(r.varuint()); },
+  };
+  return r;
+}
+async function walk(r, msg, out, depth = 0) {
+  if (depth > 256) throw new Error("too deep");
+  let tag = r.byte();
+  for (;;) {
+    const more = tag === 0xff, t = more ? r.byte() : tag;
+    if (t === 0x00) {
+      const at = b2hex(r.take(8)), p = reader(r.varbytes());
+      if (at === "0588960d73d71901") out.bitcoin.push({ height: p.varuint(), msg });
+      else if (at === "83dfe30d2ef90c8e") out.pending.push(new TextDecoder().decode(p.varbytes()));
+    } else {
+      let next;
+      if (t === 0x08) next = await sha256(msg);
+      else if (t === 0xf0) next = cat(msg, r.varbytes());
+      else if (t === 0xf1) next = cat(r.varbytes(), msg);
+      else if (t === 0xf2) next = msg.slice().reverse();
+      else throw new Error("unsupported op 0x" + t.toString(16));
+      await walk(r, next, out, depth + 1);
+    }
+    if (!more) return;
+    tag = r.byte();
+  }
+}
+async function otsCheck(bytes, digest) {
+  for (let i = 0; i < MAGIC.length; i++) if (bytes[i] !== MAGIC[i]) throw new Error("not an .ots file");
+  const r = reader(bytes.slice(MAGIC.length));
+  if (r.varuint() !== 1 || r.byte() !== 0x08) throw new Error("unsupported .ots");
+  const d = r.take(32);
+  if (b2hex(d) !== b2hex(digest)) throw new Error("proof is for another digest");
+  const out = { bitcoin: [], pending: [] };
+  await walk(r, d, out);
+  return out;
+}
+async function blockAt(height) {
+  const hash = (await (await fetch(`${ESPLORA}/block-height/${height}`)).text()).trim();
+  const b = await (await fetch(`${ESPLORA}/block/${hash}`)).json();
+  return { hash, merkle: b.merkle_root, time: b.timestamp };
+}
+
+// ---- page ----
+let INFO = null;
+function line(list, cls, html) { const li = document.createElement("li"); li.className = cls; li.innerHTML = html; list.appendChild(li); return li; }
+
+async function check(hour) {
+  $("result").hidden = false;
+  $("r-title").textContent = "Hour of " + hourLabel(hour);
+  const list = $("r-list"); list.innerHTML = "";
+  $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+  let ev;
+  try { ev = await (await fetch(`${API}/${hour}`)).json(); } catch (e) { line(list, "bad", "Could not fetch the event"); return; }
+  const ser = JSON.stringify([0, ev.pubkey, ev.created_at, ev.kind, ev.tags, ev.content]);
+  const id = await sha256(new TextEncoder().encode(ser));
+  line(list, b2hex(id) === ev.id ? "ok" : "bad", `Event id <code>${esc(ev.id)}</code> matches its content`);
+  line(list, ev.pubkey === INFO.pubkey ? "ok" : "bad", `Signed by this mint's receipt key <code>${esc(INFO.npub)}</code>`);
+  const sigOk = await schnorrVerify(ev.pubkey, id, ev.sig);
+  line(list, sigOk ? "ok" : "bad", sigOk ? "Signature is valid (BIP-340)" : "Signature does not verify");
+  const rec = JSON.parse(ev.content);
+  let good = 0, blocks = [];
+  for (const s of rec.top) { const c = await shareCheck(s); if (c.ok) good++; if (c.block) blocks.push(s.hash); }
+  line(list, good === rec.top.length ? "ok" : "bad", rec.top.length ? `${good} of ${rec.top.length} top shares hash to the difficulty they claim (best ${fmtDiff(rec.top[0]?.difficulty)})` : "No shares this hour (no redemption was running)");
+  if (rec.top.length) {
+    // The best of N shares at difficulty D is around N·D: a rough check on the work claim.
+    const best = rec.top[0].difficulty;
+    line(list, "ok", `Claims ${fmtTih(rec.work_tih)} TiH from ${fmt(rec.shares)} shares; the hardest share alone is worth about ${fmtTih(best / 256)} TiH of expected work`);
+  }
+  for (const h of blocks) line(list, "ok", `Found block <a href="https://mempool.space/block/${esc(h)}" target="_blank" rel="noopener"><code>${esc(h)}</code></a>`);
+  const r = rec.redemptions;
+  line(list, "ok", `Redemptions: ${r.opened} opened, ${r.completed} completed, ${r.settled} stopped early, ${r.open} running at the end${r.stalled ? `, ${r.stalled} with no work` : ""}${r.minutes_to_finish_median != null ? `; time to finish ${r.minutes_to_finish_median} min median, ${r.minutes_to_finish_worst} worst` : ""}. Up ${Math.round(rec.uptime_s / 60)} of 60 minutes. (Self-reported.)`);
+  const ots = line(list, "wait", "Checking the OpenTimestamps proof…");
+  try {
+    const res = await fetch(`${API}/${hour}.ots`);
+    if (!res.ok) { ots.className = "bad"; ots.textContent = "No timestamp proof for this hour"; return; }
+    const out = await otsCheck(new Uint8Array(await res.arrayBuffer()), id);
+    if (!out.bitcoin.length) { ots.className = "wait"; ots.innerHTML = `Timestamp pending at ${out.pending.map(esc).join(", ")}: Bitcoin confirms it within a few hours`; return; }
+    const a = out.bitcoin.sort((x, y) => x.height - y.height)[0];
+    const b = await blockAt(a.height);
+    const ok = b2hex(a.msg.slice().reverse()) === b.merkle;
+    ots.className = ok ? "ok" : "bad";
+    ots.innerHTML = ok ? `Timestamped in Bitcoin block <a href="https://mempool.space/block/${esc(b.hash)}" target="_blank" rel="noopener">${fmt(a.height)}</a> (${new Date(b.time * 1000).toLocaleString()}): existed by then` : `Proof names block ${a.height} but its merkle root does not match`;
+  } catch (e) { ots.className = "bad"; ots.textContent = "Could not check the timestamp: " + e.message; }
+}
+
+async function load() {
+  try { INFO = await (await fetch(API + "?limit=168")).json(); } catch (e) { $("who").textContent = "Could not load the record."; return; }
+  $("who").innerHTML = `${esc(INFO.mint)} · receipt key <code>${esc(INFO.npub)}</code>${INFO.relays.length ? ` · on Nostr (kind ${INFO.kind}) at ${INFO.relays.map(esc).join(", ")}` : ""}`;
+  const t = INFO.totals;
+  $("t-hours").textContent = fmt(t.hours_published);
+  $("t-hours-sub").textContent = t.since ? `hours published of ${fmt(t.hours_since_first)} since ${new Date(t.since * 1000).toLocaleDateString()}` : "hours published";
+  $("t-work").textContent = fmtTih(t.work_tih);
+  $("t-done").textContent = fmt(t.redemptions_completed + t.redemptions_settled);
+  $("t-blocks").textContent = fmt(t.blocks);
+  const c = INFO.current;
+  $("current").textContent = `This hour so far: ${fmtTih(c.work_tih)} TiH from ${fmt(c.shares)} shares. It is published when the hour ends.`;
+  const rows = $("rows");
+  if (!INFO.hours.length) { rows.innerHTML = `<tr><td colspan="7" class="hint">No hour published yet. The first record appears after the first full hour.</td></tr>`; return; }
+  rows.innerHTML = INFO.hours.map((h) => {
+    const pill = h.ots === "bitcoin" ? `<span class="pill good">Bitcoin ${fmt(h.ots_height)}</span>` : h.ots === "pending" ? `<span class="pill wait">pending</span>` : `<span class="pill off">none</span>`;
+    const red = h.completed + h.settled ? `${h.completed + h.settled} done` : h.opened ? `${h.opened} opened` : "–";
+    return `<tr data-hour="${h.hour}" title="Check this hour"><td>${hourLabel(h.hour)}</td><td class="num">${fmtTih(h.work_tih)}</td><td class="num wide">${fmtDiff(h.best_difficulty)}</td><td class="num wide">${h.blocks || "–"}</td><td class="num">${red}</td><td>${pill}</td><td class="wide"><button>Check</button></td></tr>`;
+  }).join("");
+  rows.querySelectorAll("tr[data-hour]").forEach((r) => r.addEventListener("click", () => check(Number(r.dataset.hour))));
+  const want = Number(new URLSearchParams(location.search).get("hour"));
+  if (want) check(want);
+}
+load();
+</script>
+</body>
+</html>

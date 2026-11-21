@@ -3,5 +3,7 @@
 pub mod denom;
 pub mod hashprice;
 pub mod journal;
+pub mod ots;
 pub mod redemption;
+pub mod reliability;
 pub mod share;

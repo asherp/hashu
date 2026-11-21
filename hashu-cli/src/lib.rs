@@ -25,6 +25,7 @@ pub mod oracle;
 pub mod orders;
 pub mod paid;
 pub mod proxy;
+pub mod reliability;
 pub mod supplier;
 pub mod tenants;
 mod ur;

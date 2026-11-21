@@ -9,6 +9,7 @@ pub mod control;
 pub mod credit;
 pub mod home;
 pub mod meter;
+pub mod reliability;
 pub mod router;
 pub mod stratum;
 pub mod suppliers;
