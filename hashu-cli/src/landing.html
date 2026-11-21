@@ -80,6 +80,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     </a>
     <div class="links">
       <a href="#how">How it works</a>
+      <a href="#uses">Who it's for</a>
       <a href="#why">Why</a>
       <a href="#developers">Developers</a>
       <a href="/checkout/" data-buy>Buy hashrate</a>
@@ -115,7 +116,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     <div class="grid3">
       <div class="card"><div class="num">1</div><h3>Buy</h3><p>Choose how many hashes you want and pay a mainnet Lightning invoice, or send USDT. The mint is priced live from the hashrate rental market.</p></div>
       <div class="card"><div class="num">2</div><h3>Hold</h3><p>You receive TiH as Chaumian vouchers: blind-signed Cashu tokens in the <span class="mono">tih</span> unit. Keep them, send them to a friend, or redeem them right away.</p></div>
-      <div class="card"><div class="num">3</div><h3>Redeem</h3><p>Melt the tokens with your pool URL and worker name. The mint's proxy redirects its miners to your pool until the work you paid for has been delivered, share by share.</p></div>
+      <div class="card"><div class="num">3</div><h3>Redeem</h3><p>Redeem the tokens with your pool URL and worker name. The mint's proxy redirects its miners to your pool until the work you paid for has been delivered, share by share.</p></div>
     </div>
     <p class="unit" style="margin-top:20px"><b>1 TiH</b> (tebihash) = 2<sup>40</sup> hashes = 256 difficulty-1 shares. 1 TH/s for one hour ≈ 3,274 TiH. Prices are per PiH (1,024 TiH). Redeem to any Stratum V1 pool that gives you a worker name.</p>
   </section>
@@ -132,6 +133,15 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       </div>
       <div class="card"><h3>Verifiable delivery</h3><p>Each redemption gets its own Merkle tree of the shares it was credited, with audit endpoints so a holder can check the work that reached their pool.</p></div>
     </div>
+  </section>
+
+  <section id="uses">
+    <h2>Who it's for</h2>
+    <div class="grid2">
+      <div class="card"><h3>Lightning node runners: free up inbound, get private coins</h3><p>Paying a Hashu mint's Lightning invoice spends outbound liquidity from your channels and frees up inbound capacity, much like a Loop Out. Point the hashrate you bought at your own pool account and the pool pays you on-chain in freshly mined coins with no transaction history. Blind signatures mean the mint can't link the invoice you paid to the pool the work went to, so those coins aren't tied to your public channels.</p></div>
+      <div class="card"><h3>Anyone who wants bitcoin on-chain</h3><p>Cashu mints almost always pay out over Lightning only, and very few support on-chain. A Hashu mint never pays out bitcoin at all. Instead, the hashrate you redeem mines at the pool you choose, and the pool pays your bitcoin address directly. Buy with Lightning or USDT and end up with self-custodied bitcoin on-chain.</p></div>
+    </div>
+    <p class="unit" style="margin-top:20px"><b>Good to know:</b> what your pool pays depends on network difficulty, pool luck and pool fees, so it isn't a fixed rate. Delivery takes hours to days, and pools pay out once your balance passes their payout threshold. At low volume, a purchase and a redemption close together in time can still hint that they're linked.</p>
   </section>
 
   <section id="developers">
