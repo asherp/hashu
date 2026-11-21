@@ -7,7 +7,9 @@
 //!   finished, stalled), saves the open share buckets, and publishes every
 //!   closed hour not yet published.
 //! - [`router`] serves the record:
-//!   - `GET /v1/hashu/reliability`: index (pubkey, relays, totals, latest hours)
+//!   - `GET /v1/hashu/reliability`: index (pubkey, relays, totals, latest
+//!     closed hours). The hour in progress is never shown: live progress
+//!     would let anyone follow a running redemption.
 //!   - `GET /v1/hashu/reliability/key`, `/key.ots`: key document and its proof
 //!   - `GET /v1/hashu/reliability/{hour}`: the signed Nostr event
 //!   - `GET /v1/hashu/reliability/{hour}.ots`: its OpenTimestamps proof
@@ -451,12 +453,6 @@ async fn index(State(ctx): State<Ctx>, Query(q): Query<IndexQuery>) -> Response 
     };
     let limit = q.limit.unwrap_or(24).min(MAX_LIMIT);
     let now = now_s();
-    let current = hour_start(now);
-    let open = ctx
-        .rel
-        .recorder
-        .peek(&ctx.mint, current)
-        .unwrap_or_default();
     let hours = store.summaries(limit);
     Json(json!({
         "v": 1,
@@ -470,12 +466,6 @@ async fn index(State(ctx): State<Ctx>, Query(q): Query<IndexQuery>) -> Response 
         "event": "/v1/hashu/reliability/{hour}",
         "ots": "/v1/hashu/reliability/{hour}.ots",
         "totals": store.totals(now),
-        "current": {
-            "hour": current,
-            "shares": open.shares,
-            "work_tih": open.work_tih(),
-            "best_difficulty": open.top.shares().first().map(|s| s.difficulty),
-        },
         "hours": hours,
     }))
     .into_response()
@@ -615,6 +605,7 @@ mod tests {
         assert_eq!(v["hours"][0]["hour"], H);
         assert_eq!(v["hours"][0]["ots"], "none");
         assert_eq!(v["pubkey"], r.operator.pubkey());
+        assert!(v.get("current").is_none(), "no live view of the open hour");
         let res = app
             .oneshot(
                 axum::http::Request::get(format!("/v1/hashu/reliability/{H}"))

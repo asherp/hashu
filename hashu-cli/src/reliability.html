@@ -55,7 +55,6 @@ tr[data-hour]:hover td { background:var(--line); }
       <div class="stat"><b id="t-done">–</b><span>redemptions finished</span></div>
       <div class="stat"><b id="t-blocks">–</b><span>blocks found</span></div>
     </div>
-    <p class="hint" id="current"></p>
     <p class="hint" style="margin-bottom:0">Every hour this mint signs a record of the work it delivered: the 16 hardest shares it sent to redeemers' pools (block headers anyone can hash), the summed work, and how its redemptions went. Each hour is timestamped on Bitcoin with OpenTimestamps, so the history can't be rewritten, and an hour the mint was down stays missing. Nothing in it names a redeemer or a pool.</p>
   </div>
 
@@ -236,8 +235,6 @@ async function load() {
   $("t-work").textContent = fmtTih(t.work_tih);
   $("t-done").textContent = fmt(t.redemptions_completed + t.redemptions_settled);
   $("t-blocks").textContent = fmt(t.blocks);
-  const c = INFO.current;
-  $("current").textContent = `This hour so far: ${fmtTih(c.work_tih)} TiH from ${fmt(c.shares)} shares. It is published when the hour ends.`;
   const rows = $("rows");
   if (!INFO.hours.length) { rows.innerHTML = `<tr><td colspan="7" class="hint">No hour published yet. The first record appears after the first full hour.</td></tr>`; return; }
   rows.innerHTML = INFO.hours.map((h) => {
