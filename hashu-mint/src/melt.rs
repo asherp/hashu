@@ -164,9 +164,7 @@ fn is_routable_sv2(rest: &str) -> bool {
         .into_vec()
         .is_ok_and(|b| b.len() == 34 && b[..2] == [1, 0]);
     let host_ok = match hostport.rsplit_once(':') {
-        Some((h, p)) if !p.contains(']') => {
-            !h.is_empty() && p.parse::<u16>().is_ok_and(|p| p > 0)
-        }
+        Some((h, p)) if !p.contains(']') => !h.is_empty() && p.parse::<u16>().is_ok_and(|p| p > 0),
         _ => !hostport.is_empty(),
     };
     key_ok && host_ok && !key.contains('/')
@@ -693,7 +691,9 @@ mod tests {
             let req = format!(r#"{{"pool_url":"{url}","worker_name":"w","amount_tih":1}}"#);
             assert!(HashrateRequest::parse(&req).is_ok(), "{url}");
         }
-        let req = format!(r#"{{"pool_url":"stratum2+tcp://p:0/{key}","worker_name":"w","amount_tih":1}}"#);
+        let req = format!(
+            r#"{{"pool_url":"stratum2+tcp://p:0/{key}","worker_name":"w","amount_tih":1}}"#
+        );
         assert!(HashrateRequest::parse(&req).is_err());
     }
 
@@ -710,7 +710,8 @@ mod tests {
         // Stratum V2 needs the pool's authority key, and a valid one.
         let sv2 = r#"{"pool_url":"stratum2+tcp://p:3333","worker_name":"w","amount_tih":1}"#;
         assert!(HashrateRequest::parse(sv2).is_err());
-        let bad_key = r#"{"pool_url":"stratum2+tcp://p:3333/abc","worker_name":"w","amount_tih":1}"#;
+        let bad_key =
+            r#"{"pool_url":"stratum2+tcp://p:3333/abc","worker_name":"w","amount_tih":1}"#;
         assert!(HashrateRequest::parse(bad_key).is_err());
         // No port, or a path (e.g. an SV2 URL with a key).
         let no_port = r#"{"pool_url":"stratum+tcp://p","worker_name":"w","amount_tih":1}"#;

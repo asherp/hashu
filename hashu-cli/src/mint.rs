@@ -558,6 +558,33 @@ fn start_mrr_sync(args: &RunArgs, capacity: &Arc<CapacityBook>) -> Result<Arc<Mr
     )
 }
 
+/// List the mint's receipt key as a NUT-06 `nostr` contact, unless it is
+/// listed already.
+pub(crate) fn add_nostr_contact(
+    contacts: &mut Vec<cdk::nuts::ContactInfo>,
+    keys: &nostr::Keys,
+) -> Result<()> {
+    use nostr::ToBech32;
+    let npub = keys.public_key().to_bech32()?;
+    if !contacts
+        .iter()
+        .any(|c| c.method == "nostr" && c.info == npub)
+    {
+        contacts.push(cdk::nuts::ContactInfo::new("nostr".into(), npub));
+    }
+    Ok(())
+}
+
+/// NIP-87 `n` tag for this mint: Hashu takes mainnet Lightning; a fake
+/// Lightning backend is a test mint.
+pub(crate) fn nostr_network(fake_lightning: bool) -> &'static str {
+    if fake_lightning {
+        "regtest"
+    } else {
+        "mainnet"
+    }
+}
+
 /// Parse `--contact` entries (`method:info`) into NUT-06 contact info.
 fn parse_contacts(raw: &[String]) -> Result<Vec<cdk::nuts::ContactInfo>> {
     raw.iter()
@@ -586,7 +613,14 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             "HASHU_UPSTREAM must be stratum+tcp://host:port, stratum+ssl://host:port or stratum2+tcp://host[:port]/<authority key> (got {raw_upstream})"
         );
     };
-    let contacts = parse_contacts(&args.contact)?;
+    let mut contacts = parse_contacts(&args.contact)?;
+    // The mint's own Nostr identity: the receipt key that signs its
+    // reliability record and NIP-87 announcement (#109, #116).
+    add_nostr_contact(
+        &mut contacts,
+        &hashu_mint::reliability::receipt_keys(&args.data_dir.join("reliability"))
+            .context("load reliability receipt key")?,
+    )?;
     let stratum = crate::stratum_addr::resolve(
         args.stratum_url.as_deref(),
         args.mint_url.as_deref(),
@@ -920,6 +954,20 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         )
         .context("open reliability record")?;
         rel.set_keysets("", tih_keyset_ids(&mint));
+        // Announce on Nostr only under a public URL (#116).
+        if let Some(public) = args.mint_url.as_deref().filter(|u| !u.trim().is_empty()) {
+            match mint.mint_info().await {
+                Ok(info) => rel.set_announcement(
+                    "",
+                    hashu_mint::discovery::Announcement::from_info(
+                        &info,
+                        public.trim(),
+                        nostr_network(fake_lightning),
+                    ),
+                ),
+                Err(e) => tracing::warn!(error = %e, "no NIP-87 announcement: mint info"),
+            }
+        }
         rel
     };
     // Registered suppliers' mints, on <name>.<this mint's host>.
@@ -1189,6 +1237,19 @@ mod tests {
     fn denominations_are_powers_of_two() {
         assert_eq!(DENOMS[0], 1);
         assert_eq!(DENOMS[40], 1 << 40);
+    }
+
+    #[test]
+    fn nostr_contact_is_added_once() {
+        use nostr::ToBech32;
+        let keys = nostr::Keys::generate();
+        let npub = keys.public_key().to_bech32().unwrap();
+        let mut c = vec![cdk::nuts::ContactInfo::new("email".into(), "a@b.c".into())];
+        add_nostr_contact(&mut c, &keys).unwrap();
+        add_nostr_contact(&mut c, &keys).unwrap();
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[1].method, "nostr");
+        assert_eq!(c[1].info, npub);
     }
 
     #[test]

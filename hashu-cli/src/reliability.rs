@@ -32,6 +32,7 @@ use axum::routing::get;
 use axum::Json;
 use hashu_core::redemption::{RedemptionLedger, RedemptionState};
 use hashu_core::reliability::{hour_start, median_and_worst, HourRecord, RedemptionStats, HOUR_S};
+use hashu_mint::discovery::{Announcement, ANNOUNCE_KIND};
 use hashu_mint::reliability::{PublishConfig, RecordStore, RECORD_KIND, RECORD_TAG};
 use hashu_proxy::reliability::{ReliabilityRecorder, OPERATOR_MINT};
 use serde::{Deserialize, Serialize};
@@ -94,6 +95,8 @@ pub struct Reliability {
     hashrate: HashrateFn,
     tracker: Mutex<Tracker>,
     keysets: Mutex<HashMap<String, Vec<String>>>,
+    /// NIP-87 announcement of each mint with a public URL (#116).
+    announcements: Mutex<HashMap<String, Announcement>>,
 }
 
 impl Reliability {
@@ -130,6 +133,7 @@ impl Reliability {
             hashrate,
             tracker: Mutex::new(tracker),
             keysets: Mutex::new(HashMap::new()),
+            announcements: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -144,6 +148,15 @@ impl Reliability {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(mint.to_string(), ids);
+    }
+
+    /// What `mint` (`""` = operator) announces on Nostr (NIP-87 kind
+    /// 38172, signed with its receipt key). Only mints with a public URL.
+    pub fn set_announcement(&self, mint: &str, a: Announcement) {
+        self.announcements
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(mint.to_string(), a);
     }
 
     /// The store for `mint` (`""` = operator); `None` for a supplier that
@@ -229,7 +242,37 @@ impl Reliability {
                 }
             }
         }
+        self.announce(now).await;
         self.publish_closed(now).await;
+    }
+
+    /// Keep every mint's NIP-87 announcement current, and the operator's
+    /// recommendation of each supplier mint.
+    async fn announce(&self, now: u64) {
+        let all = self
+            .announcements
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let operator_announces = all.contains_key(OPERATOR_MINT);
+        for (m, a) in all {
+            let Some(st) = self.store(&m) else { continue };
+            if let Err(e) = st.ensure_announcement(&a, now).await {
+                tracing::warn!(mint = %st.url(), error = %e, "NIP-87 announcement");
+            }
+            if m != OPERATOR_MINT && operator_announces {
+                let content = format!(
+                    "Hashu supplier mint: TiH backed by {m}'s own rigs, redeemed as hashrate"
+                );
+                if let Err(e) = self
+                    .operator
+                    .ensure_recommendation(&m, &a, &st.pubkey(), content, now)
+                    .await
+                {
+                    tracing::warn!(supplier = %m, error = %e, "NIP-87 recommendation");
+                }
+            }
+        }
     }
 
     /// Follow the ledger and count uptime.
@@ -466,6 +509,13 @@ async fn index(State(ctx): State<Ctx>, Query(q): Query<IndexQuery>) -> Response 
         "event": "/v1/hashu/reliability/{hour}",
         "ots": "/v1/hashu/reliability/{hour}.ots",
         "totals": store.totals(now),
+        "announcement": {
+            "kind": ANNOUNCE_KIND,
+            "event": store
+                .announcement_json()
+                .and_then(|e| serde_json::from_str::<serde_json::Value>(&e).ok()),
+            "relays": store.announcement_relays(),
+        },
         "hours": hours,
     }))
     .into_response()
@@ -644,5 +694,81 @@ mod tests {
         .unwrap();
         assert_eq!(rec.shares, 1);
         assert_eq!(rec.uptime_s, 120);
+    }
+
+    fn announcement(url: &str) -> Announcement {
+        Announcement {
+            mint_pubkey: Some(format!("02{:0>64}", url.len())),
+            url: url.into(),
+            nuts: vec![1, 2, 3, 4, 5, 6],
+            network: "mainnet".into(),
+            units: vec!["tih".into()],
+            name: None,
+            description: None,
+            icon_url: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn announces_each_mint_and_recommends_suppliers() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(RedemptionLedger::new());
+        let r = Reliability::open(
+            dir.path(),
+            "https://mint.example",
+            PublishConfig::default(),
+            ledger,
+            Arc::new(|_: &str| 0.0),
+            Some(SupplierMints {
+                base: "mint.example".into(),
+                dir: dir.path().join("mints"),
+                names: Arc::new(|| vec!["alice".into()]),
+            }),
+        )
+        .unwrap();
+        r.set_announcement("", announcement("https://mint.example"));
+        let alice_a = announcement("https://alice.mint.example");
+        r.set_announcement("alice", alice_a.clone());
+        r.step(H + 60, true).await;
+
+        let ev = nostr::Event::from_json(r.operator.announcement_json().unwrap()).unwrap();
+        ev.verify().unwrap();
+        assert_eq!(ev.kind, nostr::Kind::Custom(ANNOUNCE_KIND));
+        assert_eq!(ev.pubkey.to_hex(), r.operator.pubkey());
+
+        let alice = r.store("alice").unwrap();
+        let aev = nostr::Event::from_json(alice.announcement_json().unwrap()).unwrap();
+        assert_eq!(aev.pubkey.to_hex(), alice.pubkey());
+        assert_ne!(alice.pubkey(), r.operator.pubkey(), "one identity per mint");
+
+        // The operator recommends alice's mint, pointing at her announcement.
+        let rec: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join("reliability/nostr/recommend-alice.json")).unwrap(),
+        )
+        .unwrap();
+        let rev = nostr::Event::from_json(rec["event"].as_str().unwrap()).unwrap();
+        assert_eq!(rev.kind, nostr::Kind::Custom(38000));
+        assert_eq!(rev.pubkey.to_hex(), r.operator.pubkey());
+        let a = format!("38172:{}:{}", alice.pubkey(), alice_a.d());
+        assert!(rev
+            .tags
+            .iter()
+            .any(|t| t.clone().to_vec()[..2] == ["a".to_string(), a.clone()]));
+
+        // The index points at the announcement.
+        let res = router(r.clone(), "alice")
+            .oneshot(
+                axum::http::Request::get("/v1/hashu/reliability")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["announcement"]["kind"], 38172);
+        assert_eq!(v["announcement"]["event"]["id"], aev.id.to_hex());
     }
 }
