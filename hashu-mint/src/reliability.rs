@@ -17,6 +17,8 @@
 //! - `key.json`, `key.ots`: the key document and its proof.
 //! - `hours/<hour>.json`: the signed event. `hours/<hour>.ots`: its proof.
 //!   `hours/<hour>.meta.json`: relays that took it.
+//! - `nostr/<slot>.json`: addressable events the key keeps current (the
+//!   NIP-87 mint announcement and recommendations, [`crate::discovery`]).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -39,6 +41,11 @@ pub const RECORD_TAG: &str = "hashu-reliability";
 const OTS_MEDIA: &str = "application/vnd.opentimestamps.v1";
 /// Stop trying to upgrade a proof after this long.
 const UPGRADE_FOR_S: u64 = 7 * 24 * 3600;
+/// Re-post an unchanged addressable event this often, so relays that
+/// prune or joined later still have it.
+const REPOST_EVERY_S: u64 = 7 * 24 * 3600;
+/// Retry an addressable event no relay took after this long.
+const RETRY_AFTER_S: u64 = 30 * 60;
 
 /// Where records go besides the mint's own HTTP API. Empty lists turn that
 /// part off.
@@ -99,6 +106,17 @@ pub enum ProofStatus {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Meta {
     relays: Vec<String>,
+}
+
+/// One addressable event kept current on relays.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Addressable {
+    /// SHA-256 over kind, tags and content: a change re-signs.
+    fingerprint: String,
+    event: String,
+    relays: Vec<String>,
+    posted_s: u64,
+    tried_s: u64,
 }
 
 /// What the index lists per hour.
@@ -343,6 +361,125 @@ impl RecordStore {
         }
     }
 
+    /// Keep the NIP-87 announcement of this mint current.
+    pub async fn ensure_announcement(
+        &self,
+        a: &crate::discovery::Announcement,
+        now_s: u64,
+    ) -> Result<()> {
+        self.ensure_addressable(
+            "announce",
+            crate::discovery::ANNOUNCE_KIND,
+            a.tags()?,
+            a.content(),
+            now_s,
+        )
+        .await
+    }
+
+    /// Keep a NIP-87 recommendation of another mint current, under `slot`.
+    /// `announcer` signs that mint's announcement.
+    pub async fn ensure_recommendation(
+        &self,
+        slot: &str,
+        a: &crate::discovery::Announcement,
+        announcer: &str,
+        content: String,
+        now_s: u64,
+    ) -> Result<()> {
+        let relay = self.cfg.relays.first().map(String::as_str);
+        self.ensure_addressable(
+            &format!("recommend-{slot}"),
+            crate::discovery::RECOMMEND_KIND,
+            a.recommendation_tags(announcer, relay)?,
+            content,
+            now_s,
+        )
+        .await
+    }
+
+    /// The signed announcement, once made.
+    pub fn announcement_json(&self) -> Option<String> {
+        self.load_addressable("announce").map(|a| a.event)
+    }
+
+    /// Relays that hold the announcement.
+    pub fn announcement_relays(&self) -> Vec<String> {
+        self.load_addressable("announce")
+            .map(|a| a.relays)
+            .unwrap_or_default()
+    }
+
+    fn addressable_path(&self, slot: &str) -> PathBuf {
+        self.dir.join("nostr").join(format!("{slot}.json"))
+    }
+
+    fn load_addressable(&self, slot: &str) -> Option<Addressable> {
+        let b = std::fs::read(self.addressable_path(slot)).ok()?;
+        serde_json::from_slice(&b).ok()
+    }
+
+    /// Sign (when it changed) and post an addressable event. Cheap when
+    /// nothing changed and relays have it: call it every tick.
+    async fn ensure_addressable(
+        &self,
+        slot: &str,
+        kind: u16,
+        tags: Vec<Tag>,
+        content: String,
+        now_s: u64,
+    ) -> Result<()> {
+        let fingerprint = {
+            let tv: Vec<Vec<String>> = tags.iter().map(|t| t.clone().to_vec()).collect();
+            let bytes = serde_json::to_vec(&(kind, &tv, &content))?;
+            hex::encode(Sha256::digest(bytes))
+        };
+        let path = self.addressable_path(slot);
+        let old = self.load_addressable(slot);
+        let mut cur = match old {
+            Some(a) if a.fingerprint == fingerprint => {
+                let stale = a.posted_s + REPOST_EVERY_S <= now_s;
+                let unposted = a.relays.is_empty()
+                    && !self.cfg.relays.is_empty()
+                    && a.tried_s + RETRY_AFTER_S <= now_s;
+                if !stale && !unposted {
+                    return Ok(());
+                }
+                a
+            }
+            _ => {
+                let event = EventBuilder::new(Kind::Custom(kind), content)
+                    .tags(tags)
+                    .custom_created_at(nostr::Timestamp::from(now_s))
+                    .sign_with_keys(&self.keys)?;
+                tracing::info!(mint = %self.url, kind, slot, event = %event.id.to_hex(), "signed nostr event");
+                Addressable {
+                    fingerprint,
+                    event: event.as_json(),
+                    relays: vec![],
+                    posted_s: 0,
+                    tried_s: 0,
+                }
+            }
+        };
+        if !self.cfg.relays.is_empty() {
+            let event = Event::from_json(&cur.event)?;
+            let meta = self.post(&event).await;
+            cur.tried_s = now_s;
+            if !meta.relays.is_empty() {
+                cur.relays = meta.relays;
+                cur.posted_s = now_s;
+                tracing::info!(mint = %self.url, kind, slot, relays = cur.relays.len(), "posted nostr event");
+            }
+        } else {
+            // Nothing to post to: stored and served only.
+            cur.posted_s = now_s;
+        }
+        std::fs::create_dir_all(self.dir.join("nostr"))?;
+        write_atomic(&path, &serde_json::to_vec_pretty(&cur)?)?;
+        Ok(())
+    }
+
     fn event(&self, hour: u64) -> Option<Event> {
         Event::from_json(self.event_json(hour)?).ok()
     }
@@ -556,6 +693,14 @@ pub fn sign_record(keys: &Keys, record: &HourRecord, now_s: u64) -> Result<Event
         .sign_with_keys(keys)?)
 }
 
+/// The receipt key of the store in `dir` (created on first use), for
+/// callers that need the mint's npub before the store opens (NUT-06
+/// contact).
+pub fn receipt_keys(dir: &Path) -> Result<Keys> {
+    std::fs::create_dir_all(dir).with_context(|| format!("create {dir:?}"))?;
+    load_or_create_key(&dir.join("receipt.nsec"))
+}
+
 fn load_or_create_key(path: &Path) -> Result<Keys> {
     match std::fs::read_to_string(path) {
         Ok(s) => Keys::parse(s.trim()).with_context(|| format!("parse {path:?}")),
@@ -673,6 +818,42 @@ mod tests {
         let d: KeyDocument = serde_json::from_slice(&doc).unwrap();
         assert_eq!(d.created_at, 300);
         assert!(dir.path().join("key-100.json").exists());
+    }
+
+    #[tokio::test]
+    async fn announcement_is_signed_by_the_receipt_key_and_resigned_on_change() {
+        use crate::discovery::{Announcement, ANNOUNCE_KIND};
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            RecordStore::open(dir.path(), "https://m.example", PublishConfig::default()).unwrap();
+        let mut a = Announcement {
+            mint_pubkey: Some("02ab".into()),
+            url: "https://m.example".into(),
+            nuts: vec![1, 2, 3, 4, 5, 6],
+            network: "mainnet".into(),
+            units: vec!["tih".into()],
+            name: Some("m".into()),
+            description: None,
+            icon_url: None,
+        };
+        store.ensure_announcement(&a, 100).await.unwrap();
+        let first = Event::from_json(store.announcement_json().unwrap()).unwrap();
+        first.verify().unwrap();
+        assert_eq!(first.kind, Kind::Custom(ANNOUNCE_KIND));
+        assert_eq!(first.pubkey.to_hex(), store.pubkey());
+        store.ensure_announcement(&a, 200).await.unwrap();
+        let same = Event::from_json(store.announcement_json().unwrap()).unwrap();
+        assert_eq!(same.id, first.id, "unchanged: not re-signed");
+        a.nuts.push(7);
+        store.ensure_announcement(&a, 300).await.unwrap();
+        let changed = Event::from_json(store.announcement_json().unwrap()).unwrap();
+        assert_ne!(changed.id, first.id);
+        assert_eq!(changed.created_at.as_secs(), 300);
+        assert_eq!(
+            receipt_keys(dir.path()).unwrap().public_key().to_hex(),
+            store.pubkey(),
+            "receipt_keys reads the same key"
+        );
     }
 
     #[test]

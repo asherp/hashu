@@ -510,6 +510,29 @@ pubkey, relays, totals, newest hours), `/v1/hashu/reliability/{hour}`
 (+ `key.ots`), and `/reliability/`, a page that checks signature, shares
 and timestamp in the browser (block headers from mempool.space).
 
+#### 4.7.5 Mint discovery (NIP-87)
+
+Every mint with a public URL announces itself on Nostr (issue #116) with
+an addressable **kind 38172** Cashu mint event, signed by the same receipt
+key as its reliability record, so the listing and the record are one
+identity that survives losing the domain. Tags: `d=<NUT-06 mint pubkey>`
+(the URL if it has none), `u=<mint url>`, `nuts=1,2,3,…`, `n=mainnet`
+(`regtest` with fake Lightning), plus Hashu's `unit=tih`, `t=hashu` and a
+NIP-31 `alt`. `content` is kind-0 style metadata (name, about, website).
+
+The operator's receipt key also publishes a **kind 38000** recommendation
+of each supplier mint it hosts (`k=38172`, `d`, `u`, and an `a` pointer to
+that mint's announcement), so a client that trusts the operator finds the
+suppliers.
+
+The receipt npub is listed in each mint's NUT-06 `contact` as
+`{"method": "nostr", "info": "npub1…"}`. Events are re-signed only when
+their content changes (new URL, NUTs, pubkey), retried every 30 minutes
+until a relay takes them, and re-posted weekly. The reliability index
+(`/v1/hashu/reliability`) includes the signed announcement and the relays
+holding it. Relays come from `HASHU_NOSTR_RELAYS`; with none, nothing is
+posted.
+
 ## 5. Voucher types & lifecycle
 
 ### 5.1 Hash voucher (denomination: `TiH`)

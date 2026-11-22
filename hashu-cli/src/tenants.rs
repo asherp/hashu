@@ -249,7 +249,19 @@ impl Tenants {
             .with_description(format!(
                 "TiH backed by {name}'s own rigs, redeemed as hashrate through Hashu"
             ))
-            .with_urls(vec![url]);
+            .with_urls(vec![url.clone()]);
+        // The supplier mint's Nostr identity (#116): its receipt key.
+        {
+            let mut contacts = Vec::new();
+            crate::mint::add_nostr_contact(
+                &mut contacts,
+                &hashu_mint::reliability::receipt_keys(&dir.join("reliability"))
+                    .context("load reliability receipt key")?,
+            )?;
+            for c in contacts {
+                builder = builder.with_contact_info(c);
+            }
+        }
         builder
             .configure_unit(
                 tih_unit(),
@@ -343,6 +355,19 @@ impl Tenants {
             }));
         if let Some(rel) = &self.cfg.reliability {
             rel.set_keysets(name, crate::mint::tih_keyset_ids(&mint));
+            match mint.mint_info().await {
+                Ok(info) => rel.set_announcement(
+                    name,
+                    hashu_mint::discovery::Announcement::from_info(
+                        &info,
+                        &url,
+                        crate::mint::nostr_network(self.cfg.fake_lightning),
+                    ),
+                ),
+                Err(e) => {
+                    tracing::warn!(supplier = %name, error = %e, "no NIP-87 announcement: mint info")
+                }
+            }
             app = app.merge(crate::reliability::router(rel.clone(), name));
         }
         tracing::info!(
