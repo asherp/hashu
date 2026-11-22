@@ -137,7 +137,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
     <div class="card-head">
       <h2 id="h-rate">Real-time hashrate</h2>
       <div class="row">
-        <span class="note">Half-life</span>
+        <span class="note">Average</span>
         <div class="seg" id="avg"><button data-v="60">1 min</button><button data-v="300" class="on">5 min</button></div>
         <span class="note">Span</span>
         <div class="seg" id="span"><button data-v="300">5 min</button><button data-v="900" class="on">15 min</button><button data-v="3600">1 h</button></div>
@@ -145,7 +145,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
     </div>
     <div class="chart" id="c-rate"></div>
     <ul class="legend" id="rate-legend" aria-label="Rigs"></ul>
-    <p class="note">Estimated from accepted shares: each share of difficulty D is D × 2<sup>32</sup> hashes, averaged with an exponentially weighted moving average of the chosen half-life. Each rig name (the Stratum user after its first dot; rigs sharing a name add up) is a band; the bands stack to the total line. Includes hashrate sent to the default pool and to redeemers.</p>
+    <p class="note">Estimated from accepted shares: each share of difficulty D is D × 2<sup>32</sup> hashes, averaged with an exponentially weighted moving average whose half-life is the chosen average (1 or 5 min). Each rig name (the Stratum user after its first dot; rigs sharing a name add up) is a band; the bands stack to the total line. Includes hashrate sent to the default pool and to redeemers.</p>
   </section>
 
   <section class="card" aria-labelledby="h-red">
@@ -598,7 +598,7 @@ function render () {
 
   const rate = ewmaSeries(state.samples, state.avg).pts
   $('t-rate').textContent = fmtRate(rate.length ? rate[rate.length - 1][1] : px.hashrate_hs)
-  $('t-rate-sub').textContent = `average, ${state.avg === 60 ? '1' : '5'}-min half-life · ${px.metrics.shares_accepted} shares`
+  $('t-rate-sub').textContent = `${state.avg === 60 ? '1' : '5'}-min average · ${px.metrics.shares_accepted} shares`
   $('t-owed').textContent = fmtTih(o.total_tih_owed)
   $('t-open').textContent = fmtTih(o.open_redemption_remaining_tih)
   $('t-open-sub').textContent = o.open_redemptions ? `TiH across ${o.open_redemptions} open redemption${o.open_redemptions > 1 ? 's' : ''}` : 'no open redemption'
