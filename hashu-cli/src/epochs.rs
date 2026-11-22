@@ -16,6 +16,15 @@
 //!   - `POST /v1/hashu/epochs/convert/{quote}` `{"outputs": [...]}`: sign
 //!     its outputs with that epoch's key.
 //!
+//!   - `POST /v1/hashu/epochs/{epoch}/mint/quote/{method}`: buy a future
+//!     epoch (up to [`LOOKAHEAD`] ahead) over a payment rail. Same body and
+//!     answer as `POST /v1/mint/quote/{method}`; the quote is checked
+//!     against that epoch's capacity instead of the live stock. Pay it and
+//!     follow it at the usual `GET /v1/mint/quote/{method}/{quote}`.
+//!   - `POST /v1/hashu/epochs/mint/{quote}` `{"outputs": [...]}`: issue a
+//!     paid future-epoch quote with that epoch's keyset. The standard
+//!     `POST /v1/mint/{method}` refuses such a quote.
+//!
 //! Converting: melt the vouchers with method `epoch` and request
 //! `{"epoch": "auto" | <n>, "amount_tih": <x>}` (`POST /v1/melt/quote/epoch`
 //! then `POST /v1/melt/epoch`), then fetch and sign as above. `auto` goes to
@@ -47,6 +56,17 @@ const TICK: Duration = Duration::from_secs(60);
 pub type KeysDb = Arc<dyn MintKeysDatabase<Err = cdk::cdk_database::Error> + Send + Sync>;
 
 static OPERATOR: OnceLock<Arc<Epochs>> = OnceLock::new();
+
+tokio::task_local! {
+    /// Set while a future-epoch quote is created, so the rail's pricer
+    /// skips the live-stock check.
+    pub static FUTURE_EPOCH_QUOTE: ();
+}
+
+/// Mint quote `id` buys a future epoch on the operator's mint.
+pub fn is_operator_purchase(id: &str) -> bool {
+    OPERATOR.get().is_some_and(|e| e.purchase(id).is_some())
+}
 
 /// Make `epochs` the operator mint's, so its obligations count the TiH
 /// signed outside cdk.
@@ -115,10 +135,31 @@ pub async fn run(
                 true
             }
         };
+        prune_purchases(&epochs, &mint).await;
         match epochs.sync(&mint, keys.as_ref(), !open_redemption).await {
             Ok(r) if !r.is_empty() => on_rotate(),
             Ok(_) => {}
             Err(e) => tracing::error!(error = %e, "epochs: keyset sync failed"),
+        }
+    }
+}
+
+/// Drop reservations whose quote expired unpaid (or is gone).
+async fn prune_purchases(epochs: &Epochs, mint: &Mint) {
+    let purchases = epochs.purchases();
+    if purchases.is_empty() {
+        return;
+    }
+    let Ok(quotes) = mint.mint_quotes().await else {
+        return;
+    };
+    let now_s = now_ms() / 1000;
+    for (id, p) in purchases {
+        let q = quotes.iter().find(|q| q.id.to_string() == id);
+        let unpaid =
+            q.is_none_or(|q| q.amount_paid().value() == 0 && q.amount_issued().value() == 0);
+        if unpaid && p.expiry_s < now_s {
+            epochs.drop_purchase(&id);
         }
     }
 }
@@ -136,6 +177,14 @@ pub fn router(epochs: Arc<Epochs>, mint: Arc<Mint>) -> axum::Router {
         .route(
             "/v1/hashu/epochs/convert/{quote}",
             get(conversion).post(sign),
+        )
+        .route(
+            "/v1/hashu/epochs/{epoch}/mint/quote/{method}",
+            axum::routing::post(future_quote),
+        )
+        .route(
+            "/v1/hashu/epochs/mint/{quote}",
+            axum::routing::post(future_mint),
         )
         .with_state(Ctx { epochs, mint })
 }
@@ -276,4 +325,187 @@ async fn sign(
         Ok(sigs) => Json(json!({ "signatures": sigs })).into_response(),
         Err(e) => error(StatusCode::BAD_REQUEST, e),
     }
+}
+
+/// `POST /v1/hashu/epochs/{epoch}/mint/quote/{method}`.
+async fn future_quote(
+    State(c): State<Ctx>,
+    Path((epoch, method)): Path<(u64, String)>,
+    Json(payload): Json<Value>,
+) -> Response {
+    use cdk::nuts::{MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteCustomRequest};
+    let amount = payload["amount"].as_u64().unwrap_or(0);
+    if amount == 0 {
+        return error(StatusCode::BAD_REQUEST, "amount (TiH) is required");
+    }
+    if !payload["pubkey"].is_null() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "future-epoch quotes can't be locked to a key (NUT-20)",
+        );
+    }
+    // Refuse before billing anyone; checked again when reserved.
+    if let Err(e) = c.epochs.reserve_check(epoch, amount) {
+        return error(StatusCode::CONFLICT, e);
+    }
+    let created = FUTURE_EPOCH_QUOTE
+        .scope((), async {
+            if method == "bolt11" {
+                let req: MintQuoteBolt11Request = serde_json::from_value(payload.clone())
+                    .map_err(|e| format!("bad bolt11 quote request: {e}"))?;
+                let q = c
+                    .mint
+                    .get_mint_quote(req.into())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let r: MintQuoteBolt11Response<cdk::mint::QuoteId> =
+                    q.try_into().map_err(|e: cdk::Error| e.to_string())?;
+                Ok::<_, String>((
+                    r.quote.to_string(),
+                    r.expiry.unwrap_or(0),
+                    serde_json::to_value(r).unwrap_or_default(),
+                ))
+            } else {
+                let req: MintQuoteCustomRequest = serde_json::from_value(payload.clone())
+                    .map_err(|e| format!("bad {method} quote request: {e}"))?;
+                let q = c
+                    .mint
+                    .get_mint_quote(cdk::mint::MintQuoteRequest::Custom {
+                        method: method.clone(),
+                        request: req,
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?;
+                match q {
+                    cdk::mint::MintQuoteResponse::Custom { response, .. } => Ok((
+                        response.quote.to_string(),
+                        response.expiry.unwrap_or(0),
+                        serde_json::to_value(response).unwrap_or_default(),
+                    )),
+                    _ => Err(format!("unexpected answer for {method}")),
+                }
+            }
+        })
+        .await;
+    let (id, expiry, body) = match created {
+        Ok(v) => v,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e),
+    };
+    match c.epochs.reserve_purchase(&id, epoch, amount, expiry) {
+        Ok(p) => {
+            let mut body = body;
+            body["epoch"] = json!(epoch);
+            body["keyset_id"] = json!(p.dated.keyset_id);
+            Json(body).into_response()
+        }
+        // Someone took the room in between; the quote is never paid.
+        Err(e) => error(StatusCode::CONFLICT, e),
+    }
+}
+
+/// `POST /v1/hashu/epochs/mint/{quote}`: issue a paid future-epoch quote.
+async fn future_mint(
+    State(c): State<Ctx>,
+    Path(quote): Path<String>,
+    Json(body): Json<SignBody>,
+) -> Response {
+    use cdk::nuts::MintQuoteState;
+    let Some(p) = c.epochs.purchase(&quote) else {
+        return error(
+            StatusCode::NOT_FOUND,
+            "no future-epoch purchase with that quote",
+        );
+    };
+    let Ok(qid) = quote.parse::<cdk::mint::QuoteId>() else {
+        return error(StatusCode::BAD_REQUEST, "bad quote id");
+    };
+    let total: u64 = body.outputs.iter().map(|o| u64::from(o.amount)).sum();
+    let db = c.mint.localstore();
+    let result: Result<Vec<cdk::nuts::BlindSignature>, (StatusCode, String)> = async {
+        let internal =
+            |e: cdk::cdk_database::Error| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+        let mut tx = db.begin_transaction().await.map_err(internal)?;
+        let mut q = tx
+            .get_mint_quote(&qid)
+            .await
+            .map_err(internal)?
+            .ok_or((StatusCode::NOT_FOUND, "unknown quote".to_string()))?;
+        match q.state() {
+            MintQuoteState::Unpaid => {
+                return Err((StatusCode::CONFLICT, "the quote is not paid yet".into()))
+            }
+            MintQuoteState::Issued => {
+                // A retry: the same outputs get their signatures back.
+                return c
+                    .epochs
+                    .sign_purchase(&quote, &body.outputs, true)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, e));
+            }
+            MintQuoteState::Paid => {}
+        }
+        let mintable = q.amount_mintable().value();
+        if total != mintable || total != p.dated.amount_tih {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("outputs add up to {total} TiH; the quote is for {mintable} TiH"),
+            ));
+        }
+        let sigs = c
+            .epochs
+            .sign_purchase(&quote, &body.outputs, false)
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+        q.add_issuance(cdk::Amount::new(total, tih_unit()))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        tx.update_mint_quote(&mut q).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(sigs)
+    }
+    .await;
+    match result {
+        Ok(sigs) => {
+            tracing::info!(quote = %quote, epoch = p.dated.epoch, amount_tih = total, "future epoch issued");
+            Json(json!({ "signatures": sigs })).into_response()
+        }
+        Err((status, e)) => error(status, e),
+    }
+}
+
+/// Refuse the standard `POST /v1/mint/{method}` for a future-epoch quote:
+/// it would sign the live keyset for TiH sold against a later epoch.
+pub async fn guard(
+    State(epochs): State<Arc<Epochs>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = req.uri().path();
+    let is_mint = req.method() == axum::http::Method::POST
+        && path.starts_with("/v1/mint/")
+        && !path.starts_with("/v1/mint/quote");
+    if !is_mint || epochs.purchases().is_empty() {
+        return next.run(req).await;
+    }
+    let (parts, body) = req.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else {
+        return error(StatusCode::PAYLOAD_TOO_LARGE, "request too large");
+    };
+    if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
+        let mut ids: Vec<&str> = v["quote"].as_str().into_iter().collect();
+        if let Some(qs) = v["quotes"].as_array() {
+            ids.extend(
+                qs.iter()
+                    .filter_map(|q| q.as_str().or_else(|| q["quote"].as_str())),
+            );
+        }
+        if let Some(id) = ids.into_iter().find(|id| epochs.purchase(id).is_some()) {
+            return error(
+                StatusCode::BAD_REQUEST,
+                format!("quote {id} buys a future epoch; issue it at /v1/hashu/epochs/mint/{id}"),
+            );
+        }
+    }
+    next.run(axum::extract::Request::from_parts(
+        parts,
+        axum::body::Body::from(bytes),
+    ))
+    .await
 }

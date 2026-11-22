@@ -1058,7 +1058,12 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         .merge(crate::reliability::router(reliability.clone(), ""))
         .merge(landing::router());
     if let Some(e) = &epochs {
-        app = app.merge(crate::epochs::router(e.clone(), mint.clone()));
+        app = app
+            .merge(crate::epochs::router(e.clone(), mint.clone()))
+            .layer(axum::middleware::from_fn_with_state(
+                e.clone(),
+                crate::epochs::guard,
+            ));
     }
     if let Some(w) = &waitlist {
         let domain = supplier_domain(&args).or_else(|| mint_host(&args));

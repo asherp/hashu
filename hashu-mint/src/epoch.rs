@@ -99,6 +99,20 @@ struct Persisted {
     /// Conversion melts by id (hex of the request hash).
     #[serde(default)]
     conversions: BTreeMap<String, Conversion>,
+    /// Future epochs bought directly, by mint quote id.
+    #[serde(default)]
+    purchases: BTreeMap<String, Purchase>,
+}
+
+/// A future epoch bought directly over a payment rail: a mint quote whose
+/// vouchers are signed with that epoch's key instead of the live keyset.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Purchase {
+    #[serde(flatten)]
+    pub dated: Conversion,
+    /// The quote's payment deadline (unix s); unpaid after it, the
+    /// reservation is dropped.
+    pub expiry_s: u64,
 }
 
 /// Target of a conversion melt.
@@ -367,14 +381,110 @@ impl Epochs {
         }
     }
 
-    /// TiH reserved by conversions in each epoch.
+    /// TiH reserved by conversions and future-epoch purchases in each epoch.
     pub fn dated(&self) -> BTreeMap<u64, u64> {
         let g = self.inner.lock().unwrap();
         let mut m = BTreeMap::new();
-        for c in g.conversions.values() {
+        for c in g
+            .conversions
+            .values()
+            .chain(g.purchases.values().map(|p| &p.dated))
+        {
             *m.entry(c.epoch).or_insert(0) += c.amount_tih;
         }
         m
+    }
+
+    /// Whether future epoch `epoch` can take `amount_tih` more.
+    pub fn reserve_check(&self, epoch: u64, amount_tih: u64) -> Result<(), String> {
+        let current = self
+            .clock()
+            .ok_or("the epoch clock has not read the chain yet")?
+            .current();
+        if epoch <= current {
+            return Err(format!(
+                "epoch {epoch} is not in the future; buy the current epoch at /v1/mint/quote"
+            ));
+        }
+        self.resolve(Target::Epoch(epoch), amount_tih).map(|_| ())
+    }
+
+    /// Reserve `amount_tih` of future epoch `epoch` for mint quote
+    /// `quote_id`. Only epochs after the current one, up to [`LOOKAHEAD`]:
+    /// the current epoch sells through the live stock.
+    pub fn reserve_purchase(
+        &self,
+        quote_id: &str,
+        epoch: u64,
+        amount_tih: u64,
+        expiry_s: u64,
+    ) -> Result<Purchase, String> {
+        self.reserve_check(epoch, amount_tih)?;
+        let keyset = self
+            .keyset_for(epoch)
+            .ok_or("epochs are not anchored yet")?;
+        let p = Purchase {
+            dated: Conversion {
+                amount_tih,
+                epoch,
+                keyset_id: keyset.id.to_string(),
+                created_ms: now_ms(),
+                signatures: None,
+                outputs: Vec::new(),
+            },
+            expiry_s,
+        };
+        let mut g = self.inner.lock().unwrap();
+        g.purchases.insert(quote_id.to_string(), p.clone());
+        self.save(&g);
+        Ok(p)
+    }
+
+    pub fn purchase(&self, quote_id: &str) -> Option<Purchase> {
+        self.inner.lock().unwrap().purchases.get(quote_id).cloned()
+    }
+
+    pub fn purchases(&self) -> BTreeMap<String, Purchase> {
+        self.inner.lock().unwrap().purchases.clone()
+    }
+
+    /// Drop a reservation (its quote expired unpaid).
+    pub fn drop_purchase(&self, quote_id: &str) {
+        let mut g = self.inner.lock().unwrap();
+        if g.purchases.remove(quote_id).is_some() {
+            self.save(&g);
+        }
+    }
+
+    /// Sign a purchase's outputs with its epoch's key. `issued`: the quote
+    /// is already marked issued, so only the outputs signed before get
+    /// their signatures again; otherwise new outputs replace an earlier
+    /// attempt whose issuance never went through.
+    pub fn sign_purchase(
+        &self,
+        quote_id: &str,
+        outputs: &[BlindedMessage],
+        issued: bool,
+    ) -> Result<Vec<BlindSignature>, String> {
+        let p = self.purchase(quote_id).ok_or("unknown purchase")?;
+        let secrets: Vec<String> = outputs.iter().map(|o| o.blinded_secret.to_hex()).collect();
+        if let Some(sigs) = &p.dated.signatures {
+            if p.dated.outputs == secrets {
+                return Ok(sigs.clone());
+            }
+            if issued {
+                return Err("this quote is already issued for other outputs".into());
+            }
+        } else if issued {
+            return Err("this quote is already issued".into());
+        }
+        let sigs = self.sign_outputs(&p.dated, outputs)?;
+        let mut g = self.inner.lock().unwrap();
+        let entry = g.purchases.get_mut(quote_id).ok_or("unknown purchase")?;
+        entry.dated.signatures = Some(sigs.clone());
+        entry.dated.outputs = secrets;
+        self.save(&g);
+        Ok(sigs)
     }
 
     /// TiH signed here rather than by cdk for epochs up to `through`
@@ -485,6 +595,31 @@ impl Epochs {
                 Err("this conversion is already signed for other outputs".into())
             };
         }
+        let sigs = self.sign_outputs(&c, outputs)?;
+        let mut g = self.inner.lock().unwrap();
+        let entry = g.conversions.get_mut(id).ok_or("unknown conversion")?;
+        if let Some(sigs) = &entry.signatures {
+            // Raced with another call: answer as above.
+            return if entry.outputs == secrets {
+                Ok(sigs.clone())
+            } else {
+                Err("this conversion is already signed for other outputs".into())
+            };
+        }
+        entry.signatures = Some(sigs.clone());
+        entry.outputs = secrets;
+        self.save(&g);
+        Ok(sigs)
+    }
+
+    /// Blind-sign `outputs` for dated TiH `c` with its epoch's key: they
+    /// must name that keyset, be distinct and add up to `c`'s amount.
+    fn sign_outputs(
+        &self,
+        c: &Conversion,
+        outputs: &[BlindedMessage],
+    ) -> Result<Vec<BlindSignature>, String> {
+        let secrets: Vec<String> = outputs.iter().map(|o| o.blinded_secret.to_hex()).collect();
         let total: u64 = outputs.iter().map(|o| u64::from(o.amount)).sum();
         if total != c.amount_tih {
             return Err(format!(
@@ -527,19 +662,6 @@ impl Epochs {
                 .map_err(|e| e.to_string())?,
             );
         }
-        let mut g = self.inner.lock().unwrap();
-        let entry = g.conversions.get_mut(id).ok_or("unknown conversion")?;
-        if let Some(sigs) = &entry.signatures {
-            // Raced with another call: answer as above.
-            return if entry.outputs == secrets {
-                Ok(sigs.clone())
-            } else {
-                Err("this conversion is already signed for other outputs".into())
-            };
-        }
-        entry.signatures = Some(sigs.clone());
-        entry.outputs = secrets;
-        self.save(&g);
         Ok(sigs)
     }
 }

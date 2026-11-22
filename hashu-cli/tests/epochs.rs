@@ -127,7 +127,11 @@ async fn harness() -> Harness {
     let app = cdk_axum::create_mint_router(mint.clone(), vec![HASHRATE.into(), EPOCH.into()])
         .await
         .unwrap()
-        .merge(hashu_cli::epochs::router(epochs.clone(), mint.clone()));
+        .merge(hashu_cli::epochs::router(epochs.clone(), mint.clone()))
+        .layer(axum::middleware::from_fn_with_state(
+            epochs.clone(),
+            hashu_cli::epochs::guard,
+        ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
@@ -338,4 +342,105 @@ async fn vouchers_follow_the_epochs() {
     h.epochs.set_clock(tip_in(13));
     h.sync().await;
     h.mint.verify_proofs(forward).await.unwrap();
+
+    // Buying a later epoch directly over Lightning: epoch 15.
+    let url = |p: &str| format!("{}{p}", h.url);
+    let refused = h
+        .http
+        .post(url("/v1/hashu/epochs/13/mint/quote/bolt11"))
+        .json(&serde_json::json!({ "amount": 2048, "unit": "tih" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        refused.status(),
+        409,
+        "the current epoch sells through the live stock"
+    );
+    let quote: serde_json::Value = h
+        .http
+        .post(url("/v1/hashu/epochs/15/mint/quote/bolt11"))
+        .json(&serde_json::json!({ "amount": 2048, "unit": "tih" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let qid = quote["quote"].as_str().unwrap().to_string();
+    assert_eq!(quote["epoch"], 15);
+    let k15 = h.epochs.keyset_for(15).unwrap();
+    assert_eq!(quote["keyset_id"], k15.id.to_string());
+    // The fake node pays it shortly.
+    let mut paid = false;
+    for _ in 0..50 {
+        let q = h.get(&format!("/v1/mint/quote/bolt11/{qid}")).await;
+        if q["state"] == "PAID" {
+            paid = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(paid, "future-epoch quote never paid");
+    // Reserved in epoch 15.
+    let index = h.get("/v1/hashu/epochs").await;
+    assert_eq!(index["epochs"][2]["epoch"], 15);
+    assert_eq!(index["epochs"][2]["owed_tih"], 2048);
+    // The standard mint endpoint refuses it, so it can't take the live keyset.
+    let live = PreMintSecrets::random(
+        h.active(),
+        Amount::from(2048),
+        &SplitTarget::default(),
+        &(0, denoms()).into(),
+    )
+    .unwrap();
+    let r = h
+        .http
+        .post(url("/v1/mint/bolt11"))
+        .json(&serde_json::json!({ "quote": qid, "outputs": live.blinded_messages() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    // Issued with epoch 15's keyset instead.
+    let premint = PreMintSecrets::random(
+        k15.id,
+        Amount::from(2048),
+        &SplitTarget::default(),
+        &(0, denoms()).into(),
+    )
+    .unwrap();
+    let r = h
+        .http
+        .post(url(&format!("/v1/hashu/epochs/mint/{qid}")))
+        .json(&serde_json::json!({ "outputs": premint.blinded_messages() }))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let body: serde_json::Value = r.json().await.unwrap();
+    let sigs: Vec<BlindSignature> = serde_json::from_value(body["signatures"].clone()).unwrap();
+    let keys = hashu_mint::epoch::public_keyset(&k15, None).keys;
+    let bought = cdk::dhke::construct_proofs(sigs, premint.rs(), premint.secrets(), &keys).unwrap();
+    let q = h.get(&format!("/v1/mint/quote/bolt11/{qid}")).await;
+    assert_eq!(q["state"], "ISSUED");
+    assert!(h.mint.verify_proofs(bought.clone()).await.is_err());
+    // A stock Cashu wallet can't take them before epoch 15 either: the
+    // keyset isn't listed yet, so receiving fails and nothing is lost.
+    let stock = h.wallet().await;
+    assert!(stock
+        .receive_proofs(bought.clone(), Default::default(), None, None)
+        .await
+        .is_err());
+    assert_eq!(u64::from(stock.total_balance().await.unwrap()), 0);
+    h.epochs.set_clock(tip_in(15));
+    h.sync().await;
+    h.mint.verify_proofs(bought.clone()).await.unwrap();
+    // From epoch 15 on they are ordinary TiH to any wallet.
+    stock.refresh_keysets().await.unwrap();
+    stock
+        .receive_proofs(bought, Default::default(), None, None)
+        .await
+        .unwrap();
+    assert_eq!(u64::from(stock.total_balance().await.unwrap()), 2048);
 }
