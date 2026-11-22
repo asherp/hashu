@@ -137,15 +137,15 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
     <div class="card-head">
       <h2 id="h-rate">Real-time hashrate</h2>
       <div class="row">
-        <span class="note">Average</span>
-        <div class="seg" id="avg"><button data-v="60" class="on">1 min</button><button data-v="300">5 min</button></div>
+        <span class="note">Half-life</span>
+        <div class="seg" id="avg"><button data-v="60">1 min</button><button data-v="300" class="on">5 min</button></div>
         <span class="note">Span</span>
         <div class="seg" id="span"><button data-v="300">5 min</button><button data-v="900" class="on">15 min</button><button data-v="3600">1 h</button></div>
       </div>
     </div>
     <div class="chart" id="c-rate"></div>
     <ul class="legend" id="rate-legend" aria-label="Rigs"></ul>
-    <p class="note">Estimated from accepted shares: each share of difficulty D is D × 2<sup>32</sup> hashes. Each rig name (the Stratum user after its first dot; rigs sharing a name add up) is a band; the bands stack to the total line. Includes hashrate sent to the default pool and to redeemers.</p>
+    <p class="note">Estimated from accepted shares: each share of difficulty D is D × 2<sup>32</sup> hashes, averaged with an exponentially weighted moving average of the chosen half-life. Each rig name (the Stratum user after its first dot; rigs sharing a name add up) is a band; the bands stack to the total line. Includes hashrate sent to the default pool and to redeemers.</p>
   </section>
 
   <section class="card" aria-labelledby="h-red">
@@ -298,7 +298,7 @@ const $ = (id) => document.getElementById(id)
 const HASHES_PER_TIH = 2 ** 40
 const TIH_PER_PIH = 1024
 const TIH_PER_THH = 3.6e15 / HASHES_PER_TIH
-const state = { op: null, samples: [], lastT: 0, selected: null, track: null, avg: 60, span: 900, markupDirty: false, heatDirty: false }
+const state = { op: null, samples: [], lastT: 0, selected: null, track: null, avg: 300, span: 900, markupDirty: false, heatDirty: false }
 const fmtKwh = (k) => {
   if (!Number.isFinite(k)) return '—'
   if (k >= 1000) return `${(k / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 })} MWh`
@@ -441,47 +441,53 @@ function drawChart (el, cfg) {
   }
 }
 
-// Hashrate over a trailing window, from the cumulative work series.
-function rateSeries (samples, avgS) {
-  const out = []
-  let j = 0
-  for (let i = 0; i < samples.length; i++) {
-    const s = samples[i]
-    while (j < i && samples[j].t_ms < s.t_ms - avgS * 1000) j++
-    const b = samples[j]
-    if (b && s.t_ms > b.t_ms) out.push([s.t_ms, Math.max(0, s.total_hashes - b.total_hashes) * 1000 / (s.t_ms - b.t_ms)])
-    else if (i > 0) out.push([s.t_ms, 0])
-  }
-  return out
-}
-
-// Each rig's hashrate over the same trailing window, from its cumulative
-// work in the samples (`rigs`: label -> hashes). A rig missing from a
-// sample had sent nothing yet (0). Returns `{ t, rigs: {label: H/s} }`
-// for each point rateSeries makes.
 // A rig's name without the supplier prefix (`asher.s21` -> `s21`):
 // suppliers get their own dashboards, and rigs sharing a name are meant
 // to be counted together, so they sum into one band.
 const rigName = (user) => user.includes('.') ? user.slice(user.indexOf('.') + 1) : user
 
-function rigRateSeries (samples, avgS) {
-  const out = []
-  let j = 0
-  for (let i = 0; i < samples.length; i++) {
-    const s = samples[i]
-    while (j < i && samples[j].t_ms < s.t_ms - avgS * 1000) j++
-    const b = samples[j]
-    const rigs = {}
-    if (b && s.t_ms > b.t_ms) {
-      const cur = s.rigs || {}, base = b.rigs || {}
-      for (const k in cur) {
-        const r = Math.max(0, cur[k] - (base[k] || 0)) * 1000 / (s.t_ms - b.t_ms)
-        if (r > 0) rigs[rigName(k)] = (rigs[rigName(k)] || 0) + r
-      }
-      out.push({ t: s.t_ms, rigs })
-    } else if (i > 0) out.push({ t: s.t_ms, rigs })
+// Hashrate as an exponentially weighted moving average with half-life
+// `halfS` seconds, from the cumulative work series: decayed work divided
+// by decayed time, so it is unbiased from the first sample and has no
+// window edge for a big share to fall off. Each rig (by name, `rigs` in
+// the samples) is averaged the same way with the same decayed time, so
+// the rigs sum exactly to the total. Returns `pts` ([t, H/s]) and `rigs`
+// ({ t, rigs: {name: H/s} }), one entry per sample after the first.
+function ewmaSeries (samples, halfS) {
+  const tau = halfS / Math.LN2
+  const pts = [], rigs = []
+  let work = 0, time = 0
+  const rigWork = {}
+  const last = Object.assign({}, samples.length ? samples[0].rigs : {})
+  for (let i = 1; i < samples.length; i++) {
+    const s = samples[i], p = samples[i - 1]
+    const dt = (s.t_ms - p.t_ms) / 1000
+    if (!(dt > 0)) continue
+    const d = Math.exp(-dt / tau)
+    work = work * d + Math.max(0, s.total_hashes - p.total_hashes)
+    time = time * d + dt
+    for (const n in rigWork) rigWork[n] *= d
+    const cur = s.rigs || {}
+    for (const k in cur) {
+      // A rig new to the series starts from 0 (its work is counted from
+      // its first share); one that dropped out and came back never goes
+      // negative.
+      const dw = Math.max(0, cur[k] - (last[k] || 0))
+      last[k] = cur[k]
+      if (dw > 0) rigWork[rigName(k)] = (rigWork[rigName(k)] || 0) + dw
+    }
+    const total = work / time
+    const r = {}
+    for (const n in rigWork) {
+      const v = rigWork[n] / time
+      // Rigs that left fade out; drop them once they no longer show.
+      if (v > total * 1e-3) r[n] = v
+      else if (v < total * 1e-6) delete rigWork[n]
+    }
+    pts.push([s.t_ms, total])
+    rigs.push({ t: s.t_ms, rigs: r })
   }
-  return out
+  return { pts, rigs }
 }
 
 // Rigs keep the colour slot they first got while the page is open, so a
@@ -502,8 +508,9 @@ function drawRate () {
   // Start the axis at the first sample when there is less data than the span.
   const first = state.samples.length ? state.samples[0].t_ms : now
   const from = Math.max(now - state.span * 1000, Math.min(first, now - 60000))
-  const pts = rateSeries(state.samples, state.avg).filter((p) => p[0] >= from)
-  const rr = rigRateSeries(state.samples, state.avg).filter((p) => p.t >= from)
+  const ew = ewmaSeries(state.samples, state.avg)
+  const pts = ew.pts.filter((p) => p[0] >= from)
+  const rr = ew.rigs.filter((p) => p.t >= from)
   // Rigs that did work in the span, in slot order (stable bottom-to-top).
   const names = new Set()
   for (const p of rr) for (const k in p.rigs) names.add(k)
@@ -589,9 +596,9 @@ function render () {
     (mint.rails.length ? mint.rails : ['no payment rail']).map((r) => `<span class="pill rail">${esc(r)}</span>`).join('')+
     (op.waitlist != null ? `<a class="pill rail" style="text-decoration:none" href="waitlist">Waitlist: ${op.waitlist}</a>` : '')
 
-  const rate = rateSeries(state.samples.slice(-Math.ceil(state.avg) - 2), state.avg)
+  const rate = ewmaSeries(state.samples, state.avg).pts
   $('t-rate').textContent = fmtRate(rate.length ? rate[rate.length - 1][1] : px.hashrate_hs)
-  $('t-rate-sub').textContent = `${state.avg === 60 ? '1' : '5'}-min average · ${px.metrics.shares_accepted} shares`
+  $('t-rate-sub').textContent = `average, ${state.avg === 60 ? '1' : '5'}-min half-life · ${px.metrics.shares_accepted} shares`
   $('t-owed').textContent = fmtTih(o.total_tih_owed)
   $('t-open').textContent = fmtTih(o.open_redemption_remaining_tih)
   $('t-open-sub').textContent = o.open_redemptions ? `TiH across ${o.open_redemptions} open redemption${o.open_redemptions > 1 ? 's' : ''}` : 'no open redemption'
