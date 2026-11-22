@@ -440,6 +440,30 @@ async fn vouchers_follow_the_epochs() {
         .expect("future epoch keyset listed");
     assert_eq!(k["active"], false);
     h.get(&format!("/v1/keys/{}", k15.id)).await;
+    // Web wallets on another origin can read all of it.
+    for path in [
+        "/v1/keysets".to_string(),
+        format!("/v1/keys/{}", k15.id),
+        "/v1/hashu/epochs".to_string(),
+    ] {
+        let r = h.http.get(url(&path)).send().await.unwrap();
+        assert_eq!(
+            r.headers()["access-control-allow-origin"],
+            "*",
+            "CORS on {path}"
+        );
+    }
+    let pre = h
+        .http
+        .request(
+            reqwest::Method::OPTIONS,
+            url("/v1/hashu/epochs/15/mint/quote/bolt11"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(pre.status().is_success(), "preflight: {}", pre.status());
+    assert_eq!(pre.headers()["access-control-allow-origin"], "*");
     let stock = h.wallet().await;
     let refused = stock
         .receive_proofs(bought.clone(), Default::default(), None, None)
