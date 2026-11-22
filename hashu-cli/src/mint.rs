@@ -1034,6 +1034,12 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         }
         rel
     };
+    // With epochs on, one chain-tip reader dates every mint's issuance.
+    let clock = args.epochs.then(|| {
+        crate::epochs::chain_clock(esplora::EsploraClient::with_base(
+            args.epoch_esplora.trim_end_matches('/').to_string(),
+        ))
+    });
     // Tips on the operator's Nostr profile (zaps support development).
     let tip_routes = {
         let (tip, routes) = crate::tips::setup(
@@ -1056,6 +1062,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         fake_lightning,
         &router,
         &reliability,
+        clock.clone(),
     );
     if let Some(t) = &tenants {
         t.start_all().await;
@@ -1072,10 +1079,12 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
                 args.data_dir.join("hashrate-plan.json"),
             ))?),
             epochs: e.clone(),
-            capacity: capacity.clone(),
-            record: reliability
-                .store("")
-                .context("operator reliability record")?,
+            measured: crate::planner::measured_from(capacity.clone()),
+            record: Some(
+                reliability
+                    .store("")
+                    .context("operator reliability record")?,
+            ),
         });
         p.start();
         planner = Some(p);
@@ -1083,12 +1092,16 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             let (rel, mint) = (reliability.clone(), mint.clone());
             Arc::new(move || rel.set_keysets("", tih_keyset_ids(&mint)))
         };
+        let on_tick: Arc<dyn Fn(hashu_core::epoch::EpochClock) + Send + Sync> = {
+            let capacity = capacity.clone();
+            Arc::new(move |c| capacity.set_epoch(c.current(), c.hours_left()))
+        };
         tokio::spawn(crate::epochs::run(
             e.clone(),
             mint.clone(),
             db.clone(),
-            esplora::EsploraClient::with_base(args.epoch_esplora.trim_end_matches('/').to_string()),
-            capacity.clone(),
+            clock.clone().expect("epochs on"),
+            on_tick,
             on_rotate,
         ));
         tracing::info!(esplora = %args.epoch_esplora, "epochs on: vouchers dated to difficulty epochs");
@@ -1268,6 +1281,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
 
 /// Supplier mints, when a supplier registry is configured and this mint
 /// has a public URL to name them under.
+#[allow(clippy::too_many_arguments)]
 fn supplier_mints(
     args: &RunArgs,
     stratum: &crate::stratum_addr::StratumAddr,
@@ -1276,6 +1290,7 @@ fn supplier_mints(
     fake_lightning: bool,
     router: &Arc<Router>,
     reliability: &Arc<crate::reliability::Reliability>,
+    epochs: Option<crate::epochs::ClockFeed>,
 ) -> Option<Arc<Tenants>> {
     if !registry.path_configured() {
         return None;
@@ -1306,6 +1321,7 @@ fn supplier_mints(
             stratum: stratum.clone(),
             probe: tenants::lnurl_probe(),
             reliability: Some(reliability.clone()),
+            epochs,
         },
         registry.clone(),
     ))

@@ -723,15 +723,18 @@ impl Obligations {
 }
 
 pub async fn obligations(mint: &Mint, ledger: &RedemptionLedger) -> anyhow::Result<Obligations> {
-    obligations_for(mint, ledger, None).await
+    let epochs = crate::epochs::operator();
+    obligations_for(mint, ledger, None, epochs.as_deref()).await
 }
 
 /// [`obligations`] of supplier `supplier`'s mint (`None`: the operator's),
-/// counting only that mint's redemptions in the shared ledger.
+/// counting only that mint's redemptions in the shared ledger. `epochs`:
+/// that mint's epochs, when on (#126).
 pub async fn obligations_for(
     mint: &Mint,
     ledger: &RedemptionLedger,
     supplier: Option<&str>,
+    epochs: Option<&hashu_mint::epoch::Epochs>,
 ) -> anyhow::Result<Obligations> {
     // keyset_amounts counts every signature and every spent proof, swaps
     // included; swaps add equally to both, so the difference is the TiH
@@ -765,11 +768,7 @@ pub async fn obligations_for(
         .sum();
     // With epochs on (#126), conversions are signed outside cdk: cdk sees
     // their vouchers spent but never signed, so add them back.
-    let outside = if supplier.is_none() {
-        crate::epochs::operator_outside_cdk()
-    } else {
-        0
-    };
+    let outside = epochs.map(crate::epochs::outside_cdk).unwrap_or(0);
     let in_circulation = (signed + outside)
         .saturating_sub(spent)
         .saturating_sub(melting);
@@ -786,7 +785,7 @@ pub async fn obligations_for(
             continue;
         }
         // Future-epoch purchases are owed in their epoch, not now (#126).
-        if supplier.is_none() && crate::epochs::is_operator_purchase(&q.id.to_string()) {
+        if epochs.is_some_and(|e| e.purchase(&q.id.to_string()).is_some()) {
             continue;
         }
         let issued = q.amount_issued().value();
