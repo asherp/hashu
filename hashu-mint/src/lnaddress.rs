@@ -1,11 +1,15 @@
 //! Receive-only Lightning rail that invoices a supplier's own wallet
-//! through their Lightning address.
+//! through their LNURL-pay endpoint.
 //!
 //! A supplier mint (`alice.hashu.io`) never holds buyer funds: each
-//! TiH sale is an invoice from Alice's own wallet. For a Lightning address
-//! `alice@wallet.example`:
+//! TiH sale is an invoice from Alice's own wallet. Alice gives her endpoint
+//! as a [`PayEndpoint`]: a Lightning address (`alice@wallet.example`), a
+//! bech32 `lnurl1…` code, an `lnurlp://` link or the endpoint's plain
+//! `https://` URL, so a miner running their own node (LNbits, BTCPay, …)
+//! can use their own LNURL server. Then:
 //!
-//! 1. LUD-16: `GET https://wallet.example/.well-known/lnurlp/alice` gives the
+//! 1. `GET` the endpoint (for a Lightning address, LUD-16's
+//!    `https://wallet.example/.well-known/lnurlp/alice`) gives the
 //!    LNURL-pay parameters (callback, min and max amount).
 //! 2. LUD-06: `GET <callback>?amount=<msat>` returns a bolt11 invoice, and
 //!    LUD-21 adds a `verify` URL for it.
@@ -14,7 +18,7 @@
 //!    quote paid.
 //!
 //! A provider without LUD-21 can't tell the mint a payment arrived, so its
-//! addresses are refused when the invoice comes back without `verify`
+//! endpoints are refused when the invoice comes back without `verify`
 //! ([`probe`] checks this at sign-up).
 //!
 //! Open invoices are kept in a JSON file next to the mint's database, so a
@@ -93,6 +97,112 @@ impl LightningAddress {
     }
 }
 
+/// A supplier's LNURL-pay endpoint, in any of the forms wallets hand out:
+///
+/// - a Lightning address, `alice@wallet.example` (LUD-16);
+/// - a bech32 LNURL, `lnurl1…` (LUD-01);
+/// - an `lnurlp://host/path` link (LUD-17);
+/// - the endpoint's `https://` URL.
+///
+/// Any of them may carry a `lightning:` prefix. The endpoint must be HTTPS
+/// on a domain name: the mint fetches it, so IP addresses and `localhost`
+/// are refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PayEndpoint {
+    Address(LightningAddress),
+    Url(String),
+}
+
+impl FromStr for PayEndpoint {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        let s = match s.get(..10) {
+            Some(p) if p.eq_ignore_ascii_case("lightning:") => s[10..].trim(),
+            _ => s,
+        };
+        let lower = s.to_ascii_lowercase();
+        if lower.starts_with("lnurl1") {
+            let (hrp, data) = bech32::decode(s).map_err(|e| {
+                format!("that LNURL does not decode ({e}); check it was copied whole")
+            })?;
+            if !hrp.as_str().eq_ignore_ascii_case("lnurl") {
+                return Err("that is not an LNURL".into());
+            }
+            let url = String::from_utf8(data).map_err(|_| "that LNURL does not hold a URL")?;
+            return Self::from_url(&url);
+        }
+        if let Some(rest) = lower.strip_prefix("lnurlp://") {
+            return Self::from_url(&format!("https://{}", &s[s.len() - rest.len()..]));
+        }
+        if lower.contains("://") {
+            return Self::from_url(s);
+        }
+        s.parse::<LightningAddress>()
+            .map(Self::Address)
+            .map_err(|_| {
+                format!(
+                    "{s:?} is not a Lightning address (you@wallet.example) \
+                 or an LNURL-pay link (lnurl1…, lnurlp:// or https://)"
+                )
+            })
+    }
+}
+
+impl PayEndpoint {
+    fn from_url(raw: &str) -> Result<Self, String> {
+        let url =
+            reqwest::Url::parse(raw.trim()).map_err(|e| format!("{raw:?} is not a URL: {e}"))?;
+        if url.scheme() != "https" {
+            return Err("the LNURL-pay endpoint must use https".into());
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err("the LNURL-pay endpoint must not carry a login".into());
+        }
+        match url.host() {
+            Some(url::Host::Domain(d))
+                if d.contains('.')
+                    && !d.ends_with(".localhost")
+                    && !d.ends_with(".local")
+                    && !d.ends_with(".internal")
+                    && !d.ends_with(".onion") => {}
+            _ => {
+                return Err(
+                    "the LNURL-pay endpoint must be on a public domain name, not an IP address"
+                        .into(),
+                )
+            }
+        }
+        Ok(Self::Url(url.to_string()))
+    }
+
+    /// The URL the LNURL-pay parameters are fetched from.
+    pub fn lnurlp_url(&self) -> String {
+        match self {
+            Self::Address(a) => a.lnurlp_url(),
+            Self::Url(u) => u.clone(),
+        }
+    }
+}
+
+impl From<LightningAddress> for PayEndpoint {
+    fn from(a: LightningAddress) -> Self {
+        Self::Address(a)
+    }
+}
+
+/// The canonical form saved in settings: the address, or the endpoint URL
+/// (a bech32 LNURL is saved decoded, so the supplier sees where it points).
+impl std::fmt::Display for PayEndpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Address(a) => a.fmt(f),
+            Self::Url(u) => f.write_str(u),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PayParams {
@@ -141,7 +251,7 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// What a Lightning address can be invoiced for, checked at sign-up.
+/// What an LNURL-pay endpoint can be invoiced for, checked at sign-up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Probe {
     pub min_msat: u64,
@@ -149,9 +259,9 @@ pub struct Probe {
 }
 
 /// Fetch `addr`'s LNURL-pay parameters and request the smallest invoice
-/// it allows, to check the address works and its provider supports LUD-21
-/// `verify`. The invoice is never shown to anyone and simply expires.
-pub async fn probe(addr: &LightningAddress) -> Result<Probe, String> {
+/// it allows, to check the endpoint works and supports LUD-21 `verify`.
+/// The invoice is never shown to anyone and simply expires.
+pub async fn probe(addr: &PayEndpoint) -> Result<Probe, String> {
     let client = http_client()?;
     probe_at(&client, &addr.lnurlp_url()).await
 }
@@ -161,8 +271,9 @@ async fn probe_at(client: &reqwest::Client, lnurlp_url: &str) -> Result<Probe, S
     let inv = request_invoice(client, &params, params.min_sendable.max(1000)).await?;
     if inv.verify.is_none() {
         return Err(
-            "this wallet does not support payment verification (LUD-21); \
-             use a Lightning address from a provider that does"
+            "this wallet does not support payment verification (LUD-21), \
+             so the mint could not tell when a buyer has paid; use a \
+             Lightning address or LNURL-pay endpoint that does"
                 .into(),
         );
     }
@@ -254,7 +365,7 @@ impl std::fmt::Debug for LnAddressRail {
 
 impl LnAddressRail {
     /// Rail invoicing `addr`. Open invoices persist in `path` when given.
-    pub fn new(addr: &LightningAddress, path: Option<PathBuf>) -> Result<Self, Error> {
+    pub fn new(addr: &PayEndpoint, path: Option<PathBuf>) -> Result<Self, Error> {
         Self::at(addr.lnurlp_url(), path)
     }
 
@@ -574,6 +685,53 @@ mod tests {
             "a@x.io/p",
         ] {
             assert!(bad.parse::<LightningAddress>().is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn parses_lnurl_pay_endpoints() {
+        let url = |s: &str| s.parse::<PayEndpoint>().map(|e| e.lnurlp_url());
+        assert_eq!(
+            url("lightning:Alice@Wallet.Example").unwrap(),
+            "https://wallet.example/.well-known/lnurlp/alice"
+        );
+        assert_eq!(
+            "alice@wallet.example"
+                .parse::<PayEndpoint>()
+                .unwrap()
+                .to_string(),
+            "alice@wallet.example"
+        );
+        // LUD-01's example LNURL, upper case as in QR codes.
+        let lud01 = "LNURL1DP68GURN8GHJ7UM9WFMXJCM99E3K7MF0V9CXJ0M385EKVCENXC6R2C35XVUKXEFCV5MKVV34X5EKZD3EV56NYD3HXQURZEPEXEJXXEPNXSCRVWFNV9NXZCN9XQ6XYEFHVGCXXCMYXYMNSERXFQ5FNS";
+        let want = "https://service.com/api?q=3fc3645b439ce8e7f2553a69e5267081d96dcd340693afabe04be7b0ccd178df";
+        assert_eq!(url(lud01).unwrap(), want);
+        assert_eq!(
+            url(&format!("lightning:{}", lud01.to_lowercase())).unwrap(),
+            want
+        );
+        // LUD-17 and plain URLs.
+        assert_eq!(
+            url("lnurlp://pay.miner.example:8443/lnurlp/Ab1").unwrap(),
+            "https://pay.miner.example:8443/lnurlp/Ab1"
+        );
+        assert_eq!(
+            url(" https://LNbits.Miner.example/lnurlp/api/v1/lnurl/x ").unwrap(),
+            "https://lnbits.miner.example/lnurlp/api/v1/lnurl/x"
+        );
+        for bad in [
+            "nope",
+            "http://wallet.example/lnurlp/alice",
+            "https://127.0.0.1/lnurlp/alice",
+            "https://[::1]/lnurlp/alice",
+            "https://localhost/lnurlp/alice",
+            "https://node.local/lnurlp/alice",
+            "https://me:pw@wallet.example/lnurlp/alice",
+            "lnurlp://10.0.0.2/x",
+            "lnurl1dp68gurn8ghj7um9", // truncated
+            "ftp://wallet.example/x",
+        ] {
+            assert!(bad.parse::<PayEndpoint>().is_err(), "{bad}");
         }
     }
 
