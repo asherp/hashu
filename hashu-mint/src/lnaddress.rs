@@ -1,7 +1,7 @@
 //! Receive-only Lightning rail that invoices a supplier's own wallet
 //! through their Lightning address.
 //!
-//! A supplier mint (`alice.mint.hashu.io`) never holds buyer funds: each
+//! A supplier mint (`alice.hashu.io`) never holds buyer funds: each
 //! TiH sale is an invoice from Alice's own wallet. For a Lightning address
 //! `alice@wallet.example`:
 //!

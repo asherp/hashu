@@ -128,7 +128,7 @@ button.btn[disabled] { opacity: 0.6; cursor: wait; }
   <header class="hero">
     <p class="kicker">For miners · waitlist</p>
     <h1>Want a <span>hosted mint</span>?</h1>
-    <p>Sell your hashrate as Chaumian hashrate vouchers from a mint of your own, without running a server. Point your rigs at one Stratum endpoint and get a mint at <b class="mono" id="example-host">yourname.this-mint</b>. Hosted mints aren't open yet: leave one way to reach you and you'll hear when they are.</p>
+    <p>Sell your hashrate as Chaumian hashrate vouchers from a mint of your own, without running a server. Point your rigs at one Stratum endpoint and get a mint at <b class="mono" id="example-host">yourname.{{SUPPLIER_DOMAIN}}</b>. Hosted mints aren't open yet: leave one way to reach you and you'll hear when they are.</p>
   </header>
 
   <section>
@@ -154,7 +154,7 @@ button.btn[disabled] { opacity: 0.6; cursor: wait; }
           </label>
         </fieldset>
         <label><span>Mint name you'd like <small>(optional)</small></span>
-          <span class="name-row"><input name="mint_name" maxlength="32" pattern="[a-z0-9][a-z0-9\-]*[a-z0-9]" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="alice"><span class="suffix" id="suffix">.this-mint</span></span>
+          <span class="name-row"><input name="mint_name" maxlength="32" pattern="[a-z0-9][a-z0-9\-]*[a-z0-9]" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="alice"><span class="suffix" id="suffix">.{{SUPPLIER_DOMAIN}}</span></span>
         </label>
         <fieldset class="cap">
           <legend>What you'd sell <small>(optional)</small></legend>
@@ -206,17 +206,6 @@ button.btn[disabled] { opacity: 0.6; cursor: wait; }
   </footer>
 </div>
 <script>
-// Show the real mint domain (its advertised URL) in the name field.
-fetch('/checkout/api/info', { cache: 'no-store' })
-  .then((r) => (r.ok ? r.json() : null))
-  .then((i) => {
-    const m = i && /^https?:\/\/([^/:]+)/.exec(i.mint_url || '');
-    if (!m) return;
-    document.getElementById('suffix').textContent = '.' + m[1];
-    document.getElementById('example-host').textContent = 'yourname.' + m[1];
-  })
-  .catch(() => {});
-
 const form = document.getElementById('join');
 // TiH for sale = TH/s × hours × 3,274.18 TiH per TH-hour (TiH = 2^40 hashes);
 // PH/s and EH/s convert to TH/s first.

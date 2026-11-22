@@ -1,9 +1,11 @@
 //! Supplier mints: one cdk mint per registered supplier, served from the
 //! same process as the operator's mint and picked by the request's Host.
 //!
-//! `alice.mint.hashu.io` is supplier `alice`'s mint when the operator's
-//! mint is `https://mint.hashu.io` and `alice` is in the supplier registry
-//! (`HASHU_SUPPLIERS_FILE`). Each supplier mint has its own seed, keys and
+//! `alice.hashu.io` is supplier `alice`'s mint when the supplier domain is
+//! `hashu.io` (`HASHU_SUPPLIER_DOMAIN`) and `alice` is in the supplier
+//! registry (`HASHU_SUPPLIERS_FILE`). Without a supplier domain, mints are
+//! named under the operator's mint host (`alice.mint.hashu.io`), and that
+//! older name keeps answering for the same mint when one is set. Each supplier mint has its own seed, keys and
 //! database under `<data-dir>/mints/<name>/`, and writes its redemptions
 //! into the one ledger the proxy router reads, tagged with the supplier's
 //! name, so only that supplier's rigs fill them.
@@ -44,7 +46,9 @@ use hashu_mint::lightning::add_lightning_issuance;
 use hashu_mint::lnaddress::{LightningAddress, LnAddressRail};
 use hashu_mint::melt::{reopen_pending_quotes_in, HashrateMelter, METHOD as HASHRATE};
 use hashu_mint::payment::{tih_unit, TihIssuer};
-use hashu_proxy::suppliers::{secret_hash, valid_name, RegisterError, SupplierRegistry};
+use hashu_proxy::suppliers::{
+    reserved_name, secret_hash, valid_name, RegisterError, SupplierRegistry,
+};
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -61,6 +65,10 @@ pub fn lnurl_probe() -> ProbeFn {
     Arc::new(|addr| Box::pin(async move { hashu_mint::lnaddress::probe(&addr).await.map(|_| ()) }))
 }
 
+fn clean_host(h: &str) -> String {
+    h.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
 /// Sign-ups allowed per hour, so nobody can mint thousands of names (each
 /// one a database and, on first visit, a TLS certificate).
 const JOINS_PER_HOUR: usize = 10;
@@ -75,9 +83,12 @@ const JOIN_PAGE: &str = include_str!("join.html");
 
 /// How supplier mints are built.
 pub struct TenantConfig {
-    /// Host of the operator's mint (`mint.hashu.io`): supplier `alice` is
-    /// served at `alice.<base>`.
+    /// Host of the operator's mint (`mint.hashu.io`). Supplier `alice` is
+    /// also served at `alice.<base>`, the name before supplier domains.
     pub base: String,
+    /// Supplier domain (`hashu.io`): supplier `alice`'s mint is
+    /// `alice.<domain>`. `None`: `alice.<base>`.
+    pub domain: Option<String>,
     /// `<data-dir>/mints`.
     pub dir: PathBuf,
     pub ledger: Arc<RedemptionLedger>,
@@ -124,7 +135,12 @@ impl Tenants {
     pub fn new(cfg: TenantConfig, registry: Arc<SupplierRegistry>) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
             cfg: TenantConfig {
-                base: cfg.base.trim().trim_end_matches('.').to_ascii_lowercase(),
+                base: clean_host(&cfg.base),
+                domain: cfg
+                    .domain
+                    .as_deref()
+                    .map(clean_host)
+                    .filter(|d| !d.is_empty()),
                 ..cfg
             },
             registry,
@@ -134,9 +150,14 @@ impl Tenants {
         })
     }
 
+    /// Domain supplier mints are named under: `<name>.<domain>`.
+    pub fn domain(&self) -> &str {
+        self.cfg.domain.as_deref().unwrap_or(&self.cfg.base)
+    }
+
     /// The host supplier `name` is served on.
     pub fn host_for(&self, name: &str) -> String {
-        format!("{name}.{}", self.cfg.base)
+        format!("{name}.{}", self.domain())
     }
 
     /// The registered supplier whose mint `host` names, if any. `host` may
@@ -147,8 +168,18 @@ impl Tenants {
             Some((h, p)) if p.bytes().all(|b| b.is_ascii_digit()) => h.to_string(),
             _ => host,
         };
+        let known = |name: &str| valid_name(name) && self.registry.contains(name);
+        // A reserved name never takes a host on the supplier domain, which
+        // the operator's own hosts (app, www, mint, ...) share.
+        if let Some(domain) = self.cfg.domain.as_deref().filter(|d| *d != self.cfg.base) {
+            if let Some(name) = host.strip_suffix(&format!(".{domain}")) {
+                if known(name) && !reserved_name(name) {
+                    return Some(name.to_string());
+                }
+            }
+        }
         let name = host.strip_suffix(&format!(".{}", self.cfg.base))?;
-        (valid_name(name) && self.registry.contains(name)).then(|| name.to_string())
+        known(name).then(|| name.to_string())
     }
 
     /// Build every registered supplier's mint. A mint that fails to build
@@ -380,6 +411,9 @@ impl Tenants {
         if !valid_name(name) {
             return Err(bad(RegisterError::InvalidName.to_string()));
         }
+        if reserved_name(name) {
+            return Err(bad(RegisterError::Reserved.to_string()));
+        }
         if self.registry.contains(name) {
             return Err((StatusCode::CONFLICT, RegisterError::Taken.to_string()));
         }
@@ -414,7 +448,7 @@ impl Tenants {
             .register(name, &secret_hash(&secret), Some(&secret_hash(&key)))
             .map_err(|e| match e {
                 RegisterError::Taken => (StatusCode::CONFLICT, e.to_string()),
-                RegisterError::InvalidName => bad(e.to_string()),
+                RegisterError::InvalidName | RegisterError::Reserved => bad(e.to_string()),
                 RegisterError::Closed | RegisterError::Io(_) => {
                     (StatusCode::SERVICE_UNAVAILABLE, e.to_string())
                 }
@@ -617,6 +651,11 @@ pub async fn tls_ask(State(tenants): State<Arc<Tenants>>, Query(q): Query<AskQue
     }
 }
 
+/// The sign-up page, with the supplier domain filled in.
+async fn join_page(State(tenants): State<Arc<Tenants>>) -> Html<String> {
+    Html(JOIN_PAGE.replace("{{SUPPLIER_DOMAIN}}", tenants.domain()))
+}
+
 /// Routes the operator's mint serves for suppliers: `/tls-ask` and sign-up
 /// (`/join/`, `POST /api/join`).
 pub fn operator_router(tenants: Arc<Tenants>) -> axum::Router {
@@ -626,7 +665,7 @@ pub fn operator_router(tenants: Arc<Tenants>) -> axum::Router {
             "/join",
             get(|| async { axum::response::Redirect::permanent("/join/") }),
         )
-        .route("/join/", get(|| async { Html(JOIN_PAGE) }))
+        .route("/join/", get(join_page))
         .route("/api/join", axum::routing::post(post_join))
         .with_state(tenants)
 }
@@ -638,6 +677,15 @@ mod tests {
     use hashu_proxy::suppliers::Check;
 
     fn tenants_with(dir: &std::path::Path, ths: f64, fake: bool) -> Arc<Tenants> {
+        tenants_on(dir, ths, fake, None)
+    }
+
+    fn tenants_on(
+        dir: &std::path::Path,
+        ths: f64,
+        fake: bool,
+        domain: Option<&str>,
+    ) -> Arc<Tenants> {
         let registry = SupplierRegistry::from_file(dir.join("suppliers.json"));
         registry
             .register("alice", &secret_hash("s3cret"), Some(&secret_hash("k3y")))
@@ -645,6 +693,7 @@ mod tests {
         Tenants::new(
             TenantConfig {
                 base: "Mint.Example.com.".into(),
+                domain: domain.map(str::to_string),
                 dir: dir.join("mints"),
                 ledger: Arc::new(RedemptionLedger::new()),
                 min_redeem_tih: 1,
@@ -689,6 +738,31 @@ mod tests {
             "x.alice.mint.example.com",
             "alice.mint.example.org",
             "alicemint.example.com",
+        ] {
+            assert_eq!(t.supplier_for_host(no), None, "{no}");
+        }
+    }
+
+    #[test]
+    fn supplier_domain_names_mints_and_keeps_the_old_hosts() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = tenants_on(dir.path(), 0.0, false, Some("Example.com."));
+        assert_eq!(t.host_for("alice"), "alice.example.com");
+        for ok in [
+            "alice.example.com",
+            "ALICE.example.com.",
+            "alice.example.com:443",
+            "alice.mint.example.com",
+        ] {
+            assert_eq!(t.supplier_for_host(ok).as_deref(), Some("alice"), "{ok}");
+        }
+        for no in [
+            "example.com",
+            "mint.example.com",
+            "app.example.com",
+            "bob.example.com",
+            "x.alice.example.com",
+            "alice.example.org",
         ] {
             assert_eq!(t.supplier_for_host(no), None, "{no}");
         }
@@ -776,6 +850,35 @@ mod tests {
         axum::Router::new()
             .merge(operator_router(t.clone()))
             .layer(axum::middleware::from_fn_with_state(t.clone(), dispatch))
+    }
+
+    #[tokio::test]
+    async fn join_on_the_supplier_domain() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = tenants_on(dir.path(), 0.0, false, Some("example.com"));
+        let app = app(&t);
+        let op = "mint.example.com";
+        let join = |name: &str| json!({"name": name, "lightning_address": "x@wallet.example", "ask_sats_per_eih": 600, "horizon_hours": 24});
+        for reserved in ["app", "www", "mint", "wallet", "app-hashu"] {
+            let (s, body) = send(&app, "POST", op, "/api/join", None, Some(join(reserved))).await;
+            assert_eq!(s, StatusCode::BAD_REQUEST, "{reserved}: {body}");
+            assert!(body.contains("reserved"), "{body}");
+        }
+        let (s, body) = send(&app, "POST", op, "/api/join", None, Some(join("bob"))).await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        let j: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(j["mint_url"], "https://bob.example.com");
+        for host in ["bob.example.com", "bob.mint.example.com"] {
+            let (s, body) = send(&app, "GET", host, "/api/supplier", None, None).await;
+            assert_eq!(s, StatusCode::OK, "{host}: {body}");
+        }
+        let (_, page) = send(&app, "GET", op, "/join/", None, None).await;
+        assert!(page.contains(">.example.com<"), "{page}");
+        let ask = |d: &str| format!("/tls-ask?domain={d}");
+        let (s, _) = get(&app, "hashu", &ask("bob.example.com")).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _) = get(&app, "hashu", &ask("app.example.com")).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

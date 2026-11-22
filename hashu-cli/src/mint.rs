@@ -135,6 +135,13 @@ pub struct RunArgs {
     /// which only works for a rehearsal on this machine.
     #[arg(long, env = "HASHU_MINT_URL")]
     pub mint_url: Option<String>,
+    /// Domain hosted supplier mints are named under: supplier `alice` gets
+    /// `alice.<domain>` (e.g. `example.com` for `alice.example.com`), and
+    /// sign-up refuses names the operator needs (app, www, mint, api, ...).
+    /// Their older name under the mint's host (`alice.mint.example.com`)
+    /// keeps working. Unset or empty: `<name>.<mint host>`.
+    #[arg(long, env = "HASHU_SUPPLIER_DOMAIN")]
+    pub supplier_domain: Option<String>,
     /// Directory for the mint database and seed (created if missing).
     #[arg(long, env = "HASHU_DATA_DIR", default_value = "hashu-data")]
     pub data_dir: PathBuf,
@@ -882,7 +889,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         let suppliers = supplier_base(&args, &registry).map(|base| {
             let reg = registry.clone();
             crate::reliability::SupplierMints {
-                base,
+                base: supplier_domain(&args).unwrap_or(base),
                 dir: args.data_dir.join("mints"),
                 names: Arc::new(move || reg.names()),
             }
@@ -903,7 +910,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         rel.set_keysets("", tih_keyset_ids(&mint));
         rel
     };
-    // Registered suppliers' mints, on <name>.<this mint's host>.
+    // Registered suppliers' mints, on <name>.<supplier domain>.
     let tenants = supplier_mints(
         &args,
         &registry,
@@ -923,7 +930,8 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         .merge(crate::reliability::router(reliability.clone(), ""))
         .merge(landing::router());
     if let Some(w) = &waitlist {
-        app = app.merge(waitlist::router(w.clone()));
+        let domain = supplier_domain(&args).or_else(|| mint_host(&args));
+        app = app.merge(waitlist::router(w.clone(), domain.as_deref()));
     }
     if let Some(t) = &tenants {
         app = app.merge(tenants::operator_router(t.clone())).layer(
@@ -1083,15 +1091,20 @@ fn supplier_mints(
     let Some(base) = supplier_base(args, registry) else {
         tracing::warn!(
             "HASHU_SUPPLIERS_FILE is set but HASHU_MINT_URL is not a URL: supplier mints \
-             (<name>.<mint host>) are off"
+             (<name>.<supplier domain>) are off"
         );
         return None;
     };
-    tracing::info!(host = %format!("*.{base}"), "serving supplier mints");
+    let domain = supplier_domain(args);
+    tracing::info!(
+        host = %format!("*.{}", domain.as_deref().unwrap_or(&base)),
+        "serving supplier mints"
+    );
     let r = router.clone();
     Some(Tenants::new(
         TenantConfig {
             base,
+            domain,
             dir: args.data_dir.join("mints"),
             ledger: ledger.clone(),
             min_redeem_tih: args.min_redeem_tih,
@@ -1115,6 +1128,11 @@ fn supplier_base(
     if !registry.path_configured() {
         return None;
     }
+    mint_host(args)
+}
+
+/// Host of `--mint-url`, lowercased.
+fn mint_host(args: &RunArgs) -> Option<String> {
     args.mint_url
         .as_deref()
         .and_then(|u| u.trim().parse::<axum::http::Uri>().ok())
@@ -1122,6 +1140,15 @@ fn supplier_base(
             u.host()
                 .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
         })
+}
+
+/// `--supplier-domain`, lowercased, without a trailing dot; `None` when
+/// unset or empty (compose passes an empty value).
+fn supplier_domain(args: &RunArgs) -> Option<String> {
+    args.supplier_domain
+        .as_deref()
+        .map(|d| d.trim().trim_end_matches('.').to_ascii_lowercase())
+        .filter(|d| !d.is_empty())
 }
 
 /// Ids of a mint's TiH keysets (active and retired), for the reliability
