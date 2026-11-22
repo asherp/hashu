@@ -120,6 +120,9 @@ struct Persisted {
     /// The stock the live rigs back (#92).
     #[serde(default)]
     live_stock: Stock,
+    /// Epoch the live stock was sized for, with epochs on (#126).
+    #[serde(default)]
+    stock_epoch: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -132,6 +135,34 @@ struct Inner {
     /// Running total the live stock is drawn down by; `None` until counted.
     sold_tih: Option<f64>,
     saved_ms: u64,
+    /// With epochs on: the current epoch and the hours left in it.
+    epoch: Option<(u64, f64)>,
+}
+
+/// Half-life of the live average when epochs size the stock and the
+/// seller has set no horizon of their own.
+const EPOCH_DEFAULT_HORIZON_HOURS: f64 = 24.0;
+
+impl Inner {
+    /// `(hours a batch covers, half-life of the average)`, or `None` while
+    /// live hashrate is not counted. With epochs on, live hashrate always
+    /// counts and a batch covers what is left of the current epoch: live
+    /// issuance sells only the current epoch.
+    fn live_sizing(&self) -> Option<(f64, f64)> {
+        match self.epoch {
+            Some((_, hours_left)) => {
+                let h = self
+                    .p
+                    .live_horizon_hours
+                    .unwrap_or(EPOCH_DEFAULT_HORIZON_HOURS);
+                Some((hours_left.max(0.0), crate::stock::half_life_hours(h)))
+            }
+            None => self
+                .p
+                .live_horizon_hours
+                .map(|h| (h, crate::stock::half_life_hours(h))),
+        }
+    }
 }
 
 /// How often the hashrate average is written to disk between restocks.
@@ -308,7 +339,8 @@ impl CapacityBook {
         g.p.live_horizon_hours = hours;
         // A new horizon starts a new batch sized for it, once there is
         // something to size it from; otherwise the next refresh stocks it.
-        if let (true, Some(h), Some(sold)) = (changed, hours, g.sold_tih) {
+        let size = g.live_sizing().map(|(h, _)| h);
+        if let (true, Some(_), Some(h), Some(sold)) = (changed, hours, size, g.sold_tih) {
             if g.p.live_stock.ewma.ths.is_some() {
                 let excess = self.owed_beyond_rentals(&g, now_ms());
                 g.p.live_stock.resize(h, excess, sold, now_ms());
@@ -341,7 +373,8 @@ impl CapacityBook {
     pub fn refresh_live(&self, now_ms: u64) {
         let measured = self.live.lock().unwrap().as_ref().map(|LiveSource(f)| f());
         let mut g = self.inner.lock().unwrap();
-        let (Some(h), Some(measured), Some(sold)) = (g.p.live_horizon_hours, measured, g.sold_tih)
+        let (Some((h, half_life)), Some(measured), Some(sold)) =
+            (g.live_sizing(), measured, g.sold_tih)
         else {
             return;
         };
@@ -354,9 +387,20 @@ impl CapacityBook {
                 .sum();
         let extra = (if measured.is_finite() { measured } else { 0.0 } - rented).max(0.0);
         let excess = self.owed_beyond_rentals(&g, now_ms);
-        let restocked =
+        // A new epoch starts a new batch sized for it.
+        let mut restocked = false;
+        if let Some((epoch, _)) = g.epoch {
+            if g.p.stock_epoch != Some(epoch) {
+                if g.p.live_stock.ewma.ths.is_some() {
+                    g.p.live_stock.resize(h, excess, sold, now_ms);
+                    restocked = true;
+                }
+                g.p.stock_epoch = Some(epoch);
+            }
+        }
+        restocked |=
             g.p.live_stock
-                .tick(Some(extra), h, excess, sold, now_ms, false);
+                .tick_sized(Some(extra), half_life, h, excess, sold, now_ms, false);
         if restocked {
             tracing::info!(batch_tih = g.p.live_stock.batch_tih, "live stock restocked");
         }
@@ -369,17 +413,30 @@ impl CapacityBook {
     /// Restock the live stock now (the operator asked).
     pub fn restock_live(&self, now_ms: u64) -> Result<(), String> {
         let mut g = self.inner.lock().unwrap();
-        let Some(h) = g.p.live_horizon_hours else {
+        let Some((h, half_life)) = g.live_sizing() else {
             return Err("set a live horizon first".into());
         };
         let Some(sold) = g.sold_tih else {
             return Err("still counting what the mint owes; try again in a few seconds".into());
         };
         let excess = self.owed_beyond_rentals(&g, now_ms);
-        g.p.live_stock.tick(None, h, excess, sold, now_ms, true);
+        g.p.live_stock
+            .tick_sized(None, half_life, h, excess, sold, now_ms, true);
         g.saved_ms = now_ms;
         self.save(&g.p);
         Ok(())
+    }
+
+    /// With epochs on (#126): the current epoch and the hours left in it.
+    /// The live stock then covers only what is left of that epoch, and a
+    /// new epoch starts a new batch.
+    pub fn set_epoch(&self, epoch: u64, hours_left: f64) {
+        self.inner.lock().unwrap().epoch = Some((epoch, hours_left));
+    }
+
+    /// The current epoch and hours left in it, with epochs on.
+    pub fn epoch(&self) -> Option<(u64, f64)> {
+        self.inner.lock().unwrap().epoch
     }
 
     /// TiH already owed (from the mint's obligations).
@@ -411,11 +468,13 @@ impl CapacityBook {
         let rented_ths: f64 = running.clone().map(|r| r.rental.ths.max(0.0)).sum();
         let ends_ms = running.map(|r| r.rental.end_ms).max();
         let sold = g.sold_tih.unwrap_or(0.0);
-        let mut live = live_view(measured, rented_ths, g.p.live_horizon_hours);
+        let sizing = g.live_sizing();
+        let mut live = live_view(measured, rented_ths, sizing.map(|(h, _)| h));
         let rentals_tih: f64 = rentals.iter().map(|r| r.tih_left).sum();
         let headroom_tih = if live.on {
-            let h = g.p.live_horizon_hours.unwrap_or(0.0);
+            let (h, half_life) = sizing.unwrap_or((0.0, 0.0));
             live.stock = g.p.live_stock.view(h, sold);
+            live.stock.half_life_hours = half_life;
             live.tih = if g.sold_tih.is_some() {
                 live.stock.left_tih
             } else {
@@ -782,5 +841,39 @@ mod tests {
         assert_eq!(r.end_ms, 77);
         assert!(rental_from_json(&serde_json::json!({"ths": -1, "hours": 1}), 0).is_err());
         assert!(rental_from_json(&serde_json::json!({"ths": 1}), 0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod epoch_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn epochs_size_the_live_stock_to_the_epoch() {
+        let b = CapacityBook::new();
+        b.set_live_source(Arc::new(|| 1.0));
+        b.set_owed(0.0, 0);
+        b.set_sold(0.0);
+        // No horizon set, but epochs on: live hashrate counts.
+        b.set_epoch(10, 100.0);
+        b.refresh_live(0);
+        let s = b.snapshot(0);
+        assert!(s.live.on);
+        let want = tih_from_ths_hours(1.0, 100.0);
+        assert!(
+            (s.live.stock.batch_tih - want).abs() < 1e-6,
+            "{:?}",
+            s.live.stock
+        );
+        // Hourly top-ups never shrink the stock as the epoch runs down...
+        b.set_epoch(10, 50.0);
+        b.refresh_live(2 * 3_600_000);
+        assert!((b.snapshot(0).live.stock.batch_tih - want).abs() < 1e-6);
+        // ...but a new epoch starts a new batch for its whole length.
+        b.set_epoch(11, 336.0);
+        b.refresh_live(3 * 3_600_000);
+        let s = b.snapshot(3 * 3_600_000);
+        assert!((s.live.stock.batch_tih - tih_from_ths_hours(1.0, 336.0)).abs() < 1e-6);
     }
 }

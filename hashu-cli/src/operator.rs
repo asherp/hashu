@@ -732,7 +732,16 @@ pub async fn obligations_for(
         .filter(|q| q.unit == tih_unit() && q.state == cdk::nuts::MeltQuoteState::Pending)
         .map(|q| q.amount().value())
         .sum();
-    let in_circulation = signed.saturating_sub(spent).saturating_sub(melting);
+    // With epochs on (#126), conversions are signed outside cdk: cdk sees
+    // their vouchers spent but never signed, so add them back.
+    let outside = if supplier.is_none() {
+        crate::epochs::operator_outside_cdk()
+    } else {
+        0
+    };
+    let in_circulation = (signed + outside)
+        .saturating_sub(spent)
+        .saturating_sub(melting);
 
     // TiH sold over each rail, from the mint quotes.
     let mut sold: BTreeMap<String, u64> = BTreeMap::new();

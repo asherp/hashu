@@ -37,6 +37,7 @@ use hashu_core::denom::msat_per_pih_from_sats_per_ths;
 use hashu_core::hashprice::{HashpriceOracle, HashpriceSample};
 use hashu_core::redemption::RedemptionLedger;
 use hashu_mint::capacity::{CapacityBook, MIN_PURCHASE_TIH};
+use hashu_mint::epoch::{EpochConverter, Epochs, METHOD as EPOCH};
 use hashu_mint::lightning::add_lightning_issuance;
 use hashu_mint::melt::{reopen_pending_quotes, HashrateMelter, METHOD as HASHRATE};
 use hashu_mint::oracle::{esplora, mrr};
@@ -179,6 +180,17 @@ pub struct RunArgs {
     /// https URLs). Empty: hours are not timestamped.
     #[arg(long, env = "HASHU_OTS_CALENDARS", default_value = "")]
     pub ots_calendars: String,
+    /// Date vouchers to Bitcoin difficulty epochs (2,016 blocks, #126):
+    /// the mint sells only the current epoch, rotates its TiH keyset at
+    /// each epoch, and converts expired vouchers (melt method `epoch`) to
+    /// the current epoch, or the next one with room. Vouchers sold before
+    /// this was turned on stay perpetual. Off: one perpetual keyset.
+    #[arg(long, env = "HASHU_EPOCHS", default_value_t = false)]
+    pub epochs: bool,
+    /// Esplora API whose chain tip sets the epoch (Bitcoin mainnet, where
+    /// redemptions mine, by default).
+    #[arg(long, env = "HASHU_EPOCH_ESPLORA", default_value = esplora::DEFAULT_BASE_URL)]
+    pub epoch_esplora: String,
 
     // ---- pricing ----------------------------------------------------
     /// Where the price of hashes comes from.
@@ -737,6 +749,28 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let mut methods = vec![HASHRATE.to_string()];
     let mut rails = Vec::new();
 
+    // Epochs: one keyset per difficulty epoch, and the `epoch` melt that
+    // converts vouchers between them (#126).
+    let epochs = if args.epochs {
+        let e = Arc::new(Epochs::open(
+            &seed,
+            DENOMS.to_vec(),
+            Some(args.data_dir.join("epochs.json")),
+        )?);
+        builder
+            .add_payment_processor(
+                tih_unit(),
+                PaymentMethod::Custom(EPOCH.into()),
+                MintMeltLimits::new(1, args.max_tih),
+                Arc::new(EpochConverter::new(e.clone())),
+            )
+            .await
+            .context("register epoch conversion")?;
+        Some(e)
+    } else {
+        None
+    };
+
     // Lightning: mint-only.
     let mut fake_lightning = false;
     if let Some((node, kind)) = lightning_node(&args).await? {
@@ -812,8 +846,15 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     // hashrate, so keep NUT-04 to the rails and NUT-05 to `hashrate`.
     let mut info = builder.current_mint_info();
     let hashrate = PaymentMethod::Custom(HASHRATE.into());
-    info.nuts.nut04.methods.retain(|m| m.method != hashrate);
-    info.nuts.nut05.methods.retain(|m| m.method == hashrate);
+    let epoch_method = PaymentMethod::Custom(EPOCH.into());
+    info.nuts
+        .nut04
+        .methods
+        .retain(|m| m.method != hashrate && m.method != epoch_method);
+    info.nuts
+        .nut05
+        .methods
+        .retain(|m| m.method == hashrate || m.method == epoch_method);
     info.nuts.nut15.methods.clear();
     builder = builder.with_mint_info(info.clone());
 
@@ -825,7 +866,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
 
     let mint = Arc::new(
         builder
-            .build_with_seed(db, &seed)
+            .build_with_seed(db.clone(), &seed)
             .await
             .context("build mint")?,
     );
@@ -991,12 +1032,34 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         t.start_all().await;
     }
 
-    let mut app = cdk_axum::create_mint_router(mint.clone(), methods)
+    let mut router_methods = methods.clone();
+    if let Some(e) = &epochs {
+        router_methods.push(EPOCH.to_string());
+        e.set_plan_inputs(crate::epochs::plan_inputs(capacity.clone()));
+        crate::epochs::set_operator(e.clone());
+        let on_rotate: Arc<dyn Fn() + Send + Sync> = {
+            let (rel, mint) = (reliability.clone(), mint.clone());
+            Arc::new(move || rel.set_keysets("", tih_keyset_ids(&mint)))
+        };
+        tokio::spawn(crate::epochs::run(
+            e.clone(),
+            mint.clone(),
+            db.clone(),
+            esplora::EsploraClient::with_base(args.epoch_esplora.trim_end_matches('/').to_string()),
+            capacity.clone(),
+            on_rotate,
+        ));
+        tracing::info!(esplora = %args.epoch_esplora, "epochs on: vouchers dated to difficulty epochs");
+    }
+    let mut app = cdk_axum::create_mint_router(mint.clone(), router_methods)
         .await
         .context("build mint HTTP router")?
         .merge(checkout::router(checkout.clone()))
         .merge(crate::reliability::router(reliability.clone(), ""))
         .merge(landing::router());
+    if let Some(e) = &epochs {
+        app = app.merge(crate::epochs::router(e.clone(), mint.clone()));
+    }
     if let Some(w) = &waitlist {
         let domain = supplier_domain(&args).or_else(|| mint_host(&args));
         app = app.merge(waitlist::router(w.clone(), domain.as_deref()));
