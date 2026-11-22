@@ -391,13 +391,14 @@ impl RecordStore {
     pub async fn ensure_profile(
         &self,
         a: &crate::discovery::Announcement,
+        tip: Option<&crate::discovery::Tip>,
         now_s: u64,
     ) -> Result<()> {
         self.ensure_addressable(
             "profile",
             crate::discovery::PROFILE_KIND,
             a.profile_tags()?,
-            a.profile_content(),
+            a.profile_content(tip),
             now_s,
         )
         .await
@@ -926,7 +927,7 @@ mod tests {
             description: None,
             icon_url: None,
         };
-        store.ensure_profile(&a, 500).await.unwrap();
+        store.ensure_profile(&a, None, 500).await.unwrap();
         let first = Event::from_json(store.profile_json().unwrap()).unwrap();
         first.verify().unwrap();
         assert_eq!(first.kind, Kind::Metadata);
@@ -934,7 +935,7 @@ mod tests {
         assert!(first.content.contains("_@m.example"));
         // Clock went back, and the name changed: still strictly newer.
         a.name = Some("renamed".into());
-        store.ensure_profile(&a, 400).await.unwrap();
+        store.ensure_profile(&a, None, 400).await.unwrap();
         let second = Event::from_json(store.profile_json().unwrap()).unwrap();
         assert_eq!(second.created_at.as_secs(), 501);
         assert!(second.content.contains("renamed"));

@@ -32,6 +32,57 @@ pub const PROFILE_KIND: u16 = 0;
 /// no `icon_url`. A PNG, since several clients don't show SVG avatars.
 pub const AVATAR_PATH: &str = "/nostr/avatar.png";
 
+/// Where a mint's profile takes tips (`lud16`, or `lud06` for an LNURL
+/// that is not a Lightning address), and the line `about` adds for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tip {
+    /// `lud16` or `lud06`.
+    pub field: &'static str,
+    pub value: String,
+    pub note: String,
+}
+
+impl Tip {
+    /// The operator's tip address: tips support Hashu's development.
+    pub fn operator(endpoint: &crate::lnaddress::PayEndpoint) -> Self {
+        Self::new(
+            endpoint,
+            "Zaps and tips support Hashu's open-source development. A tip is a gift; it buys no vouchers."
+                .into(),
+        )
+    }
+
+    /// A supplier mint: tips go to the miner's own LNURL-pay endpoint.
+    pub fn supplier(name: &str, endpoint: &crate::lnaddress::PayEndpoint) -> Self {
+        Self::new(
+            endpoint,
+            format!("Tips go to {name}, the miner behind this mint. A tip is a gift; it buys no vouchers."),
+        )
+    }
+
+    fn new(endpoint: &crate::lnaddress::PayEndpoint, note: String) -> Self {
+        use crate::lnaddress::PayEndpoint;
+        match endpoint {
+            PayEndpoint::Address(a) => Self {
+                field: "lud16",
+                value: a.to_string(),
+                note,
+            },
+            PayEndpoint::Url(u) => Self {
+                field: "lud06",
+                value: lnurl_bech32(u),
+                note,
+            },
+        }
+    }
+}
+
+/// LUD-01: a URL as a bech32 `lnurl1…` code.
+fn lnurl_bech32(url: &str) -> String {
+    let hrp = bech32::Hrp::parse("lnurl").expect("valid hrp");
+    bech32::encode::<bech32::Bech32>(hrp, url.as_bytes()).unwrap_or_else(|_| url.to_string())
+}
+
 /// What a mint announces.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Announcement {
@@ -146,20 +197,25 @@ impl Announcement {
     ///   points at the hourly delivery record).
     /// - `nip05` = `_@<mint host>`, so the profile shows a verified domain.
     /// - `bot: true` (NIP-24): every post from this key is automated.
-    /// - No `lud16`/`lud06`: the mint never pays out or holds sats (closed
-    ///   loop), and a zap to it would be a gift with nothing to buy. Buyers
-    ///   pay through the mint's own quotes instead.
-    pub fn profile_content(&self) -> String {
+    /// - `tip`: `lud16`/`lud06` where tips go (the operator's tip jar, or a
+    ///   supplier's own LNURL), with a line in `about` saying a tip buys no
+    ///   vouchers. Vouchers are bought through the mint's quotes.
+    pub fn profile_content(&self, tip: Option<&Tip>) -> String {
         let mut m = serde_json::Map::new();
         if let Some(n) = &self.name {
             m.insert("name".into(), n.clone().into());
             m.insert("display_name".into(), n.clone().into());
         }
         let record = format!("Hourly delivery record: {}/reliability/", self.url);
-        let about = match &self.description {
+        let mut about = match &self.description {
             Some(d) => format!("{d}\n\n{record}"),
             None => record,
         };
+        if let Some(t) = tip {
+            about.push_str("\n\n");
+            about.push_str(&t.note);
+            m.insert(t.field.into(), t.value.clone().into());
+        }
         m.insert("about".into(), about.into());
         m.insert("picture".into(), self.picture().into());
         m.insert("website".into(), self.url.clone().into());
@@ -310,7 +366,7 @@ mod tests {
     #[test]
     fn profile_is_kind0_metadata_without_lightning() {
         let a = sample();
-        let c: serde_json::Value = serde_json::from_str(&a.profile_content()).unwrap();
+        let c: serde_json::Value = serde_json::from_str(&a.profile_content(None)).unwrap();
         assert_eq!(c["name"], "Hashu");
         assert_eq!(c["website"], "https://mint.example");
         assert_eq!(c["nip05"], "_@mint.example");
@@ -321,8 +377,30 @@ mod tests {
             .unwrap()
             .contains("https://mint.example/reliability/"));
         assert!(c.get("lud16").is_none() && c.get("lud06").is_none());
-        let meta = nostr::Metadata::from_json(a.profile_content()).unwrap();
+        let meta = nostr::Metadata::from_json(a.profile_content(None)).unwrap();
         assert_eq!(meta.name.as_deref(), Some("Hashu"));
+    }
+
+    #[test]
+    fn tips_go_to_lud16_or_lud06() {
+        use crate::lnaddress::PayEndpoint;
+        let a = sample();
+        let op = Tip::operator(&"tips@mint.example".parse::<PayEndpoint>().unwrap());
+        let c: serde_json::Value = serde_json::from_str(&a.profile_content(Some(&op))).unwrap();
+        assert_eq!(c["lud16"], "tips@mint.example");
+        assert!(c["about"]
+            .as_str()
+            .unwrap()
+            .contains("open-source development"));
+        let url: PayEndpoint = "https://pay.alice.example/lnurlp/1".parse().unwrap();
+        let sup = Tip::supplier("alice", &url);
+        assert_eq!(sup.field, "lud06");
+        assert!(sup.value.starts_with("lnurl1"));
+        // Round-trips through the same parser suppliers sign up with.
+        assert_eq!(sup.value.parse::<PayEndpoint>().unwrap(), url);
+        let c: serde_json::Value = serde_json::from_str(&a.profile_content(Some(&sup))).unwrap();
+        assert!(c["about"].as_str().unwrap().contains("Tips go to alice"));
+        assert!(c.get("lud16").is_none());
     }
 
     #[test]

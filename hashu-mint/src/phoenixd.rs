@@ -192,6 +192,8 @@ struct IncomingPayment {
     received_sat: u64,
     #[serde(default)]
     invoice: Option<String>,
+    #[serde(default)]
+    preimage: Option<String>,
 }
 
 /// An invoice we issued and haven't seen paid yet.
@@ -313,6 +315,69 @@ fn settled(
         payment_identifier: PaymentIdentifier::PaymentHash(*hash),
         payment_amount: amount,
         payment_id: hex::encode(hash),
+    }
+}
+
+/// phoenixd as the tip jar's node ([`crate::tips`]): invoices committing
+/// to a description hash, checked by polling. Separate from the cdk
+/// backend, so a tip never settles a voucher quote.
+pub struct PhoenixdTips {
+    client: Client,
+}
+
+impl PhoenixdTips {
+    pub fn new(config: &PhoenixdConfig) -> Result<Self, Error> {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(http_err)?;
+        Ok(Self {
+            client: Client {
+                http,
+                url: config.url.clone(),
+                password: config.password.clone(),
+            },
+        })
+    }
+}
+
+#[async_trait]
+impl crate::tips::TipNode for PhoenixdTips {
+    async fn invoice(
+        &self,
+        amount_msat: u64,
+        description_hash: [u8; 32],
+        expiry_secs: u64,
+    ) -> anyhow::Result<(String, [u8; 32])> {
+        let form = [
+            ("amountSat", (amount_msat / 1000).to_string()),
+            ("descriptionHash", hex::encode(description_hash)),
+            ("expirySeconds", expiry_secs.to_string()),
+        ];
+        let req = self
+            .client
+            .http
+            .post(format!("{}/createinvoice", self.client.url))
+            .form(&form);
+        let inv: CreatedInvoice = self
+            .client
+            .send(req)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .json()
+            .await
+            .map_err(|e| anyhow::anyhow!("phoenixd: {e}"))?;
+        let hash = parse_hash(&inv.payment_hash).map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok((inv.serialized, hash))
+    }
+
+    async fn paid(&self, payment_hash: &[u8; 32]) -> anyhow::Result<Option<Option<String>>> {
+        let p = self
+            .client
+            .incoming(payment_hash)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(p.filter(|p| p.is_paid).map(|p| p.preimage))
     }
 }
 
@@ -468,6 +533,7 @@ fn settle_push(
         is_paid: true,
         received_sat: frame.amount_sat,
         invoice: None,
+        preimage: None,
     };
     Some(settled(&hash, Some(inv.amount_sat), &pushed))
 }

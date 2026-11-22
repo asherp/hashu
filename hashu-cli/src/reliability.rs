@@ -34,7 +34,7 @@ use axum::routing::get;
 use axum::Json;
 use hashu_core::redemption::{RedemptionLedger, RedemptionState};
 use hashu_core::reliability::{hour_start, median_and_worst, HourRecord, RedemptionStats, HOUR_S};
-use hashu_mint::discovery::{Announcement, ANNOUNCE_KIND, AVATAR_PATH, PROFILE_KIND};
+use hashu_mint::discovery::{Announcement, Tip, ANNOUNCE_KIND, AVATAR_PATH, PROFILE_KIND};
 use hashu_mint::reliability::{PublishConfig, RecordStore, RECORD_KIND, RECORD_TAG};
 use hashu_proxy::reliability::{ReliabilityRecorder, OPERATOR_MINT};
 use serde::{Deserialize, Serialize};
@@ -101,6 +101,8 @@ pub struct Reliability {
     keysets: Mutex<HashMap<String, Vec<String>>>,
     /// NIP-87 announcement of each mint with a public URL (#116).
     announcements: Mutex<HashMap<String, Announcement>>,
+    /// Where each mint's profile takes tips (`lud16`/`lud06`).
+    tips: Mutex<HashMap<String, Tip>>,
 }
 
 impl Reliability {
@@ -138,6 +140,7 @@ impl Reliability {
             tracker: Mutex::new(tracker),
             keysets: Mutex::new(HashMap::new()),
             announcements: Mutex::new(HashMap::new()),
+            tips: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -161,6 +164,16 @@ impl Reliability {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(mint.to_string(), a);
+    }
+
+    /// Where `mint`'s Nostr profile takes tips: the operator's tip jar, or a
+    /// supplier's own LNURL. `None` = no tips.
+    pub fn set_tip(&self, mint: &str, tip: Option<Tip>) {
+        let mut t = self.tips.lock().unwrap_or_else(|e| e.into_inner());
+        match tip {
+            Some(tip) => t.insert(mint.to_string(), tip),
+            None => t.remove(mint),
+        };
     }
 
     /// The store for `mint` (`""` = operator); `None` for a supplier that
@@ -265,7 +278,13 @@ impl Reliability {
             if let Err(e) = st.ensure_announcement(&a, now).await {
                 tracing::warn!(mint = %st.url(), error = %e, "NIP-87 announcement");
             }
-            if let Err(e) = st.ensure_profile(&a, now).await {
+            let tip = self
+                .tips
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&m)
+                .cloned();
+            if let Err(e) = st.ensure_profile(&a, tip.as_ref(), now).await {
                 tracing::warn!(mint = %st.url(), error = %e, "Nostr profile");
             }
             if m != OPERATOR_MINT && operator_announces {
@@ -780,6 +799,13 @@ mod tests {
         r.set_announcement("", announcement("https://mint.example"));
         let alice_a = announcement("https://alice.mint.example");
         r.set_announcement("alice", alice_a.clone());
+        r.set_tip(
+            "alice",
+            Some(Tip::supplier(
+                "alice",
+                &"alice@wallet.example".parse().unwrap(),
+            )),
+        );
         r.step(H + 60, true).await;
 
         let ev = nostr::Event::from_json(r.operator.announcement_json().unwrap()).unwrap();
@@ -830,9 +856,14 @@ mod tests {
         let meta: serde_json::Value = serde_json::from_str(&pev.content).unwrap();
         assert_eq!(meta["nip05"], "_@alice.mint.example");
         assert_eq!(meta["website"], "https://alice.mint.example");
+        assert_eq!(
+            meta["lud16"], "alice@wallet.example",
+            "tips go to the miner"
+        );
         assert_eq!(v["profile"]["event"]["id"], pev.id.to_hex());
         let oev = nostr::Event::from_json(r.operator.profile_json().unwrap()).unwrap();
         assert_eq!(oev.pubkey.to_hex(), r.operator.pubkey());
+        assert!(!oev.content.contains("lud16"), "no tip jar set");
 
         // NIP-05 on alice's host names her receipt key, with CORS.
         let get = |path: &'static str| {

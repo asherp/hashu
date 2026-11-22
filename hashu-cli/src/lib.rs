@@ -31,6 +31,7 @@ pub mod reliability;
 pub mod stratum_addr;
 pub mod supplier;
 pub mod tenants;
+pub mod tips;
 mod ur;
 pub mod waitlist;
 pub mod wallet;
