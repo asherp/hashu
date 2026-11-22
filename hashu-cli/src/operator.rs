@@ -986,7 +986,8 @@ fn heat_json(
 ) -> Value {
     let eff = heat::fleet_efficiency(&capacity.rentals, s.controls.heat_j_per_th(), now);
     let j = eff.j_per_th;
-    // Every accepted share since the daemon started, default pool included.
+    // Every accepted share, default pool included (carried across restarts
+    // with an ops database, else since the daemon started).
     let proxy_tih = total_hashes / HASHES_PER_TIH as f64;
     // Work delivered to redeemers, all time (the ledger is persisted).
     let redeemed_tih: f64 = s

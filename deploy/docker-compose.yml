@@ -21,6 +21,7 @@
 # Private (compose network only, never published on the host):
 #   hashu:3334  control API + operator GUI (POST api/controls changes pricing)
 #   phoenixd:9740  phoenixd HTTP API (mainnet wallet)
+#   ops-db:5432    ops database (Postgres): the operator dashboard's live feed
 # See deploy/README.md for the runbook.
 
 name: hashu
@@ -59,6 +60,41 @@ services:
       start_interval: 2s
     restart: unless-stopped
 
+  # Ops database: the operator dashboard's live feed (hashrate chart,
+  # per-rig work, proxy counters, redemption times) so restarts and
+  # deploys keep it. Tuned small for a 1 GB-2 GB host (~30-40 MB idle).
+  # Not the mint's ledger: that stays in hashu_data (cdk's mint.sqlite).
+  ops-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hashu
+      POSTGRES_DB: hashu_ops
+      POSTGRES_PASSWORD: ${OPS_DB_PASSWORD:?set OPS_DB_PASSWORD in .env}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=16MB
+      - -c
+      - max_connections=10
+      - -c
+      - work_mem=1MB
+      - -c
+      - maintenance_work_mem=8MB
+      - -c
+      - effective_cache_size=64MB
+    volumes:
+      - ops_data:/var/lib/postgresql/data
+    # No `ports:` on purpose. Only hashu reaches it, over the compose network.
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hashu -d hashu_ops"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+      start_interval: 1s
+    restart: unless-stopped
+
   hashu:
     build:
       context: ..
@@ -67,9 +103,13 @@ services:
     depends_on:
       phoenixd:
         condition: service_healthy
+      ops-db:
+        condition: service_healthy
     environment:
       RUST_LOG: ${RUST_LOG:-info}
       HASHU_DATA_DIR: /data
+      # Ops database above (the dashboard's live feed survives restarts).
+      HASHU_OPS_DATABASE_URL: postgres://hashu:${OPS_DB_PASSWORD:?set OPS_DB_PASSWORD in .env}@ops-db:5432/hashu_ops
       HASHU_MINT_URL: https://${HASHU_DOMAIN:?set HASHU_DOMAIN in .env}
       # Where miners are told to connect: the host port below, not the
       # container's 3333. Override for another host name or port in front.
@@ -254,5 +294,6 @@ networks:
 volumes:
   phoenixd_data: {}
   hashu_data: {}
+  ops_data: {}
   caddy_data: {}
   caddy_config: {}

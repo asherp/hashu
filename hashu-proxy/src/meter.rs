@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hashu_core::redemption::{RedemptionLedger, HASHES_PER_TIH};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ProxyMetrics;
 
@@ -36,7 +36,7 @@ pub const MAX_SAMPLES: usize = 3600;
 pub const MAX_REDEMPTION_POINTS: usize = 2000;
 
 /// One tick of the rolling series.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Sample {
     /// Unix time, milliseconds.
     pub t_ms: u64,
@@ -47,7 +47,7 @@ pub struct Sample {
     /// Each rig's work since the proxy started, in hashes, by rig label.
     /// Empty without a rig source. A rig missing here has sent no share
     /// yet (or none for an hour).
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub rigs: BTreeMap<String, f64>,
 }
 
@@ -56,7 +56,7 @@ pub struct Sample {
 pub type RigSource = Arc<dyn Fn() -> Vec<(String, f64)> + Send + Sync>;
 
 /// A redemption's delivered work over time.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RedemptionTrack {
     pub id: String,
     pub amount_tih: u64,
@@ -198,6 +198,37 @@ impl HashrateMeter {
                 thin(&mut track.points);
             }
         }
+    }
+
+    /// Load history saved by an earlier run, before the first sample:
+    /// rolling samples (older than the meter's own are kept, newest
+    /// [`MAX_SAMPLES`] in all) and redemption tracks, which keep their
+    /// opened time and curve. A redemption seen again continues its track.
+    /// Restore [`ProxyMetrics`] too, so `total_hashes` carries on.
+    pub fn restore(&self, samples: Vec<Sample>, tracks: Vec<RedemptionTrack>) {
+        let mut inner = self.inner.lock().unwrap();
+        let first_own = inner.samples.front().map(|s| s.t_ms).unwrap_or(u64::MAX);
+        let mut old: Vec<Sample> = samples.into_iter().filter(|s| s.t_ms < first_own).collect();
+        old.sort_by_key(|s| s.t_ms);
+        for s in old.into_iter().rev() {
+            inner.samples.push_front(s);
+        }
+        while inner.samples.len() > MAX_SAMPLES {
+            inner.samples.pop_front();
+        }
+        let mut tracks = tracks;
+        tracks.sort_by_key(|t| t.opened_ms);
+        let mut restored = Vec::new();
+        for t in tracks {
+            if inner.tracks.contains_key(&t.id) || t.points.is_empty() {
+                continue;
+            }
+            restored.push(t.id.clone());
+            inner.tracks.insert(t.id.clone(), t);
+        }
+        let seen = std::mem::take(&mut inner.order);
+        inner.order = restored;
+        inner.order.extend(seen);
     }
 
     /// Sample every `tick` until the task is dropped.
@@ -388,6 +419,48 @@ mod tests {
         l.credit_share(&a, 1e9).unwrap();
         h.sample_at(1_000);
         assert_eq!(h.current_track().unwrap().id, b.to_string());
+    }
+
+    #[test]
+    fn restore_keeps_history_and_opened_times() {
+        let metrics = Arc::new(ProxyMetrics::default());
+        let ledger = Arc::new(RedemptionLedger::new());
+        let m = HashrateMeter::new(metrics.clone(), ledger, Duration::from_secs(60));
+        let old = vec![
+            Sample {
+                t_ms: 1_000,
+                total_hashes: 10.0,
+                hashrate_hs: 1.0,
+                rigs: BTreeMap::new(),
+            },
+            Sample {
+                t_ms: 2_000,
+                total_hashes: 20.0,
+                hashrate_hs: 1.0,
+                rigs: BTreeMap::new(),
+            },
+        ];
+        let track = RedemptionTrack {
+            id: "r1".into(),
+            amount_tih: 4,
+            target_hashes: 4.0,
+            opened_ms: 500,
+            completed_ms: Some(1_500),
+            points: vec![(500, 0.0), (1_500, 4.0)],
+        };
+        m.restore(old, vec![track.clone()]);
+        metrics.restore(
+            &crate::ProxyMetricsSnapshot::default(),
+            20.0 * 0.0 + 2f64.powi(32) * 5.0,
+        );
+        m.sample_at(3_000);
+        let s = m.samples_since(0);
+        assert_eq!(
+            s.iter().map(|x| x.t_ms).collect::<Vec<_>>(),
+            vec![1_000, 2_000, 3_000]
+        );
+        assert_eq!(s[2].total_hashes, 2f64.powi(32) * 5.0);
+        assert_eq!(m.tracks(), vec![track]);
     }
 
     #[test]
