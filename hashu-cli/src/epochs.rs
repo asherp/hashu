@@ -192,7 +192,39 @@ pub fn router(epochs: Arc<Epochs>, mint: Arc<Mint>) -> axum::Router {
             "/v1/hashu/epochs/mint/{quote}",
             axum::routing::post(future_mint),
         )
+        .layer(axum::middleware::from_fn(cors))
         .with_state(Ctx { epochs, mint })
+}
+
+/// Let web wallets on another origin (app.hashu.io) call these routes,
+/// as cdk does for `/v1/*`: its CORS layer covers only its own routes.
+async fn cors(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let res = if req.method() == axum::http::Method::OPTIONS {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        next.run(req).await
+    };
+    with_cors(res)
+}
+
+/// Add the CORS headers cdk puts on its own `/v1/*` answers, for answers
+/// made here in its place.
+fn with_cors(mut res: Response) -> Response {
+    use axum::http::{header, HeaderValue};
+    let h = res.headers_mut();
+    h.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    );
+    h.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, POST, OPTIONS"),
+    );
+    h.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("*"),
+    );
+    res
 }
 
 fn error(status: StatusCode, detail: impl Into<String>) -> Response {
@@ -505,10 +537,10 @@ pub async fn guard(
             );
         }
         if let Some(id) = ids.into_iter().find(|id| epochs.purchase(id).is_some()) {
-            return error(
+            return with_cors(error(
                 StatusCode::BAD_REQUEST,
                 format!("quote {id} buys a future epoch; issue it at /v1/hashu/epochs/mint/{id}"),
-            );
+            ));
         }
     }
     next.run(axum::extract::Request::from_parts(
@@ -538,7 +570,9 @@ pub async fn list_future_keysets(
         .collect();
     if let Some(id) = path.strip_prefix("/v1/keys/") {
         if let Some(k) = future.iter().find(|k| k.id.to_string() == id) {
-            return Json(json!({ "keysets": [public_keyset(k, Some(false))] })).into_response();
+            return with_cors(
+                Json(json!({ "keysets": [public_keyset(k, Some(false))] })).into_response(),
+            );
         }
         return next.run(req).await;
     }
@@ -569,7 +603,13 @@ pub async fn list_future_keysets(
             }
         }
     }
+    // Keep cdk's headers (CORS for web wallets) but not its length.
     let mut res = Json(v).into_response();
     *res.status_mut() = parts.status;
+    for (name, value) in parts.headers.iter() {
+        if name != axum::http::header::CONTENT_LENGTH {
+            res.headers_mut().insert(name.clone(), value.clone());
+        }
+    }
     res
 }
