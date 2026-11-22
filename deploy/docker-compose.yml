@@ -71,6 +71,9 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
       HASHU_DATA_DIR: /data
       HASHU_MINT_URL: https://${HASHU_DOMAIN:?set HASHU_DOMAIN in .env}
+      # Where miners are told to connect: the host port below, not the
+      # container's 3333. Override for another host name or port in front.
+      HASHU_STRATUM_URL: ${HASHU_STRATUM_URL:-stratum+tcp://${HASHU_DOMAIN}:${HASHU_STRATUM_PORT:-3335}}
       HASHU_UPSTREAM: ${HASHU_UPSTREAM:?set HASHU_UPSTREAM in .env (the pool miners mine to when no redemption is open)}
       # NUT-06 identity shown in wallets and on the landing page.
       HASHU_MINT_NAME: ${HASHU_MINT_NAME:-}

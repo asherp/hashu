@@ -64,7 +64,7 @@ code { font:14px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-a
     </table>
     <h3>AxeOS settings for each rig</h3>
     <table>
-      <tr><td>Stratum URL</td><td><code id="s-url"></code></td></tr>
+      <tr><td>Stratum URL</td><td><code id="s-host"></code> <span class="hint">other miners: <code id="s-url"></code></span></td></tr>
       <tr><td>Port</td><td><code id="s-port"></code></td></tr>
       <tr><td>User</td><td><code id="s-user"></code> <span class="hint">one name per rig, e.g. rig1</span></td></tr>
       <tr><td>Password</td><td><code id="s-pass"></code> <span class="hint">add <code>,pool=host:port</code> for your own pool while idle</span></td></tr>
@@ -105,6 +105,7 @@ $('join').addEventListener('submit', async (e) => {
     $('mint').href = j.mint_url;
     $('secret').textContent = j.secret;
     $('key').textContent = j.dashboard_key;
+    $('s-host').textContent = j.stratum.host || j.stratum.url;
     $('s-url').textContent = j.stratum.url;
     $('s-port').textContent = j.stratum.port;
     $('s-user').textContent = j.stratum.user;

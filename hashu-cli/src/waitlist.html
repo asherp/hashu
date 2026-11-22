@@ -128,7 +128,7 @@ button.btn[disabled] { opacity: 0.6; cursor: wait; }
   <header class="hero">
     <p class="kicker">For miners · waitlist</p>
     <h1>Want a <span>hosted mint</span>?</h1>
-    <p>Sell your hashrate as Chaumian hashrate vouchers from a mint of your own, without running a server. Point your rigs at one Stratum endpoint and get a mint at <b class="mono" id="example-host">yourname.{{SUPPLIER_DOMAIN}}</b>. Hosted mints aren't open yet: leave one way to reach you and you'll hear when they are.</p>
+    <p>Sell your hashrate as Chaumian hashrate vouchers from a mint of your own, without running a server. Point your rigs at one Stratum endpoint<span id="stratum-at" hidden> (<b class="mono" id="stratum-url"></b>)</span> and get a mint at <b class="mono" id="example-host">yourname.{{SUPPLIER_DOMAIN}}</b>. Hosted mints aren't open yet: leave one way to reach you and you'll hear when they are.</p>
   </header>
 
   <section>
@@ -206,6 +206,20 @@ button.btn[disabled] { opacity: 0.6; cursor: wait; }
   </footer>
 </div>
 <script>
+// Show the Stratum address rigs will use (HASHU_STRATUM_URL). The
+// supplier domain in the name field is filled in by the server.
+let stratumUrl = '';
+fetch('/checkout/api/info', { cache: 'no-store' })
+  .then((r) => (r.ok ? r.json() : null))
+  .then((i) => {
+    if (i && i.stratum && i.stratum.url) {
+      stratumUrl = i.stratum.url;
+      document.getElementById('stratum-url').textContent = stratumUrl;
+      document.getElementById('stratum-at').hidden = false;
+    }
+  })
+  .catch(() => {});
+
 const form = document.getElementById('join');
 // TiH for sale = TH/s × hours × 3,274.18 TiH per TH-hour (TiH = 2^40 hashes);
 // PH/s and EH/s convert to TH/s first.
@@ -255,7 +269,8 @@ form.addEventListener('submit', async (ev) => {
     const r = await fetch('/waitlist/api', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) });
     const j = await r.json().catch(() => ({}));
     if (r.ok) {
-      say(j.already ? "You're already on the list. Thanks!" : "You're on the list. We'll be in touch when hosted mints open.", true);
+      const point = stratumUrl ? ` When yours opens, your rigs point at ${stratumUrl}.` : '';
+      say((j.already ? "You're already on the list. Thanks!" : "You're on the list. We'll be in touch when hosted mints open.") + point, true);
       form.reset();
       other.hidden = true;
       updateEstimate();

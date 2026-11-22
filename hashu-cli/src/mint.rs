@@ -258,6 +258,13 @@ pub struct RunArgs {
     /// Address the Stratum proxy binds for miners.
     #[arg(long, default_value = "0.0.0.0:3333")]
     pub stratum_bind: SocketAddr,
+    /// Public Stratum address miners connect to, e.g.
+    /// `stratum+tcp://mint.example.com:3335`: shown on the checkout info,
+    /// the operator dashboard, the waitlist and supplier sign-up. Unset:
+    /// the `--mint-url` host with the `--stratum-bind` port, which is
+    /// wrong behind a port mapping (compose maps host 3335 to 3333).
+    #[arg(long, env = "HASHU_STRATUM_URL")]
+    pub stratum_url: Option<String>,
     /// How a redemption moves miners between pools: `seamless` swaps the
     /// upstream behind the open miner connection (no reconnect; falls back
     /// to a reconnect when the miner can't be switched in place),
@@ -587,6 +594,11 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         );
     };
     let contacts = parse_contacts(&args.contact)?;
+    let stratum = crate::stratum_addr::resolve(
+        args.stratum_url.as_deref(),
+        args.mint_url.as_deref(),
+        args.stratum_bind,
+    )?;
     if args.mint_url.as_deref().is_none_or(|u| u.trim().is_empty())
         && !args.listen.ip().is_loopback()
     {
@@ -849,7 +861,8 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
                     .context("open redemption orders")?,
             ),
         )
-        .with_app_url(app_url(args.app_url.as_deref())?),
+        .with_app_url(app_url(args.app_url.as_deref())?)
+        .with_stratum(stratum.clone()),
     );
 
     let waitlist = if args.waitlist {
@@ -875,6 +888,12 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     {
         let r = router.clone();
         capacity.set_live_source(Arc::new(move || r.operator_hashrate() / 1e12));
+    }
+    // Each rig's work in the hashrate samples, for the dashboard's
+    // stacked per-rig chart.
+    {
+        let r = router.clone();
+        meter.set_rig_source(Arc::new(move || r.rig_work()));
     }
     // The hourly reliability record of every mint served here (#109).
     let reliability = {
@@ -913,6 +932,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     // Registered suppliers' mints, on <name>.<supplier domain>.
     let tenants = supplier_mints(
         &args,
+        &stratum,
         &registry,
         &ledger,
         fake_lightning,
@@ -1019,6 +1039,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
                 mint_listen: args.listen.to_string(),
                 mint_url: args.mint_url.clone(),
                 stratum_bind: args.stratum_bind.to_string(),
+                stratum: Some(stratum.clone()),
                 rails: rails.clone(),
                 min_redeem_tih: args.min_redeem_tih,
                 max_tih: args.max_tih,
@@ -1079,6 +1100,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
 /// has a public URL to name them under.
 fn supplier_mints(
     args: &RunArgs,
+    stratum: &crate::stratum_addr::StratumAddr,
     registry: &Arc<hashu_proxy::suppliers::SupplierRegistry>,
     ledger: &Arc<RedemptionLedger>,
     fake_lightning: bool,
@@ -1111,7 +1133,7 @@ fn supplier_mints(
             max_tih: args.max_tih,
             fake_lightning,
             hashrate: Arc::new(move |name: &str| r.supplier_hashrate(name)),
-            stratum_port: args.stratum_bind.port(),
+            stratum: stratum.clone(),
             probe: tenants::lnurl_probe(),
             reliability: Some(reliability.clone()),
         },
