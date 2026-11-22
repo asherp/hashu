@@ -24,6 +24,16 @@
 //! Each supplier mint also serves its page at `/` (status, and settings
 //! behind the supplier's dashboard key) and `/api/supplier`,
 //! `/api/settings`. The operator's mint serves sign-up at `/join`.
+//!
+//! Epochs (#126, `HASHU_EPOCHS=true`): every supplier mint then dates its
+//! vouchers to difficulty epochs like the operator's. Its own TiH keyset
+//! rotates each epoch (from its own seed), live issuance sells only the
+//! current epoch from its stock, future epochs within the supplier's
+//! horizon are sold from its hashrate plan (`/api/plan`, the planner on its
+//! page), and expired vouchers convert 1:1 to the current epoch, or the
+//! next one with room. One chain-tip reader serves every mint. The routes
+//! are the operator's: `/v1/hashu/epochs*` ([`crate::epochs`]) and
+//! `/v1/hashu/plan` ([`crate::planner`]).
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -42,6 +52,7 @@ use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use futures::future::BoxFuture;
 use hashu_core::redemption::RedemptionLedger;
 use hashu_mint::capacity::MIN_PURCHASE_TIH;
+use hashu_mint::epoch::{EpochConverter, Epochs, PlanInput, METHOD as EPOCH};
 use hashu_mint::lightning::add_lightning_issuance;
 use hashu_mint::lnaddress::{LnAddressRail, PayEndpoint};
 use hashu_mint::melt::{reopen_pending_quotes_in, HashrateMelter, METHOD as HASHRATE};
@@ -103,6 +114,9 @@ pub struct TenantConfig {
     pub probe: ProbeFn,
     /// Serves each supplier mint's reliability record (#109).
     pub reliability: Option<Arc<crate::reliability::Reliability>>,
+    /// With epochs on (#126): the chain tip every supplier mint dates its
+    /// vouchers by.
+    pub epochs: Option<crate::epochs::ClockFeed>,
 }
 
 struct Tenant {
@@ -110,12 +124,18 @@ struct Tenant {
     app: axum::Router,
     settings: Arc<RwLock<SupplierSettings>>,
     pricer: Arc<SupplierPricer>,
-    refresher: tokio::task::JoinHandle<()>,
+    /// With epochs on.
+    epochs: Option<Arc<Epochs>>,
+    planner: Option<Arc<crate::planner::Planner>>,
+    /// Background tasks: what it owes, and with epochs the chain and plan.
+    tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Tenant {
     async fn stop(&self, name: &str) {
-        self.refresher.abort();
+        for t in &self.tasks {
+            t.abort();
+        }
         if let Err(e) = self.mint.stop().await {
             tracing::warn!(supplier = %name, error = %e, "supplier mint stop");
         }
@@ -259,6 +279,14 @@ impl Tenants {
             book,
         ));
         let seed = crate::mint::load_or_create_seed(&dir)?;
+        let epochs = match &self.cfg.epochs {
+            Some(_) => Some(Arc::new(Epochs::open(
+                &seed,
+                crate::mint::DENOMS.to_vec(),
+                Some(dir.join("epochs.json")),
+            )?)),
+            None => None,
+        };
         let db_path = dir.join("mint.sqlite");
         let db = Arc::new(
             cdk_sqlite::MintSqliteDatabase::new(db_path.to_string_lossy().as_ref())
@@ -317,6 +345,18 @@ impl Tenants {
             .await
             .context("register hashrate melt")?;
         let mut methods = vec![HASHRATE.to_string()];
+        if let Some(e) = &epochs {
+            builder
+                .add_payment_processor(
+                    tih_unit(),
+                    PaymentMethod::Custom(EPOCH.into()),
+                    MintMeltLimits::new(1, self.cfg.max_tih),
+                    Arc::new(EpochConverter::new(e.clone())),
+                )
+                .await
+                .context("register epoch conversion")?;
+            methods.push(EPOCH.to_string());
+        }
         let address = settings
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -358,25 +398,42 @@ impl Tenants {
         // only as hashrate.
         let mut info = builder.current_mint_info();
         let hashrate = PaymentMethod::Custom(HASHRATE.into());
-        info.nuts.nut04.methods.retain(|m| m.method != hashrate);
-        info.nuts.nut05.methods.retain(|m| m.method == hashrate);
+        let epoch_method = PaymentMethod::Custom(EPOCH.into());
+        info.nuts
+            .nut04
+            .methods
+            .retain(|m| m.method != hashrate && m.method != epoch_method);
+        info.nuts
+            .nut05
+            .methods
+            .retain(|m| m.method == hashrate || m.method == epoch_method);
         info.nuts.nut15.methods.clear();
         builder = builder.with_mint_info(info.clone());
 
         let mint = Arc::new(
             builder
-                .build_with_seed(db, &seed)
+                .build_with_seed(db.clone(), &seed)
                 .await
                 .context("build mint")?,
         );
         crate::mint::refresh_stored_mint_info(&mint, info).await?;
         mint.start().await.context("start mint")?;
-        let refresher = tokio::spawn(refresh_owed(
+        let mut tasks = vec![tokio::spawn(refresh_owed(
             mint.clone(),
             self.cfg.ledger.clone(),
             name.to_string(),
             pricer.clone(),
-        ));
+            epochs.clone(),
+        ))];
+        let planner = match (&epochs, &self.cfg.epochs) {
+            (Some(e), Some(clock)) => {
+                let (p, t) =
+                    self.start_epochs(name, e, &mint, db.clone(), clock.clone(), &pricer)?;
+                tasks.extend(t);
+                Some(p)
+            }
+            _ => None,
+        };
         let mut app = cdk_axum::create_mint_router(mint.clone(), methods)
             .await
             .context("build mint HTTP router")?
@@ -401,6 +458,19 @@ impl Tenants {
             }
             app = app.merge(crate::reliability::router(rel.clone(), name));
         }
+        if let (Some(e), Some(p)) = (&epochs, &planner) {
+            app = app
+                .merge(crate::epochs::router(e.clone(), mint.clone()))
+                .merge(crate::planner::public_router(p.clone()))
+                .layer(axum::middleware::from_fn_with_state(
+                    e.clone(),
+                    crate::epochs::guard,
+                ))
+                .layer(axum::middleware::from_fn_with_state(
+                    e.clone(),
+                    crate::epochs::list_future_keysets,
+                ));
+        }
         tracing::info!(
             supplier = %name,
             host = %self.host_for(name),
@@ -412,8 +482,80 @@ impl Tenants {
             app,
             settings,
             pricer,
-            refresher,
+            epochs,
+            planner,
+            tasks,
         })
+    }
+
+    /// Date supplier `name`'s mint to epochs: its plan sells future epochs
+    /// from the supplier's stock average or plan, and the chain rotates its
+    /// keyset. Returns the planner and the tasks to stop with the mint.
+    fn start_epochs(
+        &self,
+        name: &str,
+        epochs: &Arc<Epochs>,
+        mint: &Arc<Mint>,
+        keys: crate::epochs::KeysDb,
+        clock: crate::epochs::ClockFeed,
+        pricer: &Arc<SupplierPricer>,
+    ) -> Result<(
+        Arc<crate::planner::Planner>,
+        Vec<tokio::task::JoinHandle<()>>,
+    )> {
+        let dir = self.cfg.dir.join(name);
+        {
+            let pricer = pricer.clone();
+            epochs.set_plan_inputs(Arc::new(move || {
+                let cap = pricer.capacity();
+                PlanInput {
+                    supply: pricer
+                        .average_ths()
+                        .map(|ths| hashu_core::epoch::Supply {
+                            ths,
+                            hours_left: None,
+                        })
+                        .into_iter()
+                        .collect(),
+                    carried_tih: cap.owed_tih,
+                    horizon_hours: cap.horizon_hours,
+                }
+            }));
+        }
+        let measured: crate::planner::MeasuredFn = {
+            let pricer = pricer.clone();
+            Arc::new(move || pricer.average_ths())
+        };
+        let planner = Arc::new(crate::planner::Planner {
+            plan: Arc::new(hashu_mint::planner::HashratePlan::open(Some(
+                dir.join("hashrate-plan.json"),
+            ))?),
+            epochs: epochs.clone(),
+            measured,
+            record: self.cfg.reliability.as_ref().and_then(|r| r.store(name)),
+        });
+        let mut tasks = vec![planner.start()];
+        let on_tick: Arc<dyn Fn(hashu_core::epoch::EpochClock) + Send + Sync> = {
+            let pricer = pricer.clone();
+            Arc::new(move |c| pricer.set_epoch(c.current(), c.hours_left()))
+        };
+        let on_rotate: Arc<dyn Fn() + Send + Sync> = {
+            let (rel, mint, name) = (self.cfg.reliability.clone(), mint.clone(), name.to_string());
+            Arc::new(move || {
+                if let Some(rel) = &rel {
+                    rel.set_keysets(&name, crate::mint::tih_keyset_ids(&mint));
+                }
+            })
+        };
+        tasks.push(tokio::spawn(crate::epochs::run(
+            epochs.clone(),
+            mint.clone(),
+            keys,
+            clock,
+            on_tick,
+            on_rotate,
+        )));
+        Ok((planner, tasks))
     }
 
     /// Register `name` with fresh settings, a generated rig secret and a
@@ -491,11 +633,13 @@ async fn refresh_owed(
     ledger: Arc<RedemptionLedger>,
     name: String,
     pricer: Arc<SupplierPricer>,
+    epochs: Option<Arc<Epochs>>,
 ) {
     let mut tick = tokio::time::interval(OWED_REFRESH);
     loop {
         tick.tick().await;
-        match crate::operator::obligations_for(&mint, &ledger, Some(&name)).await {
+        match crate::operator::obligations_for(&mint, &ledger, Some(&name), epochs.as_deref()).await
+        {
             Ok(o) => {
                 pricer.refresh(
                     o.in_circulation as f64 + o.open_remaining_tih,
@@ -528,6 +672,7 @@ fn supplier_router(ctx: SupplierCtx) -> axum::Router {
         .route("/api/supplier", get(supplier_status))
         .route("/api/settings", get(get_settings).post(post_settings))
         .route("/api/restock", axum::routing::post(post_restock))
+        .route("/api/plan", get(get_plan).post(post_plan))
         .with_state(ctx)
 }
 
@@ -552,6 +697,7 @@ async fn supplier_status(State(ctx): State<SupplierCtx>) -> Response {
         }),
         "pays_by_lightning": s.lnurl.is_some(),
         "capacity": cap,
+        "epochs": t.epochs.is_some(),
     }))
     .into_response()
 }
@@ -605,6 +751,51 @@ async fn post_restock(State(ctx): State<SupplierCtx>, headers: HeaderMap) -> Res
         Ok(t) => match t.pricer.restock_now(hashu_mint::capacity::now_ms()) {
             Ok(cap) => Json(cap).into_response(),
             Err(e) => (StatusCode::SERVICE_UNAVAILABLE, e).into_response(),
+        },
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response(),
+    }
+}
+
+fn no_planner() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "error": "the hashrate planner needs epochs on (HASHU_EPOCHS=true)" })),
+    )
+        .into_response()
+}
+
+/// `GET /api/plan`: the supplier's hashrate plan (also public at
+/// `/v1/hashu/plan`).
+async fn get_plan(State(ctx): State<SupplierCtx>) -> Response {
+    let Some(tenants) = ctx.tenants() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    match tenants.get(&ctx.name).await {
+        Ok(t) => match &t.planner {
+            Some(p) => crate::planner::get_plan(State(p.clone())).await,
+            None => no_planner(),
+        },
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response(),
+    }
+}
+
+/// `POST /api/plan` `{"epochs": {"<epoch>": <TH/s> | null}}`, behind the
+/// supplier's dashboard key.
+async fn post_plan(State(ctx): State<SupplierCtx>, headers: HeaderMap, body: String) -> Response {
+    let Some(tenants) = ctx.tenants() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    if !authorized(&tenants, &ctx.name, &headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "wrong dashboard key" })),
+        )
+            .into_response();
+    }
+    match tenants.get(&ctx.name).await {
+        Ok(t) => match &t.planner {
+            Some(p) => crate::planner::post_plan(State(p.clone()), body).await,
+            None => no_planner(),
         },
         Err(e) => (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response(),
     }
@@ -718,8 +909,18 @@ mod tests {
             .unwrap();
         Tenants::new(
             TenantConfig {
-                base: "Mint.Example.com.".into(),
                 domain: domain.map(str::to_string),
+                ..test_config(dir, ths, fake)
+            },
+            Arc::new(registry),
+        )
+    }
+
+    fn test_config(dir: &std::path::Path, ths: f64, fake: bool) -> TenantConfig {
+        {
+            TenantConfig {
+                base: "Mint.Example.com.".into(),
+                domain: None,
                 dir: dir.join("mints"),
                 ledger: Arc::new(RedemptionLedger::new()),
                 min_redeem_tih: 1,
@@ -731,6 +932,7 @@ mod tests {
                 )
                 .unwrap(),
                 reliability: None,
+                epochs: None,
                 probe: Arc::new(|a: PayEndpoint| {
                     Box::pin(async move {
                         if a.lnurlp_url().starts_with("https://wallet.example/") {
@@ -740,9 +942,144 @@ mod tests {
                         }
                     })
                 }),
-            },
-            Arc::new(registry),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn supplier_mint_dates_vouchers_to_epochs_and_sells_its_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        // Epoch 10 with 12 blocks (2 h) left.
+        let (_tx, clock) =
+            tokio::sync::watch::channel(Some(hashu_core::epoch::EpochClock::new(11 * 2016 - 12)));
+        let registry = {
+            let t = tenants_with(dir.path(), 1.0, true);
+            t.registry.clone()
+        };
+        let mut cfg = TenantConfig {
+            epochs: Some(clock),
+            ..test_config(dir.path(), 1.0, true)
+        };
+        cfg.reliability = None;
+        let t = Tenants::new(cfg, registry);
+        let app = app(&t);
+        let alice = "alice.mint.example.com";
+        let set = json!({"ask_sats_per_eih": 2_560, "horizon_hours": 400});
+        let (s, body) = send(&app, "POST", alice, "/api/settings", Some("k3y"), Some(set)).await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+
+        // The chain clock dates the mint: epoch 10's keyset is active.
+        let mut idx = serde_json::Value::Null;
+        for _ in 0..200 {
+            let (s, body) = get(&app, alice, "/v1/hashu/epochs").await;
+            if s == StatusCode::OK {
+                idx = serde_json::from_str(&body).unwrap();
+                let dated = idx["keysets"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .any(|k| k["epoch"] == 10 && k["active"] == true);
+                if dated {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(idx["epoch"], 10, "{idx}");
+        let ks = idx["keysets"].as_object().unwrap();
+        assert!(
+            ks.values().any(|k| k["epoch"] == 10 && k["active"] == true),
+            "{idx}"
+        );
+        // The keyset from before epochs stays perpetual.
+        assert!(ks.values().any(|k| k["perpetual"] == true), "{idx}");
+        let e11 = idx["epochs"][1]["keyset_id"].as_str().unwrap().to_string();
+
+        // Live issuance sells only the current epoch: 1 TH/s × the hours
+        // left in it, not the 400 h horizon.
+        let mut cap = t.capacity("alice").await.unwrap();
+        for _ in 0..100 {
+            if cap.available_tih > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cap = t.capacity("alice").await.unwrap();
+        }
+        assert_eq!(cap.epoch, Some(10));
+        let left = hashu_core::epoch::EpochClock::new(11 * 2016 - 12).hours_left();
+        assert!(left < 2.1, "{left}");
+        assert_eq!(
+            cap.available_tih,
+            hashu_core::denom::tih_from_ths_hours(1.0, left).floor() as u64
+        );
+
+        // The planner is the supplier's: setting it needs the dashboard key.
+        let plan = json!({"epochs": {"11": 5.0}});
+        let (s, _) = send(
+            &app,
+            "POST",
+            alice,
+            "/api/plan",
+            Some("nope"),
+            Some(plan.clone()),
         )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        let (s, body) = send(&app, "POST", alice, "/api/plan", Some("k3y"), Some(plan)).await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        let (s, body) = get(&app, alice, "/v1/hashu/plan").await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["upcoming"][1]["epoch"], 11);
+        assert_eq!(v["upcoming"][1]["planned_ths"], 5.0);
+        // 5 TH/s over the whole of epoch 11 ≈ 5 × 336 THh.
+        let cap11 = v["upcoming"][1]["capacity_tih"].as_u64().unwrap() as f64;
+        let want = hashu_core::denom::tih_from_ths_hours(5.0, 336.0);
+        assert!((cap11 - want).abs() < 2.0, "{cap11} vs {want}");
+        // The operator's mint has no plan of its own here.
+        assert!(!dir.path().join("hashrate-plan.json").exists());
+        assert!(dir.path().join("mints/alice/hashrate-plan.json").exists());
+
+        // Epoch 11 sells from the plan, beyond what the live stock holds.
+        let (s, body) = send(
+            &app,
+            "POST",
+            alice,
+            "/v1/hashu/epochs/11/mint/quote/bolt11",
+            None,
+            Some(json!({"amount": 100_000, "unit": "tih"})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        let q: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(q["epoch"], 11);
+        assert_eq!(q["keyset_id"], e11.as_str());
+        // ...but not over the standard route.
+        let (s, _) = send(
+            &app,
+            "POST",
+            alice,
+            "/v1/mint/quote/bolt11",
+            None,
+            Some(json!({"amount": 100_000, "unit": "tih"})),
+        )
+        .await;
+        assert_ne!(s, StatusCode::OK);
+        // Stock wallets see epoch 11's keyset, inactive, before it starts.
+        let (s, body) = get(&app, alice, "/v1/keysets").await;
+        assert_eq!(s, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v["keysets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|k| k["id"] == e11.as_str() && k["active"] == false));
+        // The supplier page says epochs are on.
+        let (_, body) = get(&app, alice, "/api/supplier").await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["epochs"], true);
+        assert_eq!(v["capacity"]["epoch"], 10);
+        t.stop_all().await;
     }
 
     fn tenants(dir: &std::path::Path) -> Arc<Tenants> {

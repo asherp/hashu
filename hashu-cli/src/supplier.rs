@@ -19,6 +19,12 @@
 //!   Settings saved under the older `lightning_address` key still load.
 //!
 //! A mint with no ask or no payment details sells nothing.
+//!
+//! With epochs on (#126), the stock sells only the current difficulty
+//! epoch: a batch covers the part of the epoch left inside the horizon
+//! (the average keeps the horizon's half-life), and each new epoch starts a
+//! new batch. Future epochs sell separately, from the supplier's hashrate
+//! plan ([`crate::planner`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -28,7 +34,7 @@ use hashu_core::denom::{msat_for_tih_at_sats_per_eih, sats_per_eih_from_msat_per
 use hashu_mint::capacity::MIN_PURCHASE_TIH;
 use hashu_mint::lnaddress::PayEndpoint;
 use hashu_mint::pricing::{PricingError, TihPricer};
-use hashu_mint::stock::{Stock, StockView};
+use hashu_mint::stock::{half_life_hours, Stock, StockView};
 use serde::{Deserialize, Serialize};
 
 /// Selling horizon until the supplier picks one.
@@ -139,21 +145,38 @@ pub struct SupplierBook {
     /// `owed`/`sold` have been counted at least once.
     pub counted: bool,
     pub stock: Stock,
+    /// With epochs on: the current epoch and the hours left in it.
+    pub epoch: Option<(u64, f64)>,
+    /// Epoch the stock was sized for (saved with it).
+    pub stock_epoch: Option<u64>,
     path: Option<PathBuf>,
     saved_ms: u64,
+}
+
+/// `stock.json`: the stock, and the epoch it was sized for.
+#[derive(Serialize, Deserialize)]
+struct SavedStock {
+    #[serde(flatten)]
+    stock: Stock,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    epoch: Option<u64>,
 }
 
 impl SupplierBook {
     /// A book whose stock is kept in `<dir>/stock.json`.
     pub fn load(dir: &Path) -> Result<Self> {
         let path = dir.join("stock.json");
-        let stock = match std::fs::read(&path) {
+        let saved: SavedStock = match std::fs::read(&path) {
             Ok(b) => serde_json::from_slice(&b).with_context(|| format!("read {path:?}"))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Stock::default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => SavedStock {
+                stock: Stock::default(),
+                epoch: None,
+            },
             Err(e) => return Err(e).with_context(|| format!("read {path:?}")),
         };
         Ok(Self {
-            stock,
+            stock: saved.stock,
+            stock_epoch: saved.epoch,
             path: Some(path),
             ..Self::default()
         })
@@ -162,7 +185,11 @@ impl SupplierBook {
     fn save(&mut self, now_ms: u64) {
         let Some(path) = &self.path else { return };
         let tmp = path.with_extension("tmp");
-        let res = serde_json::to_vec_pretty(&self.stock)
+        let saved = SavedStock {
+            stock: self.stock.clone(),
+            epoch: self.stock_epoch,
+        };
+        let res = serde_json::to_vec_pretty(&saved)
             .map_err(anyhow::Error::from)
             .and_then(|b| Ok(std::fs::write(&tmp, b)?))
             .and_then(|_| Ok(std::fs::rename(&tmp, path)?));
@@ -170,6 +197,16 @@ impl SupplierBook {
             Ok(()) => self.saved_ms = now_ms,
             Err(e) => tracing::warn!(?path, error = %e, "could not save stock"),
         }
+    }
+
+    /// `(hours a batch covers, half-life of the average)` for `horizon`:
+    /// with epochs on, only what is left of the current epoch.
+    fn sizing(&self, horizon: f64) -> (f64, f64) {
+        let hours = match self.epoch {
+            Some((_, left)) => left.min(horizon).max(0.0),
+            None => horizon,
+        };
+        (hours, half_life_hours(horizon))
     }
 }
 
@@ -206,6 +243,11 @@ pub struct SupplierCapacity {
     /// Some stock left, but under the minimum purchase.
     pub below_min: bool,
     pub stock: StockView,
+    /// With epochs on: the epoch the stock sells, and the hours left in it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epoch_hours_left: Option<f64>,
 }
 
 impl SupplierPricer {
@@ -245,7 +287,21 @@ impl SupplierPricer {
         b.sold_tih = sold_tih.max(0.0);
         b.counted = true;
         let (owed, sold) = (b.owed_tih, b.sold_tih);
-        let restocked = b.stock.tick(Some(ths), horizon, owed, sold, now_ms, force);
+        let (hours, half_life) = b.sizing(horizon);
+        // A new epoch starts a new batch sized for it.
+        let mut restocked = false;
+        if let Some((epoch, _)) = b.epoch {
+            if b.stock_epoch != Some(epoch) {
+                if b.stock.ewma.ths.is_some() {
+                    b.stock.resize(hours, owed, sold, now_ms);
+                    restocked = true;
+                }
+                b.stock_epoch = Some(epoch);
+            }
+        }
+        restocked |= b
+            .stock
+            .tick_sized(Some(ths), half_life, hours, owed, sold, now_ms, force);
         if restocked {
             tracing::info!(supplier = %self.name, batch_tih = b.stock.batch_tih, "restocked");
         }
@@ -279,8 +335,31 @@ impl SupplierPricer {
             return;
         }
         let (owed, sold) = (b.owed_tih, b.sold_tih);
-        b.stock.resize(horizon, owed, sold, now_ms);
+        let (hours, _) = b.sizing(horizon);
+        b.stock.resize(hours, owed, sold, now_ms);
         b.save(now_ms);
+    }
+
+    /// With epochs on: the current epoch and the hours left in it. The
+    /// stock then sells only that epoch.
+    pub fn set_epoch(&self, epoch: u64, hours_left: f64) {
+        self.book.lock().unwrap_or_else(|e| e.into_inner()).epoch = Some((epoch, hours_left));
+    }
+
+    /// The live hashrate average the stock is sized from, in TH/s (`None`
+    /// before the first sample).
+    pub fn average_ths(&self) -> Option<f64> {
+        self.book
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stock
+            .ewma
+            .ths
+    }
+
+    /// The supplier's horizon in hours.
+    pub fn horizon_hours(&self) -> f64 {
+        self.horizon()
     }
 
     pub fn capacity(&self) -> SupplierCapacity {
@@ -303,6 +382,8 @@ impl SupplierPricer {
             },
             below_min,
             stock,
+            epoch: b.epoch.map(|(e, _)| e),
+            epoch_hours_left: b.epoch.map(|(_, h)| h),
         }
     }
 }
@@ -318,8 +399,11 @@ impl TihPricer for SupplierPricer {
             .unwrap_or_else(|e| e.into_inner())
             .ask_sats_per_eih
             .ok_or(PricingError::NoPrice)?;
+        // A future-epoch purchase sells against that epoch's capacity,
+        // checked by the epoch endpoint (#126), not the live stock.
+        let future = crate::epochs::FUTURE_EPOCH_QUOTE.try_with(|_| ()).is_ok();
         let available = self.capacity().available_tih;
-        if amount_tih > available {
+        if !future && amount_tih > available {
             return Err(PricingError::SoldOut {
                 requested: amount_tih,
                 available,
@@ -446,6 +530,46 @@ mod tests {
                 .capacity()
                 .available_tih,
             277_889
+        );
+    }
+
+    #[test]
+    fn with_epochs_the_stock_sells_only_the_current_epoch() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = SupplierPricer::new(
+            "alice",
+            Arc::new(RwLock::new(SupplierSettings {
+                ask_sats_per_eih: Some(600),
+                horizon_hours: 400.0,
+                lnurl: None,
+            })),
+            Arc::new(|_: &str| 1e12),
+            Arc::new(Mutex::new(SupplierBook::load(dir.path()).unwrap())),
+        );
+        let tih = hashu_core::denom::tih_from_ths_hours;
+        // 10 h left in epoch 10: 1 TH/s × 10 h, not × the 400 h horizon.
+        p.set_epoch(10, 10.0);
+        p.refresh(0.0, 0.0, 0, false);
+        let c = p.capacity();
+        assert_eq!((c.epoch, c.epoch_hours_left), (Some(10), Some(10.0)));
+        assert_eq!(c.available_tih, tih(1.0, 10.0).floor() as u64);
+        // Hourly top-ups never grow it past what is left of the epoch...
+        p.set_epoch(10, 5.0);
+        p.refresh(0.0, 1_000.0, H, false);
+        assert!(p.capacity().available_tih <= tih(1.0, 10.0) as u64);
+        // ...and a new epoch starts a new batch for its whole length.
+        p.set_epoch(11, 336.0);
+        assert!(p.refresh(0.0, 1_000.0, H + 1, false));
+        let c = p.capacity();
+        assert_eq!(c.epoch, Some(11));
+        assert!((c.available_tih as f64 - tih(c.stock.ewma_ths, 336.0)).abs() < 2.0);
+        // The epoch the stock was sized for survives a restart.
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("stock.json")).unwrap()).unwrap();
+        assert_eq!(saved["epoch"], 11);
+        assert_eq!(
+            SupplierBook::load(dir.path()).unwrap().stock_epoch,
+            Some(11)
         );
     }
 

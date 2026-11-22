@@ -1,5 +1,5 @@
-//! Epoch-dated issuance on the operator's mint (#126), on with
-//! `--epochs` (`HASHU_EPOCHS=true`).
+//! Epoch-dated issuance (#126) on the operator's mint and every supplier
+//! mint, on with `--epochs` (`HASHU_EPOCHS=true`).
 //!
 //! - [`run`] reads the chain tip every minute, rotates the TiH keyset at
 //!   each difficulty epoch ([`hashu_mint::epoch`]), and sizes the live
@@ -63,23 +63,23 @@ tokio::task_local! {
     pub static FUTURE_EPOCH_QUOTE: ();
 }
 
-/// Mint quote `id` buys a future epoch on the operator's mint.
-pub fn is_operator_purchase(id: &str) -> bool {
-    OPERATOR.get().is_some_and(|e| e.purchase(id).is_some())
-}
-
 /// Make `epochs` the operator mint's, so its obligations count the TiH
 /// signed outside cdk.
 pub fn set_operator(epochs: Arc<Epochs>) {
     let _ = OPERATOR.set(epochs);
 }
 
-/// TiH the operator's epochs signed outside cdk that cdk can now see
-/// spent (epochs up to the current one): owed on top of cdk's count.
-pub fn operator_outside_cdk() -> u64 {
-    OPERATOR
-        .get()
-        .and_then(|e| Some(e.signed_outside_cdk(e.clock()?.current())))
+/// The operator mint's epochs, when on.
+pub fn operator() -> Option<Arc<Epochs>> {
+    OPERATOR.get().cloned()
+}
+
+/// TiH a mint's epochs signed outside cdk that cdk can now see spent
+/// (epochs up to the current one): owed on top of cdk's count.
+pub fn outside_cdk(epochs: &Epochs) -> u64 {
+    epochs
+        .clock()
+        .map(|c| epochs.signed_outside_cdk(c.current()))
         .unwrap_or(0)
 }
 
@@ -112,26 +112,57 @@ pub fn plan_inputs(capacity: Arc<CapacityBook>) -> hashu_mint::epoch::PlanInputs
     })
 }
 
-/// Follow the chain: date issuance to the current epoch.
+/// The chain tip as an epoch clock, shared by every mint in the process
+/// (the operator's and the supplier mints): one Esplora read a minute.
+pub type ClockFeed = tokio::sync::watch::Receiver<Option<EpochClock>>;
+
+/// Read the chain tip from `esplora` every minute into a [`ClockFeed`].
+pub fn chain_clock(esplora: EsploraClient) -> ClockFeed {
+    let (tx, rx) = tokio::sync::watch::channel(None);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(TICK);
+        loop {
+            tick.tick().await;
+            match esplora.tip_height().await {
+                Ok(h) => {
+                    if tx.send(Some(EpochClock::new(h))).is_err() {
+                        return;
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "epochs: could not read the chain tip"),
+            }
+        }
+    });
+    rx
+}
+
+/// Follow the chain: date issuance to the current epoch. `on_tick` gets
+/// each clock reading (to size the live stock to the epoch), `on_rotate`
+/// runs after the keyset rotated.
 pub async fn run(
     epochs: Arc<Epochs>,
     mint: Arc<Mint>,
     keys: KeysDb,
-    esplora: EsploraClient,
-    capacity: Arc<CapacityBook>,
+    mut clock: ClockFeed,
+    on_tick: Arc<dyn Fn(EpochClock) + Send + Sync>,
     on_rotate: Arc<dyn Fn() + Send + Sync>,
 ) {
-    let mut tick = tokio::time::interval(TICK);
+    let mut first = true;
     loop {
-        tick.tick().await;
-        match esplora.tip_height().await {
-            Ok(h) => epochs.set_clock(EpochClock::new(h)),
-            Err(e) => tracing::warn!(error = %e, "epochs: could not read the chain tip"),
+        // Wake on a new reading, and at least every minute so a rotation
+        // that waited for open redemptions is retried.
+        if !first {
+            let _ = tokio::time::timeout(TICK, clock.changed()).await;
         }
-        let Some(clock) = epochs.clock() else {
+        first = false;
+        let reading = *clock.borrow_and_update();
+        if let Some(c) = reading {
+            epochs.set_clock(c);
+        }
+        let Some(now) = epochs.clock() else {
             continue;
         };
-        capacity.set_epoch(clock.current(), clock.hours_left());
+        on_tick(now);
         let open_redemption = match mint.melt_quotes().await {
             Ok(q) => q
                 .iter()

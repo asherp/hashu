@@ -1,4 +1,5 @@
-//! The hashrate planner on the operator's dashboard, with epochs on (#126).
+//! The hashrate planner on the operator's dashboard and on each supplier
+//! mint's page, with epochs on (#126).
 //!
 //! A miner enters the TH/s they plan to run in each future difficulty
 //! epoch (a build-out, rigs coming or going). Future epochs then sell
@@ -15,6 +16,12 @@
 //! - Operator dashboard: `GET /api/plan` (the same) and
 //!   `POST /api/plan` `{"epochs": {"<epoch>": <TH/s> | null}}` to set or
 //!   clear future epochs. A plan freezes when its epoch starts.
+//! - Supplier mints: the same `GET`/`POST /api/plan` on the mint's own
+//!   host, the `POST` behind the supplier's dashboard key.
+//!
+//! Each mint has its own plan, epochs and record, so a later group mint
+//! (several suppliers behind one keyset) can sum its members' [`Planner`]s
+//! epoch by epoch.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,6 +34,18 @@ use axum::Json;
 use hashu_core::denom::TIH_PER_THH;
 use hashu_core::epoch::start_height;
 use hashu_mint::capacity::{now_ms, CapacityBook};
+
+/// The live hashrate average a mint sells its current epoch on, in TH/s
+/// (`None` while not counted).
+pub type MeasuredFn = Arc<dyn Fn() -> Option<f64> + Send + Sync>;
+
+/// [`MeasuredFn`] of the operator's capacity book.
+pub fn measured_from(capacity: Arc<CapacityBook>) -> MeasuredFn {
+    Arc::new(move || {
+        let s = capacity.snapshot(now_ms());
+        s.live.on.then_some(s.live.stock.ewma_ths)
+    })
+}
 use hashu_mint::epoch::Epochs;
 use hashu_mint::planner::HashratePlan;
 use hashu_mint::reliability::RecordStore;
@@ -40,13 +59,15 @@ pub const PLAN_AHEAD: u64 = 8;
 pub struct Planner {
     pub plan: Arc<HashratePlan>,
     pub epochs: Arc<Epochs>,
-    pub capacity: Arc<CapacityBook>,
-    pub record: Arc<RecordStore>,
+    pub measured: MeasuredFn,
+    /// The mint's hourly reliability record: what each epoch delivered.
+    pub record: Option<Arc<RecordStore>>,
 }
 
 impl Planner {
-    /// Hook the plan into `epochs`' capacity and follow the chain.
-    pub fn start(self: &Arc<Self>) {
+    /// Hook the plan into `epochs`' capacity and follow the chain (until
+    /// the returned task is aborted).
+    pub fn start(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let plan = self.plan.clone();
         self.epochs
             .set_planned_hashrate(Arc::new(move |e| plan.planned(e)));
@@ -59,7 +80,7 @@ impl Planner {
                     me.plan.observe(&c, now_ms());
                 }
             }
-        });
+        })
     }
 
     /// The plan, its capacity per epoch, and planned vs delivered.
@@ -78,8 +99,7 @@ impl Planner {
             .max(current + PLAN_AHEAD)
             .max(future.keys().next_back().copied().unwrap_or(0))
             .min(current + hashu_mint::planner::MAX_EPOCHS_AHEAD);
-        let snap = self.capacity.snapshot(now);
-        let measured = snap.live.on.then_some(snap.live.stock.ewma_ths);
+        let measured = (self.measured)();
 
         let upcoming: Vec<Value> = (current..=through)
             .map(|e| {
@@ -107,11 +127,16 @@ impl Planner {
             .map(|(e, run)| {
                 let start_s = run.start_ms / 1000;
                 let end_ms = run.end_ms.unwrap_or(now);
-                let (work, hours) = self.record.work_between(start_s, end_ms / 1000);
+                let rec = self
+                    .record
+                    .as_ref()
+                    .map(|r| r.work_between(start_s, end_ms / 1000));
+                let (work, hours) = rec.unwrap_or_default();
                 let elapsed_h = end_ms.saturating_sub(run.start_ms) as f64 / 3_600_000.0;
                 // Average over the time the epoch ran here, gaps included:
                 // an hour missing from the record delivered nothing.
-                let delivered_ths = (elapsed_h >= 1.0).then(|| work / TIH_PER_THH / elapsed_h);
+                let delivered_ths =
+                    (rec.is_some() && elapsed_h >= 1.0).then(|| work / TIH_PER_THH / elapsed_h);
                 json!({
                     "epoch": e,
                     "current": e == current,
@@ -271,8 +296,8 @@ mod tests {
         let p = Planner {
             plan: Arc::new(HashratePlan::open(None).unwrap()),
             epochs,
-            capacity: Arc::new(CapacityBook::new()),
-            record,
+            measured: Arc::new(|| Some(1.0)),
+            record: Some(record),
         };
         let plan = p.plan.clone();
         p.epochs

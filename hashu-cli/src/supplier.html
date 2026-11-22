@@ -28,6 +28,30 @@ button { margin-top:16px; font:inherit; font-weight:600; padding:10px 18px; bord
 .msg.good { color:var(--good); }
 details summary { cursor:pointer; font-weight:600; }
 [hidden] { display:none !important; }
+h2 { font-size:18px; margin:0 0 4px; }
+.head { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+.head select { font:inherit; font-size:14px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
+.tbl { width:100%; border-collapse:collapse; font-size:14px; font-variant-numeric:tabular-nums; }
+.tbl th, .tbl td { text-align:left; padding:6px 6px; border-bottom:1px solid var(--line); vertical-align:middle; }
+.tbl th { color:var(--ink-2); font-weight:600; font-size:12px; }
+.tbl .num { text-align:right; }
+.tbl input { width:96px; padding:6px 8px; font-size:14px; }
+.tbl input.dflt { color:var(--ink-2); }
+.muted { color:var(--ink-2); font-size:12px; }
+.scroll { overflow-x:auto; margin:8px -4px 0; }
+.btns { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.btns button { margin-top:12px; }
+button.ghost { background:transparent; color:var(--ink); border-color:var(--line); }
+.chart { position:relative; height:180px; margin-top:12px; }
+.chart svg { width:100%; height:100%; display:block; }
+.chart .axis text { fill:var(--ink-2); font-size:11px; }
+.chart .grid { stroke:var(--line); }
+.chart .pbar { fill:var(--brand); opacity:.55; }
+.chart .pbar.fallback { fill:var(--ink-2); opacity:.3; }
+.chart .dbar { fill:var(--good); }
+.legend { display:flex; gap:14px; flex-wrap:wrap; list-style:none; padding:0; margin:6px 0 0; font-size:12px; color:var(--ink-2); }
+.legend .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
+@media (max-width:560px) { .wide { display:none; } .tbl input { width:84px; } }
 </style>
 </head>
 <body>
@@ -43,7 +67,41 @@ details summary { cursor:pointer; font-weight:600; }
       <div class="stat"><b id="horizon">–</b><span>hour horizon</span></div>
     </div>
     <p class="hint" id="stock-line"></p>
+    <p class="hint" id="epoch-line" hidden></p>
     <p class="hint" style="margin-bottom:0">Buy with any Cashu wallet: add this mint's URL and mint TiH over Lightning. You pay the supplier's own wallet.</p>
+  </div>
+
+  <div class="card" id="plan-card" hidden>
+    <div class="head">
+      <h2>Hashrate planner</h2>
+      <select id="plan-unit" aria-label="Planner unit"></select>
+    </div>
+    <p class="hint" id="plan-meta"></p>
+    <div class="chart" id="c-plan" role="img" aria-label="Planned and delivered hashrate per epoch"></div>
+    <ul class="legend">
+      <li><span class="sw" style="background:var(--brand);opacity:.55"></span>Planned</li>
+      <li><span class="sw" style="background:var(--ink-2);opacity:.3"></span>No plan: live average</li>
+      <li><span class="sw" style="background:var(--good)"></span>Delivered</li>
+    </ul>
+    <div class="scroll">
+      <table class="tbl">
+        <thead><tr><th>Epoch</th><th class="wide">Starts</th><th class="u-plan">Planned</th><th class="num wide">Sells on</th><th class="num wide">Capacity</th><th class="num wide">Sold</th><th class="num">Free</th></tr></thead>
+        <tbody id="plan-rows"></tbody>
+      </table>
+    </div>
+    <div class="btns">
+      <button id="btn-plan">Save plan</button>
+      <button class="ghost" id="btn-plan-reset">Discard changes</button>
+      <span class="hint" id="plan-note"></span>
+    </div>
+    <h2 style="margin-top:20px">Planned vs delivered</h2>
+    <div class="scroll">
+      <table class="tbl">
+        <thead><tr><th>Epoch</th><th>Ran</th><th class="num u-plan">Planned</th><th class="num u-deliv">Delivered</th><th class="num">Of plan</th></tr></thead>
+        <tbody id="plan-hist"></tbody>
+      </table>
+    </div>
+    <p class="hint" style="margin-bottom:0">Enter the hashrate you plan to run in each coming difficulty epoch (2,016 blocks, about two weeks): rigs coming online or going away. Each epoch starts out filled with your live average; only the epochs you change are saved, with your dashboard key. Future epochs your horizon reaches sell against the plan, less what is already sold into them; epochs without a plan sell on the live average. The current epoch always sells on what your rigs measure, and a plan freezes when its epoch starts. The plan is public at <a href="/v1/hashu/plan">/v1/hashu/plan</a>, next to what each epoch delivered according to your <a href="/reliability/">hourly reliability record</a>.</p>
   </div>
 
   <div class="card">
@@ -100,6 +158,11 @@ async function status() {
         `Sized from ${fmt(st.ewma_ths, 2)} TH/s average (half-life ${fmt(st.half_life_hours, 1)} h). ` +
         (st.next_restock_ms > now ? `Next restock in ${hrs(st.next_restock_ms - now)}.` : 'Restock due.')
       : 'Stock: filled as soon as your rigs report hashrate.';
+    const c = s.capacity;
+    $('epoch-line').hidden = c.epoch == null;
+    if (c.epoch != null) {
+      $('epoch-line').textContent = `Vouchers are dated to difficulty epoch ${c.epoch} (${fmt(c.epoch_hours_left, 0)} h left): the stock above sells only this epoch. Later epochs your horizon reaches sell from your hashrate plan below.`;
+    }
     $('state').textContent = s.selling ? 'selling' : (s.capacity.hashrate_ths > 0 ? 'not selling' : 'no rigs online');
     $('state').className = 'pill ' + (s.selling ? 'on' : 'off');
   } catch (e) { /* keep the last values */ }
@@ -156,6 +219,151 @@ $('restock').addEventListener('click', async () => {
     status();
   } catch (e) { say(e.message, false); }
 });
+// ---- hashrate planner (#126): planned TH/s per future epoch -------------
+const EPOCH_H = 336;
+const TIH_PER_THH = 3.6e15 / 2 ** 40;
+const PLAN_UNITS = [
+  { id: 'THd', k: EPOCH_H / 24, amount: true },
+  { id: 'PHd', k: EPOCH_H / 24 / 1000, amount: true },
+  { id: 'THh', k: EPOCH_H, amount: true },
+  { id: 'PHh', k: EPOCH_H / 1000, amount: true },
+  { id: 'TiH', k: EPOCH_H * TIH_PER_THH, amount: true },
+  { id: 'TH/s', k: 1, amount: false },
+  { id: 'PH/s', k: 1 / 1000, amount: false },
+];
+const esc = (x) => String(x ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const plan = { data: null, edits: {}, unit: null };
+try { plan.unit = localStorage.getItem('hashu.planUnit'); } catch (e) {}
+const unitOf = () => PLAN_UNITS.find((u) => u.id === plan.unit) || PLAN_UNITS[0];
+const unitLabel = (u) => u.amount ? `${u.id} / epoch` : u.id;
+const toU = (ths) => ths == null || !Number.isFinite(ths) ? null : ths * unitOf().k;
+const fromU = (v) => v / unitOf().k;
+const fmtN = (t) => !Number.isFinite(t) ? '—' : t.toLocaleString(undefined, { maximumFractionDigits: t < 10 ? 2 : t < 100 ? 1 : 0 });
+const fmtU = (ths) => { const v = toU(ths); return v == null ? '—' : fmtN(v); };
+const inU = (ths) => { const v = toU(ths); return v == null ? '' : String(Number(v.toPrecision(v < 1 ? 4 : 6))); };
+const fmtDay = (s) => new Date(s * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' });
+$('plan-unit').innerHTML = PLAN_UNITS.map((u) => `<option value="${esc(u.id)}">${esc(unitLabel(u))}</option>`).join('');
+$('plan-unit').addEventListener('change', () => {
+  plan.unit = $('plan-unit').value;
+  try { localStorage.setItem('hashu.planUnit', plan.unit); } catch (e) {}
+  for (const e of Object.values(plan.edits)) e.text = null;
+  renderPlan();
+});
+async function pollPlan() {
+  try {
+    const r = await fetch('/api/plan');
+    if (r.status === 404) { $('plan-card').hidden = true; return; }
+    if (!r.ok) return;
+    plan.data = await r.json();
+    renderPlan();
+  } catch (e) { /* keep the last values */ }
+}
+function renderPlan() {
+  const p = plan.data;
+  $('plan-card').hidden = !p;
+  if (!p) return;
+  const m = p.measured_ths;
+  if (!PLAN_UNITS.some((u) => u.id === plan.unit)) plan.unit = m != null && m * EPOCH_H / 24 >= 1000 ? 'PHd' : 'THd';
+  const u = unitOf();
+  $('plan-unit').value = u.id;
+  for (const th of document.querySelectorAll('#plan-card .u-plan')) th.textContent = `Planned, ${unitLabel(u)}`;
+  for (const th of document.querySelectorAll('#plan-card .u-deliv')) th.textContent = `Delivered, ${unitLabel(u)}`;
+  const onSale = p.last_epoch <= p.epoch ? `Only the current epoch is in your ${fmt(p.horizon_hours, 0)} h horizon; raise it to sell later epochs.`
+    : p.last_epoch === p.epoch + 1 ? `Epoch ${p.last_epoch} is in your ${fmt(p.horizon_hours, 0)} h horizon and on sale.`
+    : `Epochs ${p.epoch + 1}–${p.last_epoch} are in your ${fmt(p.horizon_hours, 0)} h horizon and on sale.`;
+  $('plan-meta').textContent = m != null
+    ? `Epoch ${p.epoch} now. Live average ${fmtN(m)} TH/s${u.amount ? ` (${fmtU(m)} ${u.id} per epoch)` : ''}. ${onSale}`
+    : `Epoch ${p.epoch} now. Live hashrate is not counted yet: future epochs without a plan have no capacity. ${onSale}`;
+  const focus = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.epoch;
+  $('plan-rows').innerHTML = p.upcoming.map((r) => {
+    const sellsOn = r.current ? m : (r.planned_ths != null ? r.planned_ths : m);
+    const src = r.current ? 'measured' : (r.planned_ths != null ? 'plan' : 'live avg');
+    const ed = plan.edits[r.epoch];
+    const val = ed ? (ed.text ?? inU(ed.ths)) : r.planned_ths != null ? inU(r.planned_ths) : inU(m > 0 ? m : null);
+    const dflt = !ed && r.planned_ths == null && m > 0;
+    const input = r.current
+      ? '<span class="muted">measured</span>'
+      : `<input type="number" min="0" step="any" data-epoch="${r.epoch}" class="${dflt ? 'dflt' : ''}" value="${esc(val)}" placeholder="${esc(u.id)}" aria-label="Planned ${esc(unitLabel(u))} for epoch ${r.epoch}"${dflt ? ' title="Live average (not saved)"' : ''}>`;
+    const cell = (x) => r.in_window && x != null ? fmt(x, 0) : '<span class="muted">—</span>';
+    return `<tr><td style="white-space:nowrap">${r.epoch}${r.current ? ' <span class="muted">now</span>' : ''}</td><td class="wide">${r.current ? 'running' : fmtDay(r.starts_at)}</td><td>${input}</td>` +
+      `<td class="num wide" style="white-space:nowrap">${fmtU(sellsOn)} <span class="muted">${src}</span></td>` +
+      `<td class="num wide">${cell(r.capacity_tih)}</td><td class="num wide">${cell(r.owed_tih)}</td><td class="num">${cell(r.free_tih)}</td></tr>`;
+  }).join('');
+  if (focus) { const i = $('plan-rows').querySelector(`input[data-epoch="${focus}"]`); if (i) { i.focus(); const n = i.value.length; try { i.setSelectionRange(n, n); } catch (e) {} } }
+  $('plan-hist').innerHTML = p.history.length ? p.history.map((h) => {
+    const pct = h.planned_ths > 0 && h.delivered_ths != null ? `${Math.round(100 * h.delivered_ths / h.planned_ths)}%` : '—';
+    const ran = `${fmtDay(h.started_at)}${h.ended_at ? `–${fmtDay(h.ended_at)}` : ', running'}`;
+    return `<tr><td>${h.epoch}</td><td>${ran}</td><td class="num">${h.planned_ths != null ? fmtU(h.planned_ths) : '<span class="muted">none</span>'}</td>` +
+      `<td class="num">${h.delivered_ths != null ? fmtU(h.delivered_ths) : '<span class="muted">under 1 h</span>'}</td><td class="num">${pct}</td></tr>`;
+  }).join('') : '<tr><td colspan="5" class="hint">No epoch has run here yet.</td></tr>';
+  drawPlan();
+}
+function niceTicks(max, n) {
+  const raw = max / n, mag = 10 ** Math.floor(Math.log10(raw)), f = raw / mag;
+  const step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * mag;
+  const out = [];
+  for (let v = 0; v <= max + step * 0.999; v += step) out.push(v);
+  return out;
+}
+function drawPlan() {
+  const p = plan.data, el = $('c-plan');
+  if (!p || $('plan-card').hidden) return;
+  const m = p.measured_ths;
+  const cols = [
+    ...p.history.slice(0, 6).reverse().map((h) => ({ epoch: h.epoch, planned: h.planned_ths, fallback: false, delivered: h.delivered_ths })),
+    ...p.upcoming.filter((r) => !r.current).map((r) => ({ epoch: r.epoch, planned: r.planned_ths != null ? r.planned_ths : m, fallback: r.planned_ths == null, delivered: null })),
+  ];
+  for (const c of cols) { c.planned = toU(c.planned); c.delivered = toU(c.delivered); }
+  const W = Math.max(260, el.clientWidth), H = el.clientHeight, mg = { l: 48, r: 4, t: 18, b: 20 };
+  const max = Math.max(1e-9, ...cols.map((c) => Math.max(c.planned || 0, c.delivered || 0)));
+  const ticks = niceTicks(max, 4), top = ticks[ticks.length - 1];
+  const iw = W - mg.l - mg.r, ih = H - mg.t - mg.b, cw = iw / Math.max(1, cols.length);
+  const y = (v) => mg.t + ih - (v / top) * ih;
+  const bw = Math.max(3, Math.min(16, (cw - 6) / 2));
+  let svg = `<svg viewBox="0 0 ${W} ${H}"><g class="axis">`;
+  for (const t of ticks) svg += `<line class="grid" x1="${mg.l}" x2="${W - mg.r}" y1="${y(t)}" y2="${y(t)}"/><text x="${mg.l - 6}" y="${y(t) + 4}" text-anchor="end">${fmtN(t)}</text>`;
+  svg += `<text x="${mg.l - 6}" y="10" text-anchor="end">${esc(unitOf().id)}</text></g>`;
+  const bar = (x, v, cls) => v > 0 ? `<rect class="${cls}" x="${x}" y="${y(v)}" width="${bw}" height="${Math.max(1, y(0) - y(v))}" rx="2"/>` : '';
+  const step = Math.ceil(cols.length / Math.max(1, Math.floor(iw / 40)));
+  cols.forEach((c, i) => {
+    const cx = mg.l + cw * i + cw / 2;
+    svg += bar(cx - bw - 1, c.planned, c.fallback ? 'pbar fallback' : 'pbar');
+    svg += bar(cx + 1, c.delivered, 'dbar');
+    if (i % step === 0) svg += `<g class="axis"><text x="${cx}" y="${H - 4}" text-anchor="middle">${c.epoch}</text></g>`;
+  });
+  el.innerHTML = svg + '</svg>';
+}
+$('plan-rows').addEventListener('input', (ev) => {
+  const i = ev.target, e = i.dataset.epoch;
+  if (!e) return;
+  const v = i.value.trim();
+  plan.edits[e] = { text: i.value, ths: v === '' ? null : fromU(Number(v)) };
+  i.classList.remove('dflt'); i.removeAttribute('title');
+});
+function planNote(text, ok) { const n = $('plan-note'); n.textContent = text; n.style.color = ok ? 'var(--good)' : 'var(--bad)'; }
+$('btn-plan').addEventListener('click', async () => {
+  const epochs = {};
+  for (const [e, x] of Object.entries(plan.edits)) {
+    if (x.ths !== null && !(x.ths >= 0)) return planNote(`Epoch ${e}: enter ${unitOf().id} (0 or more), or leave it empty for no plan.`, false);
+    epochs[e] = x.ths;
+  }
+  if (!Object.keys(epochs).length) return planNote('Nothing changed.', true);
+  const key = $('secret').value.trim();
+  if (!key) { $('settings-box').open = true; $('secret').focus(); return planNote('Enter your dashboard key under Supplier settings to save.', false); }
+  $('btn-plan').disabled = true;
+  try {
+    const r = await fetch('/api/plan', { method: 'POST', headers: { 'x-hashu-key': key, 'content-type': 'application/json' }, body: JSON.stringify({ epochs }) });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || r.statusText);
+    try { sessionStorage.setItem('hashu-key', key); } catch (e) {}
+    plan.data = body; plan.edits = {};
+    planNote('Saved.', true);
+  } catch (e) { planNote(e.message, false); } finally { $('btn-plan').disabled = false; renderPlan(); }
+});
+$('btn-plan-reset').addEventListener('click', () => { plan.edits = {}; planNote('', true); renderPlan(); });
+pollPlan();
+setInterval(pollPlan, 15000);
+window.addEventListener('resize', drawPlan);
 </script>
 </body>
 </html>
