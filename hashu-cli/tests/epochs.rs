@@ -22,7 +22,7 @@ use cdk_fake_wallet::FakeWallet;
 use hashu_core::epoch::{EpochClock, Supply};
 use hashu_core::hashprice::{HashpriceOracle, HashpriceSample, SampleBuffer};
 use hashu_core::redemption::RedemptionLedger;
-use hashu_mint::epoch::{EpochConverter, Epochs, METHOD as EPOCH};
+use hashu_mint::epoch::{EpochConverter, Epochs, PlanInput, METHOD as EPOCH};
 use hashu_mint::lightning::{add_lightning_issuance, lightning_issuer};
 use hashu_mint::melt::{HashrateMelter, METHOD as HASHRATE};
 use hashu_mint::payment::tih_unit;
@@ -63,14 +63,13 @@ async fn harness() -> Harness {
     let ledger = Arc::new(RedemptionLedger::new());
     let epochs = Arc::new(Epochs::open(&SEED, denoms(), None).unwrap());
     epochs.set_clock(tip_in(10));
-    epochs.set_plan_inputs(Arc::new(|| {
-        (
-            vec![Supply {
-                ths: 1.0,
-                hours_left: None,
-            }],
-            0.0,
-        )
+    epochs.set_plan_inputs(Arc::new(|| PlanInput {
+        supply: vec![Supply {
+            ths: 1.0,
+            hours_left: None,
+        }],
+        carried_tih: 0.0,
+        horizon_hours: 168.0 + 3.0 * 336.0,
     }));
     let mut b = MintBuilder::new(Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap()));
     b.configure_unit(

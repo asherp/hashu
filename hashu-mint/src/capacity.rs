@@ -139,15 +139,14 @@ struct Inner {
     epoch: Option<(u64, f64)>,
 }
 
-/// Half-life of the live average when epochs size the stock and the
-/// seller has set no horizon of their own.
-const EPOCH_DEFAULT_HORIZON_HOURS: f64 = 24.0;
+/// Sales horizon with epochs on when the seller has set none: one epoch.
+pub const EPOCH_DEFAULT_HORIZON_HOURS: f64 = hashu_core::epoch::EPOCH_HOURS;
 
 impl Inner {
     /// `(hours a batch covers, half-life of the average)`, or `None` while
     /// live hashrate is not counted. With epochs on, live hashrate always
-    /// counts and a batch covers what is left of the current epoch: live
-    /// issuance sells only the current epoch.
+    /// counts and a batch covers the part of the current epoch inside the
+    /// horizon: live issuance sells only the current epoch.
     fn live_sizing(&self) -> Option<(f64, f64)> {
         match self.epoch {
             Some((_, hours_left)) => {
@@ -155,7 +154,7 @@ impl Inner {
                     .p
                     .live_horizon_hours
                     .unwrap_or(EPOCH_DEFAULT_HORIZON_HOURS);
-                Some((hours_left.max(0.0), crate::stock::half_life_hours(h)))
+                Some((hours_left.min(h).max(0.0), crate::stock::half_life_hours(h)))
             }
             None => self
                 .p
@@ -432,6 +431,11 @@ impl CapacityBook {
     /// new epoch starts a new batch.
     pub fn set_epoch(&self, epoch: u64, hours_left: f64) {
         self.inner.lock().unwrap().epoch = Some((epoch, hours_left));
+    }
+
+    /// The seller's live horizon, if set.
+    pub fn live_horizon_hours(&self) -> Option<f64> {
+        self.inner.lock().unwrap().p.live_horizon_hours
     }
 
     /// The current epoch and hours left in it, with epochs on.

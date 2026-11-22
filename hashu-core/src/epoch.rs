@@ -12,7 +12,7 @@
 //! that has. [`plan`] decides where that room is:
 //!
 //! ```text
-//! capacity_E = hashrate × the hours of epoch E still ahead
+//! capacity_E = hashrate × the hours of epoch E inside [now, now + horizon]
 //! owed_C     = current epoch's vouchers + every expired or perpetual one
 //! owed_E     = vouchers dated to E + whatever epoch E−1 could not hold
 //! free_E     = max(0, capacity_E − owed_E)
@@ -95,7 +95,9 @@ pub struct Supply {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct PlanRow {
     pub epoch: u64,
-    /// TiH the supply can deliver in what is left of this epoch.
+    /// Hours of this epoch inside the sales window `[now, now + horizon]`.
+    pub hours_in_window: f64,
+    /// TiH the supply can deliver in that part of the epoch.
     pub capacity_tih: f64,
     /// TiH owed in this epoch, overflow from earlier epochs included.
     pub owed_tih: f64,
@@ -103,36 +105,58 @@ pub struct PlanRow {
     pub free_tih: f64,
 }
 
-/// What the current epoch and the next `lookahead` epochs can deliver and
-/// already owe.
+/// Last epoch the sales window `[now, now + horizon_hours]` reaches.
+pub fn last_epoch(clock: &EpochClock, horizon_hours: f64) -> u64 {
+    let beyond = horizon_hours - clock.hours_left();
+    if !(beyond > 0.0) {
+        return clock.current();
+    }
+    clock.current() + (beyond / EPOCH_HOURS).ceil() as u64
+}
+
+/// What each epoch in the sales window can deliver and already owes.
+///
+/// The window is `[now, now + horizon_hours]`, the seller's horizon: an
+/// epoch sells only the part of it inside the window, so later epochs come
+/// into view as the window slides and grow hour by hour.
 ///
 /// - `carried_tih`: TiH owed now that is not dated to a later epoch: the
 ///   current epoch's vouchers plus every expired or perpetual one.
 /// - `dated_tih(e)`: TiH dated to future epoch `e`.
+/// - `planned_ths(e)`: TH/s the seller plans for future epoch `e` (a
+///   hashrate planner); `None` sizes it from `supply` like the current one.
 pub fn plan(
     clock: &EpochClock,
     supply: &[Supply],
     carried_tih: f64,
     dated_tih: impl Fn(u64) -> f64,
-    lookahead: u64,
+    planned_ths: impl Fn(u64) -> Option<f64>,
+    horizon_hours: f64,
 ) -> Vec<PlanRow> {
     let current = clock.current();
-    let mut rows = Vec::with_capacity(lookahead as usize + 1);
+    let horizon = horizon_hours.max(0.0);
+    let last = last_epoch(clock, horizon);
+    let mut rows = Vec::with_capacity((last - current) as usize + 1);
     let mut overflow = carried_tih.max(0.0);
-    for epoch in current..=current + lookahead {
+    for epoch in current..=last {
         let from = clock.hours_until(epoch);
         let to = if epoch == current {
             clock.hours_left()
         } else {
             from + EPOCH_HOURS
+        }
+        .min(horizon);
+        let hours_in_window = (to - from).max(0.0);
+        let capacity_tih: f64 = match planned_ths(epoch).filter(|_| epoch > current) {
+            Some(ths) => tih_from_ths_hours(ths.max(0.0), hours_in_window),
+            None => supply
+                .iter()
+                .map(|s| {
+                    let end = s.hours_left.map_or(to, |h| h.min(to));
+                    tih_from_ths_hours(s.ths.max(0.0), (end - from).max(0.0))
+                })
+                .sum(),
         };
-        let capacity_tih: f64 = supply
-            .iter()
-            .map(|s| {
-                let end = s.hours_left.map_or(to, |h| h.min(to));
-                tih_from_ths_hours(s.ths.max(0.0), (end - from).max(0.0))
-            })
-            .sum();
         let dated = if epoch == current {
             0.0
         } else {
@@ -142,6 +166,7 @@ pub fn plan(
         overflow = (owed_tih - capacity_tih).max(0.0);
         rows.push(PlanRow {
             epoch,
+            hours_in_window,
             capacity_tih,
             owed_tih,
             free_tih: (capacity_tih - owed_tih).max(0.0),
@@ -195,7 +220,14 @@ mod tests {
         // 1,008 blocks (168 h) left in epoch 10.
         let c = EpochClock::new(10 * 2016 + 1007);
         assert_eq!(c.blocks_left(), 1008);
-        let rows = plan(&c, &rate(1.0), 0.0, |_| 0.0, 2);
+        let rows = plan(
+            &c,
+            &rate(1.0),
+            0.0,
+            |_| 0.0,
+            |_| None,
+            168.0 + 2.0 * EPOCH_HOURS,
+        );
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].epoch, 10);
         assert!((rows[0].capacity_tih - 168.0 * TIH_PER_THH).abs() < 1e-6);
@@ -215,7 +247,8 @@ mod tests {
             &rate(1.0),
             cap0 + cap1 / 2.0,
             |e| if e == 11 { cap1 / 2.0 + 10.0 } else { 0.0 },
-            3,
+            |_| None,
+            168.0 + 3.0 * EPOCH_HOURS,
         );
         assert_eq!(rows[0].free_tih, 0.0);
         assert!((rows[1].owed_tih - (cap1 + 10.0)).abs() < 1e-6);
@@ -227,14 +260,14 @@ mod tests {
     #[test]
     fn current_epoch_takes_expired_vouchers_when_it_has_room() {
         let c = EpochClock::new(10 * 2016 + 1007);
-        let rows = plan(&c, &rate(1.0), 4096.0, |_| 0.0, 3);
+        let rows = plan(&c, &rate(1.0), 4096.0, |_| 0.0, |_| None, 1000.0);
         assert_eq!(next_available(&rows), Some(10));
     }
 
     #[test]
     fn no_hashrate_means_nowhere_to_convert() {
         let c = EpochClock::new(10 * 2016 + 1007);
-        let rows = plan(&c, &rate(0.0), 4096.0, |_| 0.0, 3);
+        let rows = plan(&c, &rate(0.0), 4096.0, |_| 0.0, |_| None, 1000.0);
         assert_eq!(next_available(&rows), None);
     }
 
@@ -245,9 +278,56 @@ mod tests {
             ths: 1.0,
             hours_left: Some(200.0),
         }];
-        let rows = plan(&c, &supply, 0.0, |_| 0.0, 2);
+        let rows = plan(
+            &c,
+            &supply,
+            0.0,
+            |_| 0.0,
+            |_| None,
+            168.0 + 2.0 * EPOCH_HOURS,
+        );
         assert!((rows[0].capacity_tih - 168.0 * TIH_PER_THH).abs() < 1e-6);
         assert!((rows[1].capacity_tih - 32.0 * TIH_PER_THH).abs() < 1e-6);
         assert_eq!(rows[2].capacity_tih, 0.0);
+    }
+
+    #[test]
+    fn the_horizon_brings_epochs_into_view() {
+        // 168 h left in epoch 10; a two-week horizon reaches half of 11.
+        let c = EpochClock::new(10 * 2016 + 1007);
+        let rows = plan(&c, &rate(1.0), 0.0, |_| 0.0, |_| None, 336.0);
+        assert_eq!(
+            rows.iter().map(|r| r.epoch).collect::<Vec<_>>(),
+            vec![10, 11]
+        );
+        assert!((rows[1].hours_in_window - 168.0).abs() < 1e-9);
+        assert!((rows[1].capacity_tih - 168.0 * TIH_PER_THH).abs() < 1e-6);
+        // A shorter horizon sells only part of the current epoch.
+        let rows = plan(&c, &rate(1.0), 0.0, |_| 0.0, |_| None, 24.0);
+        assert_eq!(rows.len(), 1);
+        assert!((rows[0].capacity_tih - 24.0 * TIH_PER_THH).abs() < 1e-6);
+        // An hour later the window has slid an hour into epoch 11... (one
+        // block = 10 min, so six blocks later)
+        let c = EpochClock::new(10 * 2016 + 1013);
+        let rows = plan(&c, &rate(1.0), 0.0, |_| 0.0, |_| None, 336.0);
+        assert!((rows[1].hours_in_window - 169.0).abs() < 1e-9);
+        assert_eq!(last_epoch(&c, 167.0), 10);
+    }
+
+    #[test]
+    fn planned_hashrate_sizes_future_epochs() {
+        let c = EpochClock::new(10 * 2016 + 1007);
+        let rows = plan(
+            &c,
+            &rate(1.0),
+            0.0,
+            |_| 0.0,
+            |e| (e == 11).then_some(3.0),
+            168.0 + 2.0 * EPOCH_HOURS,
+        );
+        // The current epoch keeps the measured rate; 11 uses the plan.
+        assert!((rows[0].capacity_tih - 168.0 * TIH_PER_THH).abs() < 1e-6);
+        assert!((rows[1].capacity_tih - 3.0 * 336.0 * TIH_PER_THH).abs() < 1e-6);
+        assert!((rows[2].capacity_tih - 336.0 * TIH_PER_THH).abs() < 1e-6);
     }
 }

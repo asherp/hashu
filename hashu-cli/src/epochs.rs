@@ -7,7 +7,7 @@
 //!   current epoch.
 //! - [`router`] serves:
 //!   - `GET /v1/hashu/epochs`: the current epoch, the next
-//!     [`LOOKAHEAD`] with their capacity and keysets, and which keysets
+//!     epochs the seller's horizon reaches, with their capacity and keysets, and which keysets
 //!     are dated or perpetual.
 //!   - `GET /v1/hashu/epochs/{epoch}/keys`: an epoch's public keys, also
 //!     for epochs that have not started (to build outputs and check DLEQ).
@@ -17,7 +17,7 @@
 //!     its outputs with that epoch's key.
 //!
 //!   - `POST /v1/hashu/epochs/{epoch}/mint/quote/{method}`: buy a future
-//!     epoch (up to [`LOOKAHEAD`] ahead) over a payment rail. Same body and
+//!     epoch (within the seller's horizon) over a payment rail. Same body and
 //!     answer as `POST /v1/mint/quote/{method}`; the quote is checked
 //!     against that epoch's capacity instead of the live stock. Pay it and
 //!     follow it at the usual `GET /v1/mint/quote/{method}/{quote}`.
@@ -29,7 +29,7 @@
 //! `{"epoch": "auto" | <n>, "amount_tih": <x>}` (`POST /v1/melt/quote/epoch`
 //! then `POST /v1/melt/epoch`), then fetch and sign as above. `auto` goes to
 //! the current epoch if it has room, else the next epoch that has; an
-//! epoch number up to [`LOOKAHEAD`] ahead buys into that epoch.
+//! epoch number within the horizon buys into that epoch.
 
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -44,7 +44,7 @@ use cdk::nuts::{BlindedMessage, MeltQuoteState, PaymentMethod};
 use cdk::Mint;
 use hashu_core::epoch::{start_height, EpochClock, Supply, TARGET_BLOCK_SECS};
 use hashu_mint::capacity::{now_ms, CapacityBook};
-use hashu_mint::epoch::{conversion_id, public_keyset, Epochs, LOOKAHEAD, METHOD};
+use hashu_mint::epoch::{conversion_id, public_keyset, Epochs, PlanInput, METHOD};
 use hashu_mint::oracle::esplora::EsploraClient;
 use hashu_mint::payment::tih_unit;
 use serde::Deserialize;
@@ -102,7 +102,13 @@ pub fn plan_inputs(capacity: Arc<CapacityBook>) -> hashu_mint::epoch::PlanInputs
                 hours_left: Some(r.hours_left),
             });
         }
-        (supply, s.owed_tih)
+        PlanInput {
+            supply,
+            carried_tih: s.owed_tih,
+            horizon_hours: capacity
+                .live_horizon_hours()
+                .unwrap_or(hashu_mint::capacity::EPOCH_DEFAULT_HORIZON_HOURS),
+        }
     })
 }
 
@@ -202,8 +208,9 @@ async fn index(State(c): State<Ctx>) -> Response {
     };
     let current = clock.current();
     let now_s = now_ms() / 1000;
-    let rows = c.epochs.plan(LOOKAHEAD).unwrap_or_default();
-    let epochs: Vec<Value> = (current..=current + LOOKAHEAD)
+    let rows = c.epochs.plan().unwrap_or_default();
+    let last = c.epochs.last_epoch().unwrap_or(current);
+    let epochs: Vec<Value> = (current..=last)
         .map(|e| {
             let row = rows.iter().find(|r| r.epoch == e);
             json!({
@@ -213,6 +220,7 @@ async fn index(State(c): State<Ctx>) -> Response {
                 "starts_at": now_s + (clock.hours_until(e) * 3600.0) as u64,
                 "keyset_id": c.epochs.keyset_for(e).map(|k| k.id.to_string()),
                 "current": e == current,
+                "hours_in_window": row.map(|r| r.hours_in_window),
                 "capacity_tih": row.map(|r| r.capacity_tih.floor() as u64),
                 "owed_tih": row.map(|r| r.owed_tih.ceil() as u64),
                 "free_tih": row.map(|r| r.free_tih.floor() as u64),
@@ -240,7 +248,7 @@ async fn index(State(c): State<Ctx>) -> Response {
         "epoch": current,
         "blocks_left": clock.blocks_left(),
         "ends_at": now_s + clock.blocks_left() * TARGET_BLOCK_SECS,
-        "lookahead": LOOKAHEAD,
+        "horizon_hours": c.epochs.horizon_hours(),
         "epochs": epochs,
         "keysets": keysets,
         "convert": {
@@ -255,8 +263,8 @@ async fn keys(State(c): State<Ctx>, Path(epoch): Path<u64>) -> Response {
     let Some(clock) = c.epochs.clock() else {
         return error(StatusCode::SERVICE_UNAVAILABLE, "epoch clock not ready");
     };
-    if epoch > clock.current() + LOOKAHEAD {
-        return error(StatusCode::NOT_FOUND, "epoch too far ahead");
+    if epoch > c.epochs.last_epoch().unwrap_or(clock.current()) {
+        return error(StatusCode::NOT_FOUND, "epoch beyond the horizon");
     }
     match c.epochs.keyset_for(epoch) {
         Some(k) => {
@@ -510,7 +518,7 @@ pub async fn guard(
     .await
 }
 
-/// List the next [`LOOKAHEAD`] epochs' keysets as inactive in
+/// List the future epochs the horizon reaches as inactive keysets in
 /// `GET /v1/keysets`, and serve their keys at `GET /v1/keys/{id}`, so
 /// wallets can recognise a future-epoch voucher. cdk itself still does not
 /// know them, so the mint refuses to swap or redeem them until their epoch
@@ -524,10 +532,8 @@ pub async fn list_future_keysets(
         return next.run(req).await;
     }
     let path = req.uri().path().to_string();
-    let Some(current) = epochs.clock().map(|c| c.current()) else {
-        return next.run(req).await;
-    };
-    let future: Vec<_> = (current + 1..=current + LOOKAHEAD)
+    let future: Vec<_> = epochs
+        .future_epochs()
         .filter_map(|e| epochs.keyset_for(e))
         .collect();
     if let Some(id) = path.strip_prefix("/v1/keys/") {

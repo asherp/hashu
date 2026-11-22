@@ -17,7 +17,7 @@
 //!   marks the proofs) and reserves the same TiH in a target epoch:
 //!   `auto` is the current epoch if it has room and otherwise the next
 //!   epoch with room ([`hashu_core::epoch::next_available`]); an explicit
-//!   epoch, up to [`LOOKAHEAD`] ahead, is how later epochs are sold
+//!   epoch, within the horizon ahead, is how later epochs are sold
 //!   separately. The wallet then has the outputs signed with that epoch's
 //!   key ([`Epochs::sign`]). TiH for TiH: vouchers count work.
 //! - **Perpetual vouchers.** Keysets from before epochs were turned on
@@ -56,16 +56,28 @@ use crate::payment::tih_unit;
 /// Melt method that converts vouchers to another epoch.
 pub const METHOD: &str = "epoch";
 
-/// Epochs ahead of the current one that can be sold or converted into.
-pub const LOOKAHEAD: u64 = 3;
+/// Most epochs ahead of the current one a horizon can reach (two years).
+pub const MAX_EPOCHS_AHEAD: u64 = 52;
 
-/// How far the planner looks for room when converting `auto`: two years.
-/// An expired voucher with nowhere to go stays as it is (still valid).
-pub const SEARCH_EPOCHS: u64 = 52;
+/// Sales horizon when the seller has set none: one epoch.
+pub const DEFAULT_HORIZON_HOURS: f64 = hashu_core::epoch::EPOCH_HOURS;
 
-/// Where the planner's supply and carried TiH come from (the capacity
-/// book and the mint's obligations): `(supply, carried_tih)`.
-pub type PlanInputs = Arc<dyn Fn() -> (Vec<Supply>, f64) + Send + Sync>;
+/// What the planner sells against, from the capacity book and the mint's
+/// obligations.
+#[derive(Debug, Clone, Default)]
+pub struct PlanInput {
+    pub supply: Vec<Supply>,
+    /// TiH owed now that is not dated to a later epoch.
+    pub carried_tih: f64,
+    /// The seller's horizon: epochs sell what falls in `[now, now + it]`.
+    pub horizon_hours: f64,
+}
+
+pub type PlanInputs = Arc<dyn Fn() -> PlanInput + Send + Sync>;
+
+/// A seller's planned TH/s for future epoch `e` (hashrate planner); `None`
+/// sizes that epoch from the measured rate and rentals.
+pub type PlannedHashrate = Arc<dyn Fn(u64) -> Option<f64> + Send + Sync>;
 
 /// Epoch `epoch`'s keyset sits at derivation index `index`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,6 +177,7 @@ pub struct Epochs {
     inner: Mutex<Persisted>,
     clock: Mutex<Option<EpochClock>>,
     inputs: Mutex<Option<PlanInputs>>,
+    planned: Mutex<Option<PlannedHashrate>>,
     version: Mutex<KeySetVersion>,
     path: Option<PathBuf>,
     xpriv: Xpriv,
@@ -205,6 +218,7 @@ impl Epochs {
             inner: Mutex::new(p),
             clock: Mutex::new(None),
             inputs: Mutex::new(None),
+            planned: Mutex::new(None),
             version: Mutex::new(KeySetVersion::Version01),
             path,
             xpriv,
@@ -234,6 +248,45 @@ impl Epochs {
 
     pub fn set_plan_inputs(&self, f: PlanInputs) {
         *self.inputs.lock().unwrap() = Some(f);
+    }
+
+    /// Hook for a hashrate planner: future epochs with a planned rate are
+    /// sized from it instead of the measured average. The current epoch
+    /// always sells from what is measured.
+    pub fn set_planned_hashrate(&self, f: PlannedHashrate) {
+        *self.planned.lock().unwrap() = Some(f);
+    }
+
+    fn input(&self) -> Option<PlanInput> {
+        let f = self.inputs.lock().unwrap().clone()?;
+        Some(f())
+    }
+
+    /// The seller's horizon in hours.
+    pub fn horizon_hours(&self) -> f64 {
+        self.input()
+            .map(|i| i.horizon_hours)
+            .filter(|h| h.is_finite() && *h > 0.0)
+            .unwrap_or(DEFAULT_HORIZON_HOURS)
+    }
+
+    /// Last epoch the horizon reaches: epochs up to it are listed (future
+    /// ones as inactive keysets) and sold.
+    pub fn last_epoch(&self) -> Option<u64> {
+        let clock = self.clock()?;
+        Some(
+            hashu_core::epoch::last_epoch(&clock, self.horizon_hours())
+                .min(clock.current() + MAX_EPOCHS_AHEAD),
+        )
+    }
+
+    /// Future epochs the horizon reaches.
+    pub fn future_epochs(&self) -> std::ops::RangeInclusive<u64> {
+        match (self.clock(), self.last_epoch()) {
+            (Some(c), Some(last)) => c.current() + 1..=last,
+            #[allow(clippy::reversed_empty_ranges)]
+            _ => 1..=0,
+        }
     }
 
     pub fn anchor(&self) -> Option<Anchor> {
@@ -266,14 +319,13 @@ impl Epochs {
     }
 
     /// Epoch a keyset is dated to; `None` for a perpetual keyset (or one
-    /// this mint does not know). Future epochs within [`LOOKAHEAD`] are
+    /// this mint does not know). Future epochs within the horizon are
     /// recognised too.
     pub fn epoch_of_keyset(&self, id: &str) -> Option<u64> {
         if let Some(e) = self.inner.lock().unwrap().keysets.get(id) {
             return Some(*e);
         }
-        let current = self.clock()?.current();
-        (current + 1..=current + LOOKAHEAD)
+        self.future_epochs()
             .find(|e| self.keyset_for(*e).is_some_and(|k| k.id.to_string() == id))
     }
 
@@ -410,7 +462,7 @@ impl Epochs {
     }
 
     /// Reserve `amount_tih` of future epoch `epoch` for mint quote
-    /// `quote_id`. Only epochs after the current one, up to [`LOOKAHEAD`]:
+    /// `quote_id`. Only epochs after the current one, within the horizon:
     /// the current epoch sells through the live stock.
     pub fn reserve_purchase(
         &self,
@@ -493,19 +545,23 @@ impl Epochs {
         self.dated().range(..=through).map(|(_, v)| *v).sum()
     }
 
-    /// The plan for the current epoch and `lookahead` more.
-    pub fn plan(&self, lookahead: u64) -> Option<Vec<PlanRow>> {
+    /// The plan for every epoch the horizon reaches.
+    pub fn plan(&self) -> Option<Vec<PlanRow>> {
         let clock = self.clock()?;
-        let inputs = self.inputs.lock().unwrap().clone()?;
-        let (supply, carried) = inputs();
+        let input = self.input()?;
+        let horizon = self.horizon_hours();
+        let planned = self.planned.lock().unwrap().clone();
         let dated = self.dated();
-        Some(plan(
+        let mut rows = plan(
             &clock,
-            &supply,
-            carried,
+            &input.supply,
+            input.carried_tih,
             |e| dated.get(&e).copied().unwrap_or(0) as f64,
-            lookahead,
-        ))
+            |e| planned.as_ref().and_then(|f| f(e)),
+            horizon,
+        );
+        rows.truncate(MAX_EPOCHS_AHEAD as usize + 1);
+        Some(rows)
     }
 
     /// Where `amount_tih` would go for `target`, or why it can't.
@@ -516,18 +572,18 @@ impl Epochs {
         let current = clock.current();
         match target {
             Target::Auto => {
-                let rows = self.plan(SEARCH_EPOCHS).ok_or("capacity not counted yet")?;
+                let rows = self.plan().ok_or("capacity not counted yet")?;
                 next_available(&rows).ok_or_else(|| {
                     "no epoch has capacity; the vouchers stay valid as they are".into()
                 })
             }
             Target::Epoch(e) if e < current => Err(format!("epoch {e} has ended")),
-            Target::Epoch(e) if e > current + LOOKAHEAD => Err(format!(
-                "epoch {e} is too far ahead (up to {})",
-                current + LOOKAHEAD
+            Target::Epoch(e) if e > self.last_epoch().unwrap_or(current) => Err(format!(
+                "epoch {e} is beyond the horizon (up to {})",
+                self.last_epoch().unwrap_or(current)
             )),
             Target::Epoch(e) => {
-                let rows = self.plan(LOOKAHEAD).ok_or("capacity not counted yet")?;
+                let rows = self.plan().ok_or("capacity not counted yet")?;
                 let row = rows
                     .iter()
                     .find(|r| r.epoch == e)
@@ -715,7 +771,7 @@ impl MintPayment for EpochConverter {
         let mut custom = std::collections::HashMap::new();
         custom.insert(
             METHOD.to_string(),
-            serde_json::json!({ "lookahead": LOOKAHEAD }).to_string(),
+            serde_json::json!({ "max_epochs_ahead": MAX_EPOCHS_AHEAD }).to_string(),
         );
         Ok(SettingsResponse {
             unit: tih_unit().to_string(),
@@ -822,14 +878,13 @@ mod tests {
         });
         // 1,008 blocks left in epoch 10.
         e.set_clock(EpochClock::new(10 * 2016 + 1007));
-        e.set_plan_inputs(Arc::new(|| {
-            (
-                vec![Supply {
-                    ths: 1.0,
-                    hours_left: None,
-                }],
-                0.0,
-            )
+        e.set_plan_inputs(Arc::new(|| PlanInput {
+            supply: vec![Supply {
+                ths: 1.0,
+                hours_left: None,
+            }],
+            carried_tih: 0.0,
+            horizon_hours: 168.0 + 3.0 * 336.0,
         }));
         e
     }
@@ -860,7 +915,7 @@ mod tests {
         let e = epochs();
         assert_eq!(e.resolve(Target::Auto, 4096), Ok(10));
         assert!(e.resolve(Target::Epoch(9), 1).is_err());
-        assert!(e.resolve(Target::Epoch(10 + LOOKAHEAD + 1), 1).is_err());
+        assert!(e.resolve(Target::Epoch(14), 1).is_err());
         assert_eq!(e.resolve(Target::Epoch(12), 4096), Ok(12));
     }
 
@@ -868,14 +923,13 @@ mod tests {
     fn auto_rolls_to_the_next_epoch_when_the_current_is_full() {
         let e = epochs();
         let cap0 = hashu_core::denom::tih_from_ths_hours(1.0, 168.0);
-        e.set_plan_inputs(Arc::new(move || {
-            (
-                vec![Supply {
-                    ths: 1.0,
-                    hours_left: None,
-                }],
-                cap0 + 1.0,
-            )
+        e.set_plan_inputs(Arc::new(move || PlanInput {
+            supply: vec![Supply {
+                ths: 1.0,
+                hours_left: None,
+            }],
+            carried_tih: cap0 + 1.0,
+            horizon_hours: 168.0 + 3.0 * 336.0,
         }));
         assert_eq!(e.resolve(Target::Auto, 4096), Ok(11));
         // The current epoch is oversold, so an explicit request for it fails.
@@ -891,6 +945,31 @@ mod tests {
         assert_eq!(e.resolve(Target::Epoch(11), 10), Ok(11));
         assert_eq!(e.signed_outside_cdk(10), 0);
         assert_eq!(e.signed_outside_cdk(11), cap - 10);
+    }
+
+    #[test]
+    fn the_horizon_sets_which_epochs_are_on_sale() {
+        let e = epochs();
+        // 168 h left in epoch 10 and a 168 + 3 × 336 h horizon: 11-13.
+        assert_eq!(e.future_epochs(), 11..=13);
+        assert!(e.resolve(Target::Epoch(14), 1).is_err());
+        // A two-week horizon reaches only half of epoch 11.
+        e.set_plan_inputs(Arc::new(|| PlanInput {
+            supply: vec![Supply {
+                ths: 1.0,
+                hours_left: None,
+            }],
+            carried_tih: 0.0,
+            horizon_hours: 336.0,
+        }));
+        assert_eq!(e.future_epochs(), 11..=11);
+        let half = hashu_core::denom::tih_from_ths_hours(1.0, 168.0).floor() as u64;
+        assert_eq!(e.resolve(Target::Epoch(11), half), Ok(11));
+        assert!(e.resolve(Target::Epoch(11), half + 2).is_err());
+        assert!(e.resolve(Target::Epoch(12), 1).is_err());
+        // A planned 4 TH/s for epoch 11 sizes it instead of the measured 1.
+        e.set_planned_hashrate(Arc::new(|ep| (ep == 11).then_some(4.0)));
+        assert_eq!(e.resolve(Target::Epoch(11), 3 * half), Ok(11));
     }
 
     #[test]
@@ -962,14 +1041,13 @@ mod tests {
 
         let e = Epochs::open(&seed, amounts.clone(), None).unwrap();
         e.set_clock(EpochClock::new(10 * 2016 + 5));
-        e.set_plan_inputs(Arc::new(|| {
-            (
-                vec![Supply {
-                    ths: 1.0,
-                    hours_left: None,
-                }],
-                0.0,
-            )
+        e.set_plan_inputs(Arc::new(|| PlanInput {
+            supply: vec![Supply {
+                ths: 1.0,
+                hours_left: None,
+            }],
+            carried_tih: 0.0,
+            horizon_hours: 168.0 + 3.0 * 336.0,
         }));
         let rotated = e.sync(&mint, keystore.as_ref(), true).await.unwrap();
         assert_eq!(rotated.len(), 1);
