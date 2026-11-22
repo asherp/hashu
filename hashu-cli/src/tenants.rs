@@ -246,6 +246,8 @@ impl Tenants {
         let t = self.get(name).await.map_err(|e| e.to_string())?;
         let old = t.settings.read().unwrap_or_else(|e| e.into_inner()).clone();
         let rail_changed = old.lnurl != new.lnurl;
+        // The npub is in the mint's NUT-06 contact: rebuild to show it.
+        let rebuild = rail_changed || old.npub != new.npub;
         if rail_changed {
             if let Some(a) = &new.lnurl {
                 (self.cfg.probe)(a.parse()?).await?;
@@ -257,7 +259,7 @@ impl Tenants {
         if old.horizon_hours != new.horizon_hours {
             t.pricer.horizon_changed(hashu_mint::capacity::now_ms());
         }
-        if rail_changed {
+        if rebuild {
             if let Some(t) = self.mints.lock().await.remove(name) {
                 let name = name.to_string();
                 // Stop after the current request has its answer.
@@ -309,9 +311,19 @@ impl Tenants {
                 "TiH backed by {name}'s own rigs, redeemed as hashrate through Hashu"
             ))
             .with_urls(vec![url.clone()]);
-        // The supplier mint's Nostr identity (#116): its receipt key.
+        // Contact (NUT-06): the supplier's own npub first, where wallets
+        // send direct messages; then the mint's Nostr identity (#116), its
+        // receipt key, which signs its profile and record.
+        let supplier_npub = settings
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .npub
+            .clone();
         {
             let mut contacts = Vec::new();
+            if let Some(n) = &supplier_npub {
+                contacts.push(cdk::nuts::ContactInfo::new("nostr".into(), n.clone()));
+            }
             crate::mint::add_nostr_contact(
                 &mut contacts,
                 &hashu_mint::reliability::receipt_keys(&dir.join("reliability"))
@@ -465,14 +477,9 @@ impl Tenants {
                     .map(|e| hashu_mint::discovery::Tip::supplier(name, &e)),
             );
             app = app.merge(crate::reliability::router(rel.clone(), name));
-            // Direct messages to this mint go to its supplier: their
-            // dashboard key reads and answers them.
-            let (registry, who) = (self.registry.clone(), name.to_string());
-            let auth: crate::inbox::AuthFn = Arc::new(move |h: &HeaderMap| {
-                let key = h.get(KEY_HEADER).and_then(|v| v.to_str().ok());
-                registry.check_key(&who, key)
-            });
-            app = app.merge(crate::inbox::router(rel.clone(), name, Some(auth)));
+            // Direct messages to this mint go to the supplier's own npub,
+            // never to a key Hashu holds (none without an npub).
+            rel.set_message_target(name, supplier_npub.clone());
         }
         if let (Some(e), Some(p)) = (&epochs, &planner) {
             app = app

@@ -1,17 +1,18 @@
 //! Direct messages to a mint (NIP-17), live.
 //!
-//! Every mint this daemon serves (the operator's and each supplier's) can be
-//! messaged at its Nostr key, the receipt key behind its profile. The
-//! daemon polls its relays (`HASHU_NOSTR_RELAYS`) for gift wraps to those
-//! keys, opens them with [`hashu_mint::inbox`], and the dashboards read and
-//! answer them:
+//! The operator's mint can be messaged at its Nostr key, the receipt key
+//! behind its profile. The daemon polls its relays (`HASHU_NOSTR_RELAYS`)
+//! for gift wraps to that key, opens them with [`hashu_mint::inbox`], and
+//! the operator reads and answers them:
 //!
 //! - operator, on the control port (operator login): `GET /api/inbox`,
 //!   `POST /api/inbox/reply` `{ "peer", "text" }`, `POST /api/inbox/read`
 //!   `{ "peer" }`.
-//! - supplier, on `<name>.<supplier domain>` with the dashboard key in
-//!   `x-hashu-key`: the same three routes, for that supplier's mint only.
-//!   Messages to a supplier's mint go to the supplier, not the operator.
+//!
+//! Supplier mints are not read here: their messages go to the supplier's
+//! own npub (from sign-up or the dashboard), which the mint lists first in
+//! its NUT-06 contact and names in `/v1/hashu/reliability` `messages`. Hashu
+//! never reads them.
 //!
 //! Replies are signed by the mint's key and sent to the mint's relays plus
 //! the sender's NIP-17 inbox relays (kind 10050) when they publish some.
@@ -33,6 +34,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::reliability::Reliability;
+use hashu_proxy::reliability::OPERATOR_MINT;
 
 /// How often relays are asked for new gift wraps.
 const POLL: Duration = Duration::from_secs(90);
@@ -93,11 +95,11 @@ impl Reliability {
 
     async fn poll(&self, client: &nostr_sdk::Client) {
         let now = now_s();
+        // Only the operator's mint reads messages at its own key. Supplier
+        // mints point wallets at the supplier's own npub instead.
         let mut by_key: HashMap<PublicKey, String> = HashMap::new();
-        for m in self.mints() {
-            if let Some(st) = self.store(&m) {
-                by_key.insert(st.keys().public_key(), m);
-            }
+        if let Some(st) = self.store(OPERATOR_MINT) {
+            by_key.insert(st.keys().public_key(), OPERATOR_MINT.to_string());
         }
         if by_key.is_empty() {
             return;
@@ -312,7 +314,7 @@ mod tests {
     use axum::http::Request;
     use hashu_core::redemption::RedemptionLedger;
     use hashu_mint::reliability::PublishConfig;
-    use nostr::{EventBuilder, Keys};
+    use nostr::{EventBuilder, Keys, ToBech32};
     use tower::ServiceExt;
 
     #[tokio::test]
@@ -388,5 +390,29 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(inbox.unread(), 0);
+
+        // The index names whom to message: the operator mint's own key; a
+        // supplier mint, the supplier's npub or nobody.
+        assert_eq!(rel.message_target(""), Some(store.npub()));
+        let npub = Keys::generate().public_key().to_bech32().unwrap();
+        rel.set_message_target("alice", Some(npub.clone()));
+        assert_eq!(rel.message_target("alice"), Some(npub));
+        rel.set_message_target("bob", None);
+        assert_eq!(rel.message_target("bob"), None);
+        let idx: Router = crate::reliability::router(rel.clone(), "");
+        let res = idx
+            .oneshot(
+                Request::get("/v1/hashu/reliability")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["messages"]["npub"], store.npub());
+        assert_eq!(v["messages"]["pubkey"], store.pubkey());
     }
 }

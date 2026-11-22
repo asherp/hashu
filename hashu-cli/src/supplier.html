@@ -28,18 +28,6 @@ button { margin-top:16px; font:inherit; font-weight:600; padding:10px 18px; bord
 .msg.good { color:var(--good); }
 details summary { cursor:pointer; font-weight:600; }
 [hidden] { display:none !important; }
-.unread { background:var(--brand); color:#111; border-radius:99px; font-size:12px; font-weight:700; padding:0 8px; margin-left:6px; }
-.convs { list-style:none; margin:12px 0 0; padding:0; border:1px solid var(--line); border-radius:8px; max-height:300px; overflow-y:auto; }
-.convs li { padding:10px 12px; border-bottom:1px solid var(--line); cursor:pointer; }
-.convs li:last-child { border-bottom:0; }
-.convs li.sel { background:rgba(232,133,12,.12); }
-.who { display:flex; justify-content:space-between; gap:8px; font-weight:600; font-family:ui-monospace,Menlo,monospace; font-size:13px; }
-.prev { color:var(--ink-2); font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.bubbles { display:flex; flex-direction:column; gap:6px; max-height:320px; overflow-y:auto; margin:12px 0; }
-.bubble { max-width:85%; padding:8px 12px; border-radius:12px; background:var(--line); white-space:pre-wrap; overflow-wrap:anywhere; }
-.bubble.out { align-self:flex-end; background:rgba(232,133,12,.16); }
-.bubble small { display:block; color:var(--ink-2); font-size:12px; }
-textarea { width:100%; min-height:72px; font:inherit; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); resize:vertical; }
 h2 { font-size:18px; margin:0 0 4px; }
 .head { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
 .head select { font:inherit; font-size:14px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
@@ -130,6 +118,8 @@ button.ghost { background:transparent; color:var(--ink); border-color:var(--line
         <input id="s-horizon" type="number" min="1" step="1">
         <label for="s-ln">Lightning address or LNURL <span class="hint">where buyers pay: an address or your own LNURL-pay endpoint (lnurl1…, lnurlp:// or https://); needs payment verification (LUD-21)</span></label>
         <input id="s-ln" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="you@wallet.example or lnurl1…">
+        <label for="s-npub">Your npub <span class="hint">optional; wallets send private messages (NIP-17) for your mint to this Nostr key, so they reach you, not Hashu. Read them in any Nostr client that supports NIP-17 DMs.</span></label>
+        <input id="s-npub" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="npub1…">
         <button>Save</button>
         <button type="button" id="restock">Restock now</button>
       </form>
@@ -137,17 +127,6 @@ button.ghost { background:transparent; color:var(--ink); border-color:var(--line
     </details>
   </div>
 
-  <div class="card" id="inbox-card" hidden>
-    <b>Messages</b><span class="unread" id="inbox-unread" hidden></span>
-    <p class="hint" style="margin:4px 0 0">Private Nostr messages (NIP-17) that wallets send to your mint's key. They reach you, not the Hashu operator. Replies are signed by your mint.</p>
-    <ul class="convs" id="inbox-convs"></ul>
-    <div id="inbox-thread" hidden>
-      <div class="bubbles" id="inbox-bubbles"></div>
-      <textarea id="inbox-text" maxlength="4000" placeholder="Reply as your mint"></textarea>
-      <button type="button" id="inbox-send">Send reply</button>
-      <div class="msg" id="inbox-msg" hidden></div>
-    </div>
-  </div>
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -218,68 +197,11 @@ $('unlock').addEventListener('click', async () => {
     $('s-ask-eq').textContent = askEquiv(s.ask_sats_per_eih);
     $('s-horizon').value = s.horizon_hours;
     $('s-ln').value = s.lnurl ?? '';
+    $('s-npub').value = s.npub ?? '';
     $('settings').hidden = false;
-    pollInbox();
   } catch (e) { say(e.message, false); }
 });
 
-// ---- direct messages (NIP-17) to this mint ----
-const inbox = { data: null, peer: null };
-const shortNpub = (n) => n ? n.slice(0, 12) + '…' + n.slice(-6) : '';
-const when = (s) => new Date(s * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-async function inboxApi(path, body) {
-  const r = await fetch(path, {
-    method: body ? 'POST' : 'GET',
-    headers: { 'x-hashu-key': $('secret').value.trim(), 'content-type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || r.statusText);
-  return j;
-}
-async function pollInbox() {
-  if (!$('secret').value.trim()) return;
-  try { inbox.data = await inboxApi('/api/inbox'); } catch (e) { return; }
-  $('inbox-card').hidden = false;
-  renderInbox();
-}
-function renderInbox() {
-  const d = inbox.data, convs = d.conversations || [];
-  $('inbox-unread').hidden = !d.unread;
-  $('inbox-unread').textContent = d.unread;
-  $('inbox-convs').innerHTML = convs.length ? convs.map((c) => {
-    const last = c.messages[c.messages.length - 1] || {};
-    return `<li data-peer="${esc(c.peer)}" class="${c.peer === inbox.peer ? 'sel' : ''}"><div class="who"><span>${esc(shortNpub(c.npub))}</span>${c.unread ? `<span class="unread">${c.unread}</span>` : `<span class="hint">${esc(when(c.last_at))}</span>`}</div><div class="prev">${last.outgoing ? 'You: ' : ''}${esc(last.text)}</div></li>`;
-  }).join('') : `<li class="hint">${d.on ? 'No messages yet.' : 'Messages are off on this server (no Nostr relays).'}</li>`;
-  const c = convs.find((x) => x.peer === inbox.peer);
-  $('inbox-thread').hidden = !c;
-  if (!c) return;
-  const box = $('inbox-bubbles');
-  box.innerHTML = c.messages.map((m) => `<div class="bubble ${m.outgoing ? 'out' : ''}">${esc(m.text)}<small>${esc(when(m.created_at))}</small></div>`).join('');
-  box.scrollTop = box.scrollHeight;
-}
-$('inbox-convs').addEventListener('click', async (e) => {
-  const li = e.target.closest('li[data-peer]');
-  if (!li) return;
-  inbox.peer = li.dataset.peer;
-  $('inbox-msg').hidden = true;
-  renderInbox();
-  try { await inboxApi('/api/inbox/read', { peer: inbox.peer }); pollInbox(); } catch (err) {}
-});
-$('inbox-send').addEventListener('click', async () => {
-  const text = $('inbox-text').value.trim(), m = $('inbox-msg');
-  if (!text || !inbox.peer) return;
-  $('inbox-send').disabled = true;
-  try {
-    await inboxApi('/api/inbox/reply', { peer: inbox.peer, text });
-    $('inbox-text').value = '';
-    m.textContent = 'Sent.'; m.className = 'msg good'; m.hidden = false;
-    await pollInbox();
-  } catch (e) { m.textContent = e.message; m.className = 'msg bad'; m.hidden = false; }
-  finally { $('inbox-send').disabled = false; }
-});
-pollInbox();
-setInterval(pollInbox, 20000);
 
 $('settings').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -288,6 +210,7 @@ $('settings').addEventListener('submit', async (e) => {
       ask_sats_per_eih: $('s-ask').value ? Math.round(Number($('s-ask').value)) : null,
       horizon_hours: Number($('s-horizon').value),
       lnurl: $('s-ln').value.trim() || null,
+      npub: $('s-npub').value.trim() || null,
     });
     say('Saved.', true);
     status();
