@@ -142,7 +142,11 @@ inbound Stratum connections it is authorized to direct.
   miner's connection so it reconnects onto the new route (the only
   behaviour under `--switch-mode reconnect`). While routed to a
   redemption the proxy rewrites the worker name in `mining.authorize`
-  and `mining.submit` to the redeemer's. If the redeemer's pool is
+  and `mining.submit` to the redeemer's account with the selling mint's
+  host as the worker label (`bc1q….mint.hashu.io`, `acct.alice.hashu.io`;
+  the redeemer's own label is replaced, and a name with `@` is left as
+  typed). On the default pool the miner's own name passes through
+  (`alice.rig1`), with `pw=` / `pool=` taken out. If the redeemer's pool is
   unreachable the miner stays on (or falls back to) the default pool for
   60 s.
 
