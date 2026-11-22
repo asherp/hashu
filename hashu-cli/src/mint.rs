@@ -956,7 +956,13 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         Router::new(upstream.clone(), ledger.clone())
             .with_switch_mode(args.switch_mode)
             .with_home_pools(args.home.config()?)
-            .with_suppliers(registry.clone()),
+            .with_suppliers(registry.clone())
+            // A redeemer's pool sees the rig as <account>.<mint host>.
+            .with_mint_hosts(hashu_proxy::router::MintHosts {
+                operator: mint_host(&args),
+                suppliers: supplier_base(&args, &registry)
+                    .map(|base| supplier_domain(&args).unwrap_or(base)),
+            }),
     );
     // The operator's own connected rigs, counted in capacity once the
     // operator sets a live horizon (operator GUI, "Live hashrate").
