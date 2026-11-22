@@ -60,6 +60,27 @@ impl ProxyMetrics {
             * hashu_core::redemption::HASHES_PER_DIFF_ONE as f64
     }
 
+    /// Add counters and work saved by an earlier run, so a restart carries
+    /// the totals on instead of starting from zero (see the operator's
+    /// telemetry store). Call before the proxy starts.
+    pub fn restore(&self, saved: &ProxyMetricsSnapshot, accepted_hashes: f64) {
+        self.connections_accepted
+            .fetch_add(saved.connections_accepted, Ordering::Relaxed);
+        self.shares_submitted
+            .fetch_add(saved.shares_submitted, Ordering::Relaxed);
+        self.shares_accepted
+            .fetch_add(saved.shares_accepted, Ordering::Relaxed);
+        self.shares_rejected
+            .fetch_add(saved.shares_rejected, Ordering::Relaxed);
+        self.shares_committed
+            .fetch_add(saved.shares_committed, Ordering::Relaxed);
+        self.shares_credited
+            .fetch_add(saved.shares_credited, Ordering::Relaxed);
+        self.add_accepted_work(
+            accepted_hashes / hashu_core::redemption::HASHES_PER_DIFF_ONE as f64,
+        );
+    }
+
     pub fn snapshot(&self) -> ProxyMetricsSnapshot {
         ProxyMetricsSnapshot {
             connections_accepted: self.connections_accepted.load(Ordering::Relaxed),
@@ -72,7 +93,7 @@ impl ProxyMetrics {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProxyMetricsSnapshot {
     pub connections_accepted: u64,
     pub shares_submitted: u64,

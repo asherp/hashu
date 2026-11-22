@@ -897,6 +897,41 @@ impl Router {
         v
     }
 
+    /// Each rig's work with how long ago its last share came, for saving
+    /// across a restart ([`Self::restore_rig_work`]).
+    pub fn rig_work_saved(&self) -> Vec<(String, f64, Duration)> {
+        let now = Instant::now();
+        let inner = self.lock();
+        let mut v: Vec<(String, f64, Duration)> = inner
+            .rig_work
+            .iter()
+            .filter(|(_, w)| now.saturating_duration_since(w.last) < RIG_WORK_IDLE)
+            .map(|(k, w)| (k.clone(), w.hashes, now.saturating_duration_since(w.last)))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
+    /// Carry on rig totals saved by an earlier run: `(label, hashes, time
+    /// since its last share)`. Rigs idle for [`RIG_WORK_IDLE`] are skipped.
+    /// Adds to work already counted under the same label.
+    pub fn restore_rig_work(&self, saved: Vec<(String, f64, Duration)>) {
+        let now = Instant::now();
+        let mut inner = self.lock();
+        for (rig, hashes, idle) in saved {
+            if idle >= RIG_WORK_IDLE || !hashes.is_finite() || hashes <= 0.0 {
+                continue;
+            }
+            let last = now.checked_sub(idle).unwrap_or(now);
+            let w = inner
+                .rig_work
+                .entry(rig)
+                .or_insert(RigWork { hashes: 0.0, last });
+            w.hashes += hashes;
+            w.last = w.last.max(last);
+        }
+    }
+
     /// Estimated hashrate of a live connection in hashes per second, once
     /// it has enough shares (see [`MIN_RATE_SHARES`]).
     pub fn hashrate_of(&self, conn: ConnectionId) -> Option<f64> {

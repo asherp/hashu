@@ -275,6 +275,13 @@ impl CapacityBook {
         }
     }
 
+    /// Write the book now (on shutdown; the live stock's hashrate average
+    /// is otherwise saved about once a minute).
+    pub fn save_now(&self) {
+        let g = self.inner.lock().unwrap();
+        self.save(&g.p);
+    }
+
     /// Replace the operator's rentals.
     pub fn set_manual(&self, rentals: Vec<Rental>) {
         let mut g = self.inner.lock().unwrap();

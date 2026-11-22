@@ -40,6 +40,8 @@ sha2 = { workspace = true }
 cdk = { version = "0.16", default-features = false, features = ["mint", "wallet"] }
 cdk-axum = "0.16"
 cdk-sqlite = "0.16"
+# Operator dashboard telemetry in the ops database (src/telemetry.rs).
+tokio-postgres = "0.7"
 axum = "0.8.9"
 tower = { version = "0.5", features = ["util"] }
 futures = "0.3"

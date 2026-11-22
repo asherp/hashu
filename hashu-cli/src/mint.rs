@@ -172,6 +172,17 @@ pub struct RunArgs {
     /// `/waitlist` on the control API). Off: `/waitlist/` is a 404.
     #[arg(long, env = "HASHU_WAITLIST", default_value_t = false)]
     pub waitlist: bool,
+    /// Ops database (Postgres URL) the operator dashboard's live feed is
+    /// saved to, so restarts keep the hashrate chart, per-rig work, proxy
+    /// counters and redemption times (see `telemetry.rs`). Empty: kept in
+    /// memory only.
+    #[arg(
+        long,
+        env = "HASHU_OPS_DATABASE_URL",
+        default_value = "",
+        hide_env_values = true
+    )]
+    pub ops_database_url: String,
     /// Nostr relays the hourly reliability record is posted to (comma
     /// separated). Empty: served only at /v1/hashu/reliability.
     #[arg(long, env = "HASHU_NOSTR_RELAYS", default_value = "")]
@@ -922,7 +933,6 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         ledger.clone(),
         Duration::from_secs(args.hashrate_window.max(1)),
     ));
-    tokio::spawn(meter.clone().run(Duration::from_secs(1)));
     let internal_url = if args.listen.ip().is_unspecified() {
         format!("http://127.0.0.1:{}", args.listen.port())
     } else {
@@ -985,6 +995,25 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     {
         let r = router.clone();
         meter.set_rig_source(Arc::new(move || r.rig_work()));
+    }
+    // Restore the dashboard's live feed before the first sample, then
+    // save it as it goes.
+    let telemetry = match args.ops_database_url.trim() {
+        "" => None,
+        url => Some(
+            crate::telemetry::Telemetry::open(
+                url,
+                meter.clone(),
+                metrics.clone(),
+                router.clone(),
+                Duration::from_secs(30),
+            )
+            .await,
+        ),
+    };
+    tokio::spawn(meter.clone().run(Duration::from_secs(1)));
+    if let Some(t) = &telemetry {
+        tokio::spawn(t.clone().run());
     }
     // The hourly reliability record of every mint served here (#109).
     let reliability = {
@@ -1146,9 +1175,10 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     let http_task = tokio::spawn(async move { axum::serve(http, app).await });
 
     // ---- proxy --------------------------------------------------------
+    let reliability_recorder = reliability.recorder();
     let crediter = Arc::new(
         ShareCrediter::with_audit(ledger.clone(), audit.clone())
-            .with_reliability(reliability.recorder()),
+            .with_reliability(reliability_recorder.clone()),
     );
     tokio::spawn(reliability.clone().run());
     let credit = CreditContext::new(crediter, router.clone());
@@ -1265,11 +1295,25 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             Ok(Err(e)) => Err(anyhow::Error::from(e).context("mint HTTP server")),
             Err(e) => Err(anyhow::Error::from(e).context("mint HTTP task")),
         },
-        _ = tokio::signal::ctrl_c() => {
+        _ = shutdown_signal() => {
             tracing::info!("shutting down");
             Ok(())
         }
     };
+    // Save what is otherwise written on a timer, so a deploy loses nothing.
+    if let Some(t) = &telemetry {
+        match tokio::time::timeout(Duration::from_secs(5), t.flush()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(error = %format!("{e:#}"), "could not save the dashboard feed")
+            }
+            Err(_) => tracing::warn!("saving the dashboard feed timed out"),
+        }
+    }
+    if let Err(e) = reliability_recorder.save() {
+        tracing::warn!(error = %e, "could not save reliability buckets");
+    }
+    capacity.save_now();
     if let Err(e) = mint.stop().await {
         tracing::warn!(error = %e, "mint stop");
     }
@@ -1277,6 +1321,27 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         t.stop_all().await;
     }
     result
+}
+
+/// Ctrl-C, or SIGTERM: what `docker stop` (and every deploy) sends. As
+/// PID 1 in the container an unhandled SIGTERM is ignored, so Docker
+/// waits 10 s and kills the daemon without saving.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+                return;
+            }
+            Err(e) => tracing::warn!(error = %e, "cannot listen for SIGTERM"),
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 /// Supplier mints, when a supplier registry is configured and this mint

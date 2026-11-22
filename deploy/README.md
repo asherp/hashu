@@ -55,6 +55,7 @@ again at startup, so running them without compose fails the same way.
 | `PHOENIXD_PASSWORD` | **yes** | phoenixd full-access password (stays inside phoenixd). `openssl rand -hex 32` |
 | `PHOENIXD_LIMITED_PASSWORD` | **yes** | phoenixd limited password given to hashu (invoices only, cannot send). |
 | `OPERATOR_PASSWORD_HASH` | **yes** | bcrypt hash for the operator login at `/operator/` (`caddy hash-password`). The mint checks it: five wrong passwords per address lock that address out for 15 minutes, sessions last 12 hours, and cross-site POSTs are refused. |
+| `OPS_DB_PASSWORD` | **yes** | Password of the `ops-db` Postgres service (compose network only, volume `ops_data`) that keeps the operator dashboard's live feed across restarts: hashrate chart, per-rig work, proxy counters, redemption times. `openssl rand -hex 32` (hex: it goes in a URL). |
 | `OPERATOR_USER` | no | Operator GUI user, default `operator`. |
 | `HASHU_EXTRA_DOMAINS` | no | More host names for the same site, with the splash page (`site/`) at `/`. Default none. |
 | `HASHU_MINT_NAME`, `HASHU_MINT_DESCRIPTION` | no | NUT-06 name and description (defaults: `Hashu` and a generic description). |
@@ -155,6 +156,7 @@ git clone https://github.com/asherp/hashu && cd hashu/deploy
 cp .env.example .env
 openssl rand -hex 32   # -> PHOENIXD_PASSWORD
 openssl rand -hex 32   # -> PHOENIXD_LIMITED_PASSWORD
+openssl rand -hex 32   # -> OPS_DB_PASSWORD
 docker run --rm caddy:2 caddy hash-password --plaintext 'pick-a-password'
                        # -> OPERATOR_PASSWORD_HASH (keep the single quotes)
 $EDITOR .env           # HASHU_DOMAIN, HASHU_UPSTREAM, the above, optional rails
