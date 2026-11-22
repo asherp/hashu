@@ -39,6 +39,8 @@ h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacin
 .pill.off { background: var(--bad-bg); color: var(--bad); }
 .pill.rail { border: 1px solid var(--line); color: var(--ink-2); font-weight: 500; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* A label and its options: wrap as one unit, label always on the left. */
+.ctl { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .card-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
@@ -137,10 +139,10 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
     <div class="card-head">
       <h2 id="h-rate">Real-time hashrate</h2>
       <div class="row">
-        <span class="note">Average</span>
-        <div class="seg" id="avg"><button data-v="60">1 min</button><button data-v="300" class="on">5 min</button></div>
-        <span class="note">Span</span>
-        <div class="seg" id="span"><button data-v="300">5 min</button><button data-v="900" class="on">15 min</button><button data-v="3600">1 h</button></div>
+        <span class="ctl"><span class="note">Average</span>
+        <div class="seg" id="avg"><button data-v="60">1 min</button><button data-v="300" class="on">5 min</button></div></span>
+        <span class="ctl"><span class="note">Span</span>
+        <div class="seg" id="span"><button data-v="300">5 min</button><button data-v="900" class="on">15 min</button><button data-v="3600">1 h</button></div></span>
       </div>
     </div>
     <div class="chart" id="c-rate"></div>
