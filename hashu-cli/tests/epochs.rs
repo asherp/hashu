@@ -131,6 +131,10 @@ async fn harness() -> Harness {
         .layer(axum::middleware::from_fn_with_state(
             epochs.clone(),
             hashu_cli::epochs::guard,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            epochs.clone(),
+            hashu_cli::epochs::list_future_keysets,
         ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -425,13 +429,24 @@ async fn vouchers_follow_the_epochs() {
     let q = h.get(&format!("/v1/mint/quote/bolt11/{qid}")).await;
     assert_eq!(q["state"], "ISSUED");
     assert!(h.mint.verify_proofs(bought.clone()).await.is_err());
-    // A stock Cashu wallet can't take them before epoch 15 either: the
-    // keyset isn't listed yet, so receiving fails and nothing is lost.
+    // Epoch 15's keyset is listed as inactive, with its keys, but a stock
+    // Cashu wallet still can't take the vouchers before epoch 15: receiving
+    // swaps them, and the mint refuses. Nothing is lost.
+    let listed = h.get("/v1/keysets").await;
+    let k = listed["keysets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["id"] == k15.id.to_string().as_str())
+        .expect("future epoch keyset listed");
+    assert_eq!(k["active"], false);
+    h.get(&format!("/v1/keys/{}", k15.id)).await;
     let stock = h.wallet().await;
-    assert!(stock
+    let refused = stock
         .receive_proofs(bought.clone(), Default::default(), None, None)
-        .await
-        .is_err());
+        .await;
+    eprintln!("stock wallet receiving a future-epoch voucher: {refused:?}");
+    assert!(refused.is_err());
     assert_eq!(u64::from(stock.total_balance().await.unwrap()), 0);
     h.epochs.set_clock(tip_in(15));
     h.sync().await;

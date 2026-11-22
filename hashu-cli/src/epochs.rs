@@ -509,3 +509,61 @@ pub async fn guard(
     ))
     .await
 }
+
+/// List the next [`LOOKAHEAD`] epochs' keysets as inactive in
+/// `GET /v1/keysets`, and serve their keys at `GET /v1/keys/{id}`, so
+/// wallets can recognise a future-epoch voucher. cdk itself still does not
+/// know them, so the mint refuses to swap or redeem them until their epoch
+/// starts.
+pub async fn list_future_keysets(
+    State(epochs): State<Arc<Epochs>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if req.method() != axum::http::Method::GET {
+        return next.run(req).await;
+    }
+    let path = req.uri().path().to_string();
+    let Some(current) = epochs.clock().map(|c| c.current()) else {
+        return next.run(req).await;
+    };
+    let future: Vec<_> = (current + 1..=current + LOOKAHEAD)
+        .filter_map(|e| epochs.keyset_for(e))
+        .collect();
+    if let Some(id) = path.strip_prefix("/v1/keys/") {
+        if let Some(k) = future.iter().find(|k| k.id.to_string() == id) {
+            return Json(json!({ "keysets": [public_keyset(k, Some(false))] })).into_response();
+        }
+        return next.run(req).await;
+    }
+    if path != "/v1/keysets" {
+        return next.run(req).await;
+    }
+    let res = next.run(req).await;
+    if !res.status().is_success() {
+        return res;
+    }
+    let (parts, body) = res.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 1 << 22).await else {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "keysets");
+    };
+    let Ok(mut v) = serde_json::from_slice::<Value>(&bytes) else {
+        return Response::from_parts(parts, axum::body::Body::from(bytes));
+    };
+    if let Some(list) = v["keysets"].as_array_mut() {
+        for k in &future {
+            let id = k.id.to_string();
+            if !list.iter().any(|x| x["id"] == id.as_str()) {
+                list.push(json!({
+                    "id": id,
+                    "unit": k.unit.to_string(),
+                    "active": false,
+                    "input_fee_ppk": k.input_fee_ppk,
+                }));
+            }
+        }
+    }
+    let mut res = Json(v).into_response();
+    *res.status_mut() = parts.status;
+    res
+}

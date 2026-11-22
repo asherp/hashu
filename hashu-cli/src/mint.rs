@@ -1063,6 +1063,10 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             .layer(axum::middleware::from_fn_with_state(
                 e.clone(),
                 crate::epochs::guard,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                e.clone(),
+                crate::epochs::list_future_keysets,
             ));
     }
     if let Some(w) = &waitlist {
