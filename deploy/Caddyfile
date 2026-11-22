@@ -7,7 +7,8 @@
 # certificates once their A records point here, and $HASHU_DOMAIN keeps
 # working either way.
 {
-	# Supplier mints (<name>.$HASHU_DOMAIN, see below) get their
+	# Supplier mints (<name>.$HASHU_DOMAIN or
+	# <name>.$HASHU_SUPPLIER_DOMAIN, see below) get their
 	# certificates on first visit. The mint answers this check with 200
 	# only for a registered supplier, so made-up names never reach
 	# Let's Encrypt.
@@ -112,6 +113,9 @@
 # in HASHU_SUPPLIERS_FILE), served by the same hashu process, which picks
 # the mint by Host. Needs one wildcard DNS record, *.$HASHU_DOMAIN, pointing
 # here. Certificates are per name, on demand (no DNS challenge needed).
+# With HASHU_SUPPLIER_DOMAIN set, alice.$HASHU_SUPPLIER_DOMAIN is her
+# mint's name (supplier-site.caddy below) and this older host keeps
+# answering for it.
 *.{$HASHU_DOMAIN} {
 	tls {
 		on_demand
@@ -131,3 +135,7 @@ import /etc/caddy/generated/mdk-site.caddy
 # /v1 API (CORS from cdk-axum) and its public checkout APIs (CORS from the
 # checkout router) answer it cross-origin.
 import /etc/caddy/generated/app-site.caddy
+
+# Supplier mints on HASHU_SUPPLIER_DOMAIN (optional): written by the
+# entrypoint, or nothing.
+import /etc/caddy/generated/supplier-site.caddy

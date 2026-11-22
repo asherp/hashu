@@ -157,7 +157,7 @@ pub struct Redemption {
     pub accumulated_hashes: u128,
     pub state: RedemptionState,
     /// Supplier whose rigs fill this order (the mint it was bought from,
-    /// e.g. `alice` for `alice.mint.<domain>`). `None` = the operator's
+    /// e.g. `alice` for `alice.<domain>`). `None` = the operator's
     /// own mint: filled by the operator's rigs.
     pub supplier: Option<String>,
 }

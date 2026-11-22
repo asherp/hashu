@@ -42,7 +42,7 @@ hashrate at their own pool. The mint never pays out bitcoin.
 | Mint operator GUI (hashrate, delivery, obligations, capacity, heat, pause/markup) | done | `hashu-cli::operator` |
 | Hashprice oracles: Esplora, Luxor, MiningRigRentals | done | `hashu-mint::oracle` |
 | MDK heater stack: Worker + app switching pools on redeem, thermostat | done | [`mdk/`](mdk/README.md) |
-| Hosted mint per supplier (`alice.mint.hashu.io`) | in progress | — |
+| Hosted mint per supplier (`alice.hashu.io`) | in progress | — |
 | Streaming redemption with change via NUT-08 blanks | design ([#44](https://github.com/asherp/hashu/issues/44)) | — |
 | Redeem to TLS (`stratum+ssl://`) and Stratum V2 (`stratum2+tcp://host/<key>`) pools, translated per connection with SRI crates | done | `hashu-proxy::{upstream,sv2}` |
 | Stratum V2 for miners (encrypted miner-facing port) | design ([#53](https://github.com/asherp/hashu/issues/53)) | — |

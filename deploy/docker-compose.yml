@@ -95,9 +95,14 @@ services:
       # Deprecated (one release): pool-user prefix that also marks your rigs.
       HASHU_OPERATOR_WORKER: ${HASHU_OPERATOR_WORKER:-}
       # Registered suppliers, a JSON file in the data volume, e.g.
-      # /data/suppliers.json. Each gets a mint at <name>.$HASHU_DOMAIN
-      # (wildcard DNS record) filled only by its own rigs. Unset: none.
+      # /data/suppliers.json. Each gets a mint at <name>.$HASHU_SUPPLIER_DOMAIN
+      # (or <name>.$HASHU_DOMAIN when that is unset; wildcard DNS record)
+      # filled only by its own rigs. Unset: none.
       HASHU_SUPPLIERS_FILE: ${HASHU_SUPPLIERS_FILE:-}
+      # Domain supplier mints are named under (e.g. example.com for
+      # alice.example.com); sign-up refuses reserved names (app, www, mint,
+      # ...). Their old <name>.$HASHU_DOMAIN host keeps working.
+      HASHU_SUPPLIER_DOMAIN: ${HASHU_SUPPLIER_DOMAIN:-}
       # Hosted-mint waitlist for miners at /waitlist/ (sign-ups in
       # /data/waitlist.jsonl, listed at /operator/waitlist). Off unless set.
       HASHU_WAITLIST: ${HASHU_WAITLIST:-false}
@@ -224,6 +229,9 @@ services:
       # Extra names that serve the same site with the splash page at /
       # (optional, space separated; needs A records on this machine).
       HASHU_EXTRA_DOMAINS: ${HASHU_EXTRA_DOMAINS:-}
+      # Supplier mints at *.$HASHU_SUPPLIER_DOMAIN (optional; wildcard DNS
+      # record here). *.$HASHU_DOMAIN is always served too.
+      HASHU_SUPPLIER_DOMAIN: ${HASHU_SUPPLIER_DOMAIN:-}
     ports:
       - "80:80"
       - "443:443"

@@ -1,4 +1,4 @@
-//! Registered suppliers: miners with their own mint (`<name>.mint.<domain>`)
+//! Registered suppliers: miners with their own mint (`<name>.<domain>`)
 //! whose rigs fill only that mint's orders.
 //!
 //! A rig proves it belongs to supplier `alice` by authorizing as
@@ -37,6 +37,48 @@ pub fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         && !name.starts_with('-')
         && !name.ends_with('-')
+}
+
+/// Host names the operator needs for itself next to supplier mints
+/// (`<name>.<domain>`), or that would let a supplier pass for the
+/// operator. Sign-up refuses them.
+#[rustfmt::skip]
+const RESERVED: &[&str] = &[
+    // in use or planned on the operator's domain
+    "app", "www", "mint", "mints", "api", "docs", "doc", "status", "pool", "pools", "stratum",
+    "sv2", "join", "waitlist", "checkout", "redeem", "compare", "slides", "reliability",
+    "control", "mdk", "blog", "news", "dev", "test", "staging", "demo", "beta", "cdn", "static",
+    "assets", "img", "media", "files", "download", "downloads", "relay", "nostr", "lnurl", "ln",
+    "lightning", "pay", "payments", "invoice", "shop", "store", "market", "explorer", "wiki",
+    "forum", "community", "chat", "git", "github",
+    // accounts, money and the operator
+    "admin", "administrator", "operator", "root", "system", "sys", "owner", "staff", "team",
+    "official", "support", "help", "helpdesk", "security", "abuse", "legal", "privacy", "terms",
+    "tos", "billing", "account", "accounts", "login", "signin", "signup", "register", "auth",
+    "oauth", "sso", "id", "identity", "verify", "wallet", "wallets", "vault", "bank",
+    "exchange", "swap", "faucet",
+    // mail and DNS
+    "mail", "email", "smtp", "imap", "pop", "pop3", "mx", "webmail", "postmaster", "hostmaster",
+    "webmaster", "ns", "ns1", "ns2", "dns", "ftp", "ssh", "vpn", "localhost", "local",
+    "internal", "intranet", "proxy", "gateway", "autodiscover", "autoconfig", "wpad", "mta-sts",
+    "_dmarc",
+];
+
+/// Words that make a name look like the operator's when they are any
+/// hyphen-separated part of it (`app-hashu`, `hashu-support`, `my-wallet`).
+#[rustfmt::skip]
+const IMPERSONATING: &[&str] = &[
+    "hashu", "admin", "operator", "official", "support", "help", "security", "login", "signin",
+    "verify", "wallet", "app", "mint", "account", "billing", "staff",
+];
+
+/// Whether `name` is kept from suppliers: a [`RESERVED`] host, anything
+/// containing "hashu", or a name with an [`IMPERSONATING`] part.
+pub fn reserved_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    RESERVED.contains(&name.as_str())
+        || name.contains("hashu")
+        || name.split('-').any(|part| IMPERSONATING.contains(&part))
 }
 
 /// Hex SHA-256 of a worker secret, as stored in the registry.
@@ -80,6 +122,8 @@ pub enum RegisterError {
     InvalidName,
     #[error("that name is taken")]
     Taken,
+    #[error("that name is reserved; pick another")]
+    Reserved,
     #[error("could not save the registry: {0}")]
     Io(String),
 }
@@ -200,6 +244,9 @@ impl SupplierRegistry {
         if !valid_name(name) {
             return Err(RegisterError::InvalidName);
         }
+        if reserved_name(name) {
+            return Err(RegisterError::Reserved);
+        }
         self.refresh();
         let mut st = self.lock();
         if st.entries.contains_key(name) {
@@ -305,6 +352,43 @@ mod tests {
         ] {
             assert!(!valid_name(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn reserved_names_are_refused() {
+        for no in [
+            "app",
+            "www",
+            "mint",
+            "api",
+            "docs",
+            "status",
+            "pool",
+            "wallet",
+            "join",
+            "admin",
+            "operator",
+            "mail",
+            "app-hashu",
+            "hashu-support",
+            "myhashu",
+            "my-wallet",
+            "official-pool",
+            "Admin",
+        ] {
+            assert!(reserved_name(no), "{no}");
+        }
+        for ok in ["alice", "bob-2", "apple", "mintaka", "poolside"] {
+            assert!(!reserved_name(ok), "{ok}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let r = SupplierRegistry::from_file(dir.path().join("suppliers.json"));
+        assert_eq!(r.register("app", "00", None), Err(RegisterError::Reserved));
+        assert_eq!(
+            r.register("app-hashu", "00", None),
+            Err(RegisterError::Reserved)
+        );
+        assert!(r.register("alice", "00", None).is_ok());
     }
 
     #[test]

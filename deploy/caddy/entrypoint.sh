@@ -53,4 +53,25 @@ else
   echo "# hashu.me wallet off (HASHU_APP_DOMAIN unset)" > "$GEN/app-site.caddy"
 fi
 
+if [ -n "${HASHU_SUPPLIER_DOMAIN:-}" ]; then
+  case "$HASHU_SUPPLIER_DOMAIN" in
+    *://*|*/*|\**) fail "HASHU_SUPPLIER_DOMAIN must be a bare domain like example.com (got $HASHU_SUPPLIER_DOMAIN)" ;;
+  esac
+  # Supplier mints at <name>.$HASHU_SUPPLIER_DOMAIN, like *.$HASHU_DOMAIN
+  # in the Caddyfile. Hosts with their own site block (www, app, the mint)
+  # still go there: Caddy prefers the exact name over the wildcard.
+  cat > "$GEN/supplier-site.caddy" <<SITE
+*.{\$HASHU_SUPPLIER_DOMAIN} {
+	tls {
+		on_demand
+	}
+	import security_headers
+	encode gzip
+	reverse_proxy hashu:8085
+}
+SITE
+else
+  echo "# supplier domain off (HASHU_SUPPLIER_DOMAIN unset)" > "$GEN/supplier-site.caddy"
+fi
+
 exec "$@"

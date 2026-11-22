@@ -450,6 +450,11 @@ fn validate(s: Submission) -> Result<Entry, Refusal> {
                 "mint name: 2 to 32 of a-z, 0-9 and -, not starting or ending with -".into(),
             ));
         }
+        if hashu_proxy::suppliers::reserved_name(n) {
+            return Err(Refusal::Invalid(
+                "mint name: that name is reserved; pick another".into(),
+            ));
+        }
     }
     let horizon = clean(&s.horizon, 16, "horizon")?;
     if let Some(h) = &horizon {
@@ -575,13 +580,16 @@ async fn submit(State(w): State<Arc<Waitlist>>, headers: HeaderMap, body: Bytes)
 }
 
 /// Public routes on the mint's HTTP port: `/waitlist/` and `POST /waitlist/api`.
-pub fn router(w: Arc<Waitlist>) -> Router {
+/// `domain` is the supplier domain hosted mints are named under
+/// (`<name>.<domain>`), shown on the page.
+pub fn router(w: Arc<Waitlist>, domain: Option<&str>) -> Router {
+    let page = Html(PAGE.replace("{{SUPPLIER_DOMAIN}}", domain.unwrap_or("this-mint")));
     Router::new()
         .route(
             "/waitlist",
             get(|| async { axum::response::Redirect::permanent("/waitlist/") }),
         )
-        .route("/waitlist/", get(|| async { Html(PAGE) }))
+        .route("/waitlist/", get(move || async move { page }))
         .route(
             "/waitlist/api",
             post(submit).get(|| async { Json(json!({ "open": true })) }),
@@ -714,6 +722,17 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(w.submit("c", bad_name), Err(Refusal::Invalid(_))));
+        for reserved in ["app", "www", "app-hashu"] {
+            let s = Submission {
+                contact: "npub1abc".into(),
+                mint_name: reserved.into(),
+                ..Default::default()
+            };
+            assert!(
+                matches!(w.submit("c", s), Err(Refusal::Invalid(_))),
+                "{reserved}"
+            );
+        }
         assert!(valid_mint_name("alice-2"));
         assert!(!valid_mint_name("a"));
         assert!(!valid_mint_name("al.ice"));

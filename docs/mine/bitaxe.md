@@ -91,7 +91,7 @@ delivered to redemptions since the proxy started).
 On `mint.hashu.io`, which is reserved for Hashu's own hashrate, set
 `HASHU_OPERATOR_SECRET_SHA256`: a stranger's Bitaxe then mines to its home
 pool through the proxy and is not borrowed until it has its own mint
-(`<name>.mint.hashu.io`, see below). Changing the default pool then needs
+(`<name>.hashu.io`, see below). Changing the default pool then needs
 no change to your rigs' identity: only their user changes, and only if the
 new pool demands it. MRR rentals take `pw=<secret>` in the rental's pool
 password.
@@ -109,8 +109,13 @@ number a payout would be based on.
 ## Registered suppliers (your own mint)
 
 A registered supplier `alice` has their own mint at
-`alice.<mint host>` (e.g. `alice.mint.hashu.io`), with its own keys, served by the same process as the
-operator's mint. Alice proves each rig belongs to her with a secret:
+`alice.<supplier domain>` (e.g. `alice.hashu.io`, set by
+`HASHU_SUPPLIER_DOMAIN`; without it `alice.<mint host>`), with its own
+keys, served by the same process as the operator's mint. Names the
+operator needs (`app`, `www`, `mint`, `api`, `pool`, `wallet`, ...) and
+lookalikes (anything with `hashu`, `admin`, `support`, ...) are reserved.
+A mint registered before the supplier domain was set keeps answering at
+its old `alice.mint.hashu.io` host too. Alice proves each rig belongs to her with a secret:
 
 | AxeOS field | Value |
 |---|---|
@@ -133,7 +138,7 @@ address can be invoiced and supports payment verification (LUD-21
 `verify`; not every provider has it, and the page says so if yours
 doesn't), then shows your
 worker secret once and the AxeOS settings above. Your mint is live at
-`https://<name>.mint.hashu.io` immediately.
+`https://<name>.hashu.io` immediately.
 
 ### Selling
 
