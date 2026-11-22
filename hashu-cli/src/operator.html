@@ -118,11 +118,13 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 .legend .sw.planned { background: var(--target); opacity: 0.55; }
 .legend .sw.fallback { border: 1.5px dashed var(--target); background: transparent; }
 .legend .sw.delivered { background: var(--brand); }
-#plan-rows input[type=number] { width: 88px; }
+#plan-rows input[type=number] { width: 104px; }
+#plan-rows input.dflt { color: var(--ink-3); }
+select { padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: inherit; font: inherit; font-size: 13px; }
 #plan-rows tr, #plan-hist tr { cursor: default; }
 td.num, th.num { text-align: right; }
 .muted { color: var(--ink-3); }
-@media (max-width: 640px) { .plan-wide { display: none; } #plan-rows input[type=number] { width: 64px; } #plan-rows .src { display: none; } }
+@media (max-width: 640px) { .plan-wide { display: none; } #plan-rows input[type=number] { width: 80px; } #plan-rows .src { display: none; } }
 </style>
 </head>
 <body>
@@ -192,10 +194,14 @@ td.num, th.num { text-align: right; }
   <section class="card" aria-labelledby="h-plan" id="plan-card" hidden>
     <div class="card-head">
       <h2 id="h-plan">Hashrate planner</h2>
-      <span class="pill rail" id="plan-pill">—</span>
+      <div class="row">
+        <span class="ctl"><label class="note" for="plan-unit">Unit</label>
+        <select id="plan-unit" aria-label="Planner unit"></select></span>
+        <span class="pill rail" id="plan-pill">—</span>
+      </div>
     </div>
     <div class="row sub" id="plan-meta"></div>
-    <div class="chart plan" id="c-plan" role="img" aria-label="Planned and delivered TH/s per epoch"></div>
+    <div class="chart plan" id="c-plan" role="img" aria-label="Planned and delivered hashrate per epoch"></div>
     <ul class="legend" aria-label="Series">
       <li><span class="sw planned"></span>Planned</li>
       <li><span class="sw fallback"></span>No plan: live average</li>
@@ -203,7 +209,7 @@ td.num, th.num { text-align: right; }
     </ul>
     <div class="scroll">
       <table>
-        <thead><tr><th>Epoch</th><th class="plan-wide">Starts</th><th>Planned TH/s</th><th class="num">Sells on</th><th class="num plan-wide">In horizon</th><th class="num plan-wide">Capacity</th><th class="num plan-wide">Sold</th><th class="num">Free</th></tr></thead>
+        <thead><tr><th>Epoch</th><th class="plan-wide">Starts</th><th class="u-plan">Planned</th><th class="num u-sells">Sells on</th><th class="num plan-wide">In horizon</th><th class="num plan-wide">Capacity</th><th class="num plan-wide">Sold</th><th class="num">Free</th></tr></thead>
         <tbody id="plan-rows"></tbody>
       </table>
     </div>
@@ -215,11 +221,11 @@ td.num, th.num { text-align: right; }
     <h2>Planned vs delivered</h2>
     <div class="scroll">
       <table>
-        <thead><tr><th>Epoch</th><th>Ran</th><th class="num">Planned TH/s</th><th class="num">Delivered TH/s</th><th class="num">Of plan</th><th class="num plan-wide">Hours in record</th></tr></thead>
+        <thead><tr><th>Epoch</th><th>Ran</th><th class="num u-plan">Planned</th><th class="num u-deliv">Delivered</th><th class="num">Of plan</th><th class="num plan-wide">Hours in record</th></tr></thead>
         <tbody id="plan-hist"></tbody>
       </table>
     </div>
-    <p class="note">Enter the TH/s you plan to run in each coming difficulty epoch (2,016 blocks, about two weeks): a build-out, rigs coming online or going away. Future epochs then sell against the plan × the part of the epoch your horizon covers, less what is already sold into them. Epochs without a plan sell on the live average. The current epoch always sells on what your rigs measure, and a plan freezes when its epoch starts. A cut is refused if the epoch would owe more than it can deliver. The plan is public at <a href="v1/hashu/plan" class="mono" id="plan-link">/v1/hashu/plan</a>, next to what each epoch delivered according to your <a href="reliability/" id="plan-rec">hourly reliability record</a>: buyers price the promise by how well you keep it.</p>
+    <p class="note">Enter the hashrate you plan to run in each coming difficulty epoch (2,016 blocks, about two weeks): a build-out, rigs coming online or going away. Pick the unit above: a rate (TH/s, PH/s) or the work of a whole epoch (THh, PHh, THd, PHd, TiH; 1 THd is 1 TH/s for a day). Each epoch starts out filled with your live average × two weeks; only the epochs you change are saved. Future epochs then sell against the plan × the part of the epoch your horizon covers, less what is already sold into them. Epochs without a plan sell on the live average. The current epoch always sells on what your rigs measure, and a plan freezes when its epoch starts. A cut is refused if the epoch would owe more than it can deliver. The plan is public at <a href="v1/hashu/plan" class="mono" id="plan-link">/v1/hashu/plan</a>, next to what each epoch delivered according to your <a href="reliability/" id="plan-rec">hourly reliability record</a>: buyers price the promise by how well you keep it.</p>
   </section>
 
   <div class="cols">
@@ -1014,6 +1020,34 @@ $('cap-limit').addEventListener('click', (ev) => {
 // Planned TH/s per future epoch; GET/POST api/plan (404 with epochs off).
 const fmtThs = (t) => !Number.isFinite(t) ? '—' : `${t.toLocaleString(undefined, { maximumFractionDigits: t < 10 ? 2 : t < 100 ? 1 : 0 })}`
 const fmtDay = (s) => new Date(s * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })
+// Planner units: value = TH/s × k. Amounts are the work of one whole
+// epoch (336 h = 14 days), in the wallet's display units (SI casing).
+const EPOCH_H = 336
+const PLAN_UNITS = [
+  { id: 'THd', k: EPOCH_H / 24, amount: true },
+  { id: 'PHd', k: EPOCH_H / 24 / 1000, amount: true },
+  { id: 'THh', k: EPOCH_H, amount: true },
+  { id: 'PHh', k: EPOCH_H / 1000, amount: true },
+  { id: 'TiH', k: EPOCH_H * TIH_PER_THH, amount: true },
+  { id: 'TH/s', k: 1, amount: false },
+  { id: 'PH/s', k: 1 / 1000, amount: false }
+]
+const planUnit = () => PLAN_UNITS.find((u) => u.id === state.planUnit) || PLAN_UNITS[0]
+const unitLabel = (u) => u.amount ? `${u.id} / epoch` : u.id
+const toU = (ths) => ths == null || !Number.isFinite(ths) ? null : ths * planUnit().k
+const fromU = (v) => v / planUnit().k
+const fmtU = (ths) => { const v = toU(ths); return v == null ? '—' : fmtThs(v) }
+// Entry values: enough digits to round-trip what was saved.
+const inU = (ths) => { const v = toU(ths); return v == null ? '' : String(Number(v.toPrecision(v < 1 ? 4 : 6))) }
+state.planEdits = {}
+try { state.planUnit = localStorage.getItem('hashu.planUnit') } catch (_) {}
+$('plan-unit').innerHTML = PLAN_UNITS.map((u) => `<option value="${esc(u.id)}">${esc(unitLabel(u))}</option>`).join('')
+$('plan-unit').addEventListener('change', () => {
+  state.planUnit = $('plan-unit').value
+  try { localStorage.setItem('hashu.planUnit', state.planUnit) } catch (_) {}
+  for (const e of Object.values(state.planEdits)) e.text = null
+  renderPlan()
+})
 async function pollPlan () {
   try {
     state.plan = await api('api/plan')
@@ -1023,13 +1057,10 @@ async function pollPlan () {
   }
   renderPlan()
 }
+// Edited epochs → TH/s (null clears the plan).
 function planEdits () {
   const out = {}
-  for (const i of $('plan-rows').querySelectorAll('input[data-epoch]')) {
-    if (!i.dataset.dirty) continue
-    const v = i.value.trim()
-    out[i.dataset.epoch] = v === '' ? null : Number(v)
-  }
+  for (const [e, x] of Object.entries(state.planEdits)) out[e] = x.ths
   return out
 }
 function renderPlan () {
@@ -1040,23 +1071,31 @@ function renderPlan () {
   const base = state.op && state.op.mint && state.op.mint.url
   if (base) { const b = base.replace(/\/+$/, ''); $('plan-link').href = `${b}/v1/hashu/plan`; $('plan-rec').href = `${b}/reliability/` }
   const m = p.measured_ths
+  // Default unit: per-epoch amount from the live hashrate, THd or PHd.
+  if (!PLAN_UNITS.some((u) => u.id === state.planUnit)) state.planUnit = m != null && m * EPOCH_H / 24 >= 1000 ? 'PHd' : 'THd'
+  const u = planUnit()
+  $('plan-unit').value = u.id
+  for (const th of document.querySelectorAll('#plan-card .u-plan')) th.textContent = `Planned, ${unitLabel(u)}`
+  for (const th of document.querySelectorAll('#plan-card .u-sells')) th.textContent = 'Sells on'
+  for (const th of document.querySelectorAll('#plan-card .u-deliv')) th.textContent = `Delivered, ${unitLabel(u)}`
   $('plan-pill').textContent = `Epoch ${p.epoch} · horizon ${fmtTih(p.horizon_hours, 0)} h`
   $('plan-meta').textContent = m != null
-    ? `Live average now: ${fmtThs(m)} TH/s. ${p.last_epoch <= p.epoch ? 'Only the current epoch is in your horizon.' : p.last_epoch === p.epoch + 1 ? `Epoch ${p.last_epoch} is in your horizon and on sale.` : `Epochs ${p.epoch + 1}–${p.last_epoch} are in your horizon and on sale.`}`
+    ? `Live average now: ${fmtThs(m)} TH/s${u.amount ? ` (${fmtU(m)} ${u.id} per epoch)` : ''}. ${p.last_epoch <= p.epoch ? 'Only the current epoch is in your horizon.' : p.last_epoch === p.epoch + 1 ? `Epoch ${p.last_epoch} is in your horizon and on sale.` : `Epochs ${p.epoch + 1}–${p.last_epoch} are in your horizon and on sale.`}`
     : 'Live hashrate is not counted yet: future epochs without a plan have no capacity.'
-  // Keep what the operator is typing.
-  const editing = planEdits()
   const focus = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.epoch
   const rows = p.upcoming.map((r) => {
     const sellsOn = r.current ? m : (r.planned_ths != null ? r.planned_ths : m)
     const src = r.current ? 'measured' : (r.planned_ths != null ? 'plan' : 'live avg')
-    const val = Object.prototype.hasOwnProperty.call(editing, r.epoch) ? (editing[r.epoch] ?? '') : (r.planned_ths ?? '')
+    // Typed text, else the saved plan, else the default: live average × 2 weeks.
+    const ed = state.planEdits[r.epoch]
+    const val = ed ? (ed.text ?? inU(ed.ths)) : r.planned_ths != null ? inU(r.planned_ths) : inU(m > 0 ? m : null)
+    const dflt = !ed && r.planned_ths == null && m > 0
     const input = r.current
       ? '<span class="muted">measured</span>'
-      : `<input type="number" min="0" step="any" data-epoch="${r.epoch}" ${editing[r.epoch] !== undefined ? 'data-dirty="1"' : ''} value="${esc(val)}" placeholder="${m != null ? esc(fmtThs(m)) : 'TH/s'}" aria-label="Planned TH/s for epoch ${r.epoch}">`
+      : `<input type="number" min="0" step="any" data-epoch="${r.epoch}" class="${dflt ? 'dflt' : ''}" value="${esc(val)}" placeholder="${esc(u.id)}" aria-label="Planned ${esc(unitLabel(u))} for epoch ${r.epoch}"${dflt ? ' title="Live average × 2 weeks (not saved)"' : ''}>`
     const cell = (x) => r.in_window && x != null ? fmtTih(x, 0) : '<span class="muted">—</span>'
     return `<tr><td style="white-space:nowrap">${r.epoch}${r.current ? ' <span class="muted">now</span>' : ''}</td><td class="plan-wide">${r.current ? 'running' : fmtDay(r.starts_at)}</td><td>${input}</td>` +
-      `<td class="num" style="white-space:nowrap">${fmtThs(sellsOn)} <span class="muted src">${src}</span></td>` +
+      `<td class="num" style="white-space:nowrap">${fmtU(sellsOn)} <span class="muted src">${src}</span></td>` +
       `<td class="num plan-wide">${r.in_window ? `${fmtTih(r.hours_in_window, 0)} h` : '<span class="muted">not yet</span>'}</td>` +
       `<td class="num plan-wide">${cell(r.capacity_tih)}</td><td class="num plan-wide">${cell(r.owed_tih)}</td><td class="num">${cell(r.free_tih)}</td></tr>`
   })
@@ -1065,8 +1104,8 @@ function renderPlan () {
   $('plan-hist').innerHTML = p.history.length ? p.history.map((h) => {
     const pct = h.planned_ths > 0 && h.delivered_ths != null ? `${Math.round(100 * h.delivered_ths / h.planned_ths)}%` : '—'
     const ran = `${fmtDay(h.started_at)}${h.ended_at ? `–${fmtDay(h.ended_at)}` : ', running'}`
-    return `<tr><td>${h.epoch}</td><td>${ran}</td><td class="num">${h.planned_ths != null ? fmtThs(h.planned_ths) : '<span class="muted">none</span>'}</td>` +
-      `<td class="num">${h.delivered_ths != null ? fmtThs(h.delivered_ths) : '<span class="muted">under 1 h</span>'}</td><td class="num">${pct}</td><td class="num plan-wide">${h.hours_published} of ${Math.floor(h.hours)}</td></tr>`
+    return `<tr><td>${h.epoch}</td><td>${ran}</td><td class="num">${h.planned_ths != null ? fmtU(h.planned_ths) : '<span class="muted">none</span>'}</td>` +
+      `<td class="num">${h.delivered_ths != null ? fmtU(h.delivered_ths) : '<span class="muted">under 1 h</span>'}</td><td class="num">${pct}</td><td class="num plan-wide">${h.hours_published} of ${Math.floor(h.hours)}</td></tr>`
   }).join('') : '<tr><td colspan="6" class="sub">No epoch has run here yet.</td></tr>'
   drawPlan()
 }
@@ -1078,7 +1117,9 @@ function drawPlan () {
     ...p.history.slice(0, 6).reverse().map((h) => ({ epoch: h.epoch, planned: h.planned_ths, fallback: false, delivered: h.delivered_ths, label: h.current ? 'now' : 'ran' })),
     ...p.upcoming.filter((r) => !r.current).map((r) => ({ epoch: r.epoch, planned: r.planned_ths != null ? r.planned_ths : m, fallback: r.planned_ths == null, delivered: null, label: r.in_window ? 'on sale' : 'later' }))
   ]
-  const W = Math.max(280, el.clientWidth), H = el.clientHeight, mg = { l: 40, r: 8, t: 24, b: 24 }
+  for (const c of cols) { c.planned = toU(c.planned); c.delivered = toU(c.delivered) }
+  const uid = planUnit().id
+  const W = Math.max(280, el.clientWidth), H = el.clientHeight, mg = { l: 52, r: 8, t: 24, b: 24 }
   const max = Math.max(1e-9, ...cols.map((c) => Math.max(c.planned || 0, c.delivered || 0)))
   const ticks = niceTicks(max, 4), top = ticks[ticks.length - 1]
   const iw = W - mg.l - mg.r, ih = H - mg.t - mg.b, cw = iw / Math.max(1, cols.length)
@@ -1086,7 +1127,7 @@ function drawPlan () {
   const bw = Math.max(3, Math.min(18, (cw - 6) / 2))
   let svg = `<svg viewBox="0 0 ${W} ${H}"><g class="axis">`
   for (const t of ticks) svg += `<line class="gridline" x1="${mg.l}" x2="${W - mg.r}" y1="${y(t)}" y2="${y(t)}"/><text x="${mg.l - 6}" y="${y(t) + 4}" text-anchor="end">${fmtThs(t)}</text>`
-  svg += `<text x="${mg.l - 6}" y="10" text-anchor="end">TH/s</text></g>`
+  svg += `<text x="${mg.l - 6}" y="10" text-anchor="end">${esc(uid)}</text></g>`
   const bar = (x, v, cls) => {
     if (!(v > 0)) return ''
     const h = Math.max(1, y(0) - y(v)), r = Math.min(4, bw / 2, h)
@@ -1108,26 +1149,32 @@ function drawPlan () {
   el.querySelector('svg').addEventListener('mousemove', (ev) => {
     const r = ev.target.closest('rect.hit'); if (!r) { tip.style.display = 'none'; return }
     const c = cols[Number(r.dataset.i)]
-    tip.innerHTML = `<b>Epoch ${c.epoch}</b> · ${c.label}<br>${c.fallback ? 'No plan, live average' : 'Planned'}: ${fmtThs(c.planned)} TH/s${c.delivered != null ? `<br>Delivered: ${fmtThs(c.delivered)} TH/s` : ''}`
+    tip.innerHTML = `<b>Epoch ${c.epoch}</b> · ${c.label}<br>${c.fallback ? 'No plan, live average' : 'Planned'}: ${fmtThs(c.planned)} ${esc(uid)}${c.delivered != null ? `<br>Delivered: ${fmtThs(c.delivered)} ${esc(uid)}` : ''}`
     tip.style.display = 'block'
     tip.style.left = `${Number(r.getAttribute('x')) + cw / 2}px`; tip.style.top = `${mg.t + 8}px`
   })
   el.querySelector('svg').addEventListener('mouseleave', () => { tip.style.display = 'none' })
 }
-$('plan-rows').addEventListener('input', (ev) => { if (ev.target.dataset.epoch) ev.target.dataset.dirty = '1' })
+$('plan-rows').addEventListener('input', (ev) => {
+  const i = ev.target, e = i.dataset.epoch
+  if (!e) return
+  const v = i.value.trim()
+  state.planEdits[e] = { text: i.value, ths: v === '' ? null : fromU(Number(v)) }
+  i.classList.remove('dflt'); i.removeAttribute('title')
+})
 $('btn-plan').addEventListener('click', async () => {
   const epochs = planEdits()
-  for (const [e, v] of Object.entries(epochs)) if (v !== null && !(v >= 0)) return alertMsg(`Epoch ${e}: enter TH/s (0 or more), or leave it empty for no plan`)
+  for (const [e, v] of Object.entries(epochs)) if (v !== null && !(v >= 0)) return alertMsg(`Epoch ${e}: enter ${planUnit().id} (0 or more), or leave it empty for no plan`)
   if (!Object.keys(epochs).length) { $('plan-note').textContent = 'Nothing changed.'; return }
   $('btn-plan').disabled = true
   try {
     state.plan = await api('api/plan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ epochs }) })
-    $('plan-rows').innerHTML = ''
+    state.planEdits = {}
     $('plan-note').textContent = 'Saved.'
     alertMsg('')
   } catch (e) { alertMsg(e.message) } finally { $('btn-plan').disabled = false; renderPlan() }
 })
-$('btn-plan-reset').addEventListener('click', () => { $('plan-rows').innerHTML = ''; $('plan-note').textContent = ''; renderPlan() })
+$('btn-plan-reset').addEventListener('click', () => { state.planEdits = {}; $('plan-note').textContent = ''; renderPlan() })
 pollPlan()
 setInterval(pollPlan, 15000)
 window.addEventListener('resize', () => { drawRate(); drawRedemption(); drawPlan() })
