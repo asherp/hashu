@@ -12,6 +12,7 @@
 
 pub mod checkout;
 pub mod config;
+pub mod epochs;
 pub mod init;
 pub mod landing;
 pub mod manifest;

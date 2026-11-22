@@ -40,6 +40,7 @@ rand = "0.8"
 # `mint` feature pulls in cdk-signatory, which has a build script that
 # invokes `protoc`. Make sure `protoc` is on PATH or `PROTOC` is set.
 cdk = { version = "0.16", features = ["mint", "wallet", "nostr"] }
+bitcoin = "0.32"
 
 [dev-dependencies]
 cdk-sqlite = "0.16"

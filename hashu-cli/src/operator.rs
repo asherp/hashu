@@ -261,7 +261,11 @@ impl TihPricer for ControlledPricer {
         if self.controls.issuance_paused() {
             return Err(PricingError::Paused);
         }
-        self.controls.capacity.check(amount_tih, now_ms())?;
+        // A future-epoch purchase sells against that epoch's capacity,
+        // checked by the epoch endpoint (#126), not the live stock.
+        if crate::epochs::FUTURE_EPOCH_QUOTE.try_with(|_| ()).is_err() {
+            self.controls.capacity.check(amount_tih, now_ms())?;
+        }
         self.quote(amount_tih)
     }
 }
@@ -732,7 +736,16 @@ pub async fn obligations_for(
         .filter(|q| q.unit == tih_unit() && q.state == cdk::nuts::MeltQuoteState::Pending)
         .map(|q| q.amount().value())
         .sum();
-    let in_circulation = signed.saturating_sub(spent).saturating_sub(melting);
+    // With epochs on (#126), conversions are signed outside cdk: cdk sees
+    // their vouchers spent but never signed, so add them back.
+    let outside = if supplier.is_none() {
+        crate::epochs::operator_outside_cdk()
+    } else {
+        0
+    };
+    let in_circulation = (signed + outside)
+        .saturating_sub(spent)
+        .saturating_sub(melting);
 
     // TiH sold over each rail, from the mint quotes.
     let mut sold: BTreeMap<String, u64> = BTreeMap::new();
@@ -743,6 +756,10 @@ pub async fn obligations_for(
     let now_s = now_ms() / 1000;
     for q in mint.mint_quotes().await? {
         if q.unit != tih_unit() {
+            continue;
+        }
+        // Future-epoch purchases are owed in their epoch, not now (#126).
+        if supplier.is_none() && crate::epochs::is_operator_purchase(&q.id.to_string()) {
             continue;
         }
         let issued = q.amount_issued().value();

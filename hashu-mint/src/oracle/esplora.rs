@@ -180,6 +180,20 @@ impl EsploraClient {
         Ok(trimmed.to_string())
     }
 
+    /// `GET /blocks/tip/height` → height of the latest block.
+    pub async fn tip_height(&self) -> Result<u64, EsploraError> {
+        let url = format!("{}/blocks/tip/height", self.base);
+        let resp = self.http.get(&url).send().await?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(EsploraError::Status { status, body });
+        }
+        body.trim()
+            .parse()
+            .map_err(|_| EsploraError::InvalidTip(body.trim().to_string()))
+    }
+
     /// `GET /block/:hash` → block header summary.
     pub async fn block(&self, hash: &str) -> Result<BlockSummary, EsploraError> {
         let url = format!("{}/block/{}", self.base, hash);

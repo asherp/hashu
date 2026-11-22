@@ -6,6 +6,7 @@
 pub mod attestation;
 pub mod capacity;
 pub mod discovery;
+pub mod epoch;
 pub mod heat;
 pub mod lightning;
 pub mod lnaddress;

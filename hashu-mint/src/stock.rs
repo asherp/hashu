@@ -202,6 +202,32 @@ impl Stock {
         now_ms: u64,
         force: bool,
     ) -> bool {
+        self.tick_sized(
+            measured_ths,
+            half_life_hours(horizon_hours),
+            horizon_hours,
+            owed_tih,
+            sold_total_tih,
+            now_ms,
+            force,
+        )
+    }
+
+    /// [`Self::tick`] with the average's half-life set apart from the
+    /// hours a batch is sized for: with epochs (#126) a batch covers what
+    /// is left of the epoch, which shrinks towards its end, while the
+    /// average keeps the seller's horizon.
+    #[allow(clippy::too_many_arguments)]
+    pub fn tick_sized(
+        &mut self,
+        measured_ths: Option<f64>,
+        half_life_h: f64,
+        horizon_hours: f64,
+        owed_tih: f64,
+        sold_total_tih: f64,
+        now_ms: u64,
+        force: bool,
+    ) -> bool {
         let started = *self.started_ms.get_or_insert(now_ms);
         let warming = now_ms.saturating_sub(started) < WARMUP_MS;
         let measured = measured_ths
@@ -211,8 +237,7 @@ impl Stock {
             .filter(|&t| t > 0.0 || (self.stocked && !warming));
         if let Some(ths) = measured {
             if self.stocked {
-                self.ewma
-                    .observe(ths, half_life_hours(horizon_hours), now_ms);
+                self.ewma.observe(ths, half_life_h, now_ms);
             } else {
                 // No batch yet: size the first one from what the rigs do
                 // now rather than climbing slowly out of an empty start.
