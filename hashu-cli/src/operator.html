@@ -145,7 +145,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
     </div>
     <div class="chart" id="c-rate"></div>
     <ul class="legend" id="rate-legend" aria-label="Rigs"></ul>
-    <p class="note">Estimated from accepted shares: each share of difficulty D is D × 2<sup>32</sup> hashes. Each connected rig (by its Stratum worker name) is a band; the bands stack to the total line. Includes hashrate sent to the default pool and to redeemers.</p>
+    <p class="note">Estimated from accepted shares: each share of difficulty D is D × 2<sup>32</sup> hashes. Each rig name (the Stratum user after its first dot; rigs sharing a name add up) is a band; the bands stack to the total line. Includes hashrate sent to the default pool and to redeemers.</p>
   </section>
 
   <section class="card" aria-labelledby="h-red">
@@ -459,6 +459,11 @@ function rateSeries (samples, avgS) {
 // work in the samples (`rigs`: label -> hashes). A rig missing from a
 // sample had sent nothing yet (0). Returns `{ t, rigs: {label: H/s} }`
 // for each point rateSeries makes.
+// A rig's name without the supplier prefix (`asher.s21` -> `s21`):
+// suppliers get their own dashboards, and rigs sharing a name are meant
+// to be counted together, so they sum into one band.
+const rigName = (user) => user.includes('.') ? user.slice(user.indexOf('.') + 1) : user
+
 function rigRateSeries (samples, avgS) {
   const out = []
   let j = 0
@@ -471,7 +476,7 @@ function rigRateSeries (samples, avgS) {
       const cur = s.rigs || {}, base = b.rigs || {}
       for (const k in cur) {
         const r = Math.max(0, cur[k] - (base[k] || 0)) * 1000 / (s.t_ms - b.t_ms)
-        if (r > 0) rigs[k] = r
+        if (r > 0) rigs[rigName(k)] = (rigs[rigName(k)] || 0) + r
       }
       out.push({ t: s.t_ms, rigs })
     } else if (i > 0) out.push({ t: s.t_ms, rigs })
@@ -505,14 +510,7 @@ function drawRate () {
   const bySlot = [...names].sort((a, b) => a.localeCompare(b)).map((n) => ({ n, k: rigSlot(n) }))
   const own = bySlot.filter((x) => x.k >= 0).sort((a, b) => a.k - b.k)
   const other = bySlot.filter((x) => x.k < 0).map((x) => x.n)
-  // Show each rig by its name without the supplier prefix (`asher.s21` ->
-  // `s21`); suppliers get their own dashboards. Keep the full user only
-  // where two rigs would end up with the same name.
-  const short = (n) => n.includes('.') ? n.slice(n.indexOf('.') + 1) : n
-  const counts = {}
-  for (const x of own) counts[short(x.n)] = (counts[short(x.n)] || 0) + 1
-  const label = (n) => counts[short(n)] > 1 ? n : short(n)
-  const series = own.map((x) => ({ name: label(x.n), color: `var(--s${x.k + 1})`, vals: rr.map((p) => p.rigs[x.n] || 0) }))
+  const series = own.map((x) => ({ name: x.n, color: `var(--s${x.k + 1})`, vals: rr.map((p) => p.rigs[x.n] || 0) }))
   if (other.length) series.push({ name: `Other (${other.length} rigs)`, color: 'var(--s-other)', vals: rr.map((p) => other.reduce((a, n) => a + (p.rigs[n] || 0), 0)) })
   // Rates line up with the total only when both series have the same points.
   const stack = rr.length === pts.length ? { series } : null
