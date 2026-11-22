@@ -13,8 +13,10 @@
 //!   the horizon (EWMA hashrate, half-life horizon / 2, × horizon − TiH
 //!   owed); between top-ups the stock only goes down as buyers take it, so the quantity
 //!   holds still and the delivery ETA moves (#92, [`hashu_mint::stock`]);
-//! - `lightning_address`: where buyers pay (LUD-16 + LUD-21, see
-//!   [`hashu_mint::lnaddress`]).
+//! - `lnurl`: where buyers pay, the supplier's own LNURL-pay endpoint: a
+//!   Lightning address or an `lnurl1…` / `lnurlp://` / `https://` link,
+//!   which must support LUD-21 verify (see [`hashu_mint::lnaddress`]).
+//!   Settings saved under the older `lightning_address` key still load.
 //!
 //! A mint with no ask or no payment details sells nothing.
 
@@ -24,7 +26,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use anyhow::{Context, Result};
 use hashu_core::denom::{msat_for_tih_at_sats_per_eih, sats_per_eih_from_msat_per_pih};
 use hashu_mint::capacity::MIN_PURCHASE_TIH;
-use hashu_mint::lnaddress::LightningAddress;
+use hashu_mint::lnaddress::PayEndpoint;
 use hashu_mint::pricing::{PricingError, TihPricer};
 use hashu_mint::stock::{Stock, StockView};
 use serde::{Deserialize, Serialize};
@@ -45,8 +47,10 @@ pub struct SupplierSettings {
     pub ask_sats_per_eih: Option<u64>,
     #[serde(default = "default_horizon")]
     pub horizon_hours: f64,
-    #[serde(default)]
-    pub lightning_address: Option<String>,
+    /// The supplier's LNURL-pay endpoint, saved in canonical form
+    /// ([`PayEndpoint`]'s `Display`).
+    #[serde(default, alias = "lightning_address")]
+    pub lnurl: Option<String>,
 }
 
 impl Default for SupplierSettings {
@@ -54,14 +58,14 @@ impl Default for SupplierSettings {
         Self {
             ask_sats_per_eih: None,
             horizon_hours: DEFAULT_HORIZON_HOURS,
-            lightning_address: None,
+            lnurl: None,
         }
     }
 }
 
 impl SupplierSettings {
-    /// Check the values (not whether the address works: see
-    /// [`hashu_mint::lnaddress::probe`]). Normalizes the address.
+    /// Check the values (not whether the endpoint works: see
+    /// [`hashu_mint::lnaddress::probe`]). Normalizes the endpoint.
     pub fn validated(mut self) -> Result<Self, String> {
         if self.ask_sats_per_eih == Some(0) {
             return Err("ask must be at least 1 sat per EiH".into());
@@ -69,9 +73,9 @@ impl SupplierSettings {
         if !self.horizon_hours.is_finite() || self.horizon_hours < MIN_HORIZON_HOURS {
             return Err(format!("horizon must be at least {MIN_HORIZON_HOURS} hour"));
         }
-        self.lightning_address = match self.lightning_address.as_deref().map(str::trim) {
+        self.lnurl = match self.lnurl.as_deref().map(str::trim) {
             None | Some("") => None,
-            Some(a) => Some(a.parse::<LightningAddress>()?.to_string()),
+            Some(a) => Some(a.parse::<PayEndpoint>()?.to_string()),
         };
         Ok(self)
     }
@@ -337,7 +341,7 @@ mod tests {
             Arc::new(RwLock::new(SupplierSettings {
                 ask_sats_per_eih: ask,
                 horizon_hours: horizon,
-                lightning_address: None,
+                lnurl: None,
             })),
             Arc::new(move |n: &str| {
                 if n == "alice" {
@@ -492,13 +496,34 @@ mod tests {
         let s = SupplierSettings {
             ask_sats_per_eih: Some(45),
             horizon_hours: 12.0,
-            lightning_address: Some(" Alice@Wallet.Example ".into()),
+            lnurl: Some(" Alice@Wallet.Example ".into()),
         }
         .validated()
         .unwrap();
-        assert_eq!(s.lightning_address.as_deref(), Some("alice@wallet.example"));
+        assert_eq!(s.lnurl.as_deref(), Some("alice@wallet.example"));
         s.save(dir.path()).unwrap();
         assert_eq!(SupplierSettings::load(dir.path()).unwrap(), s);
+        // A miner's own LNURL-pay endpoint is kept as its URL.
+        let own = SupplierSettings {
+            lnurl: Some("lnurlp://pay.alice.example/lnurlp/1".into()),
+            ..Default::default()
+        }
+        .validated()
+        .unwrap();
+        assert_eq!(
+            own.lnurl.as_deref(),
+            Some("https://pay.alice.example/lnurlp/1")
+        );
+        // Settings saved before the rename still load.
+        std::fs::write(
+            SupplierSettings::path(dir.path()),
+            br#"{"ask_sats_per_eih": 600, "lightning_address": "alice@wallet.example"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            SupplierSettings::load(dir.path()).unwrap().lnurl.as_deref(),
+            Some("alice@wallet.example")
+        );
         // An ask saved as msat per PiH loads as sats per EiH.
         std::fs::write(
             SupplierSettings::path(dir.path()),
@@ -522,7 +547,7 @@ mod tests {
                 ..Default::default()
             },
             SupplierSettings {
-                lightning_address: Some("nope".into()),
+                lnurl: Some("nope".into()),
                 ..Default::default()
             },
         ] {

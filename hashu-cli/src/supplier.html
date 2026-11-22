@@ -58,8 +58,8 @@ details summary { cursor:pointer; font-weight:600; }
         <p class="hint" id="s-ask-eq"></p>
         <label for="s-horizon">Horizon <span class="hint">hours; every hour your stock is topped up to your rigs' average hashrate × horizon − TiH owed, and only sales take it down in between</span></label>
         <input id="s-horizon" type="number" min="1" step="1">
-        <label for="s-ln">Lightning address <span class="hint">needs payment verification (LUD-21)</span></label>
-        <input id="s-ln" autocomplete="off">
+        <label for="s-ln">Lightning address or LNURL <span class="hint">where buyers pay: an address or your own LNURL-pay endpoint (lnurl1…, lnurlp:// or https://); needs payment verification (LUD-21)</span></label>
+        <input id="s-ln" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="you@wallet.example or lnurl1…">
         <button>Save</button>
         <button type="button" id="restock">Restock now</button>
       </form>
@@ -130,7 +130,7 @@ $('unlock').addEventListener('click', async () => {
     $('s-ask').value = s.ask_sats_per_eih == null ? '' : s.ask_sats_per_eih;
     $('s-ask-eq').textContent = askEquiv(s.ask_sats_per_eih);
     $('s-horizon').value = s.horizon_hours;
-    $('s-ln').value = s.lightning_address ?? '';
+    $('s-ln').value = s.lnurl ?? '';
     $('settings').hidden = false;
   } catch (e) { say(e.message, false); }
 });
@@ -141,7 +141,7 @@ $('settings').addEventListener('submit', async (e) => {
     await api('POST', {
       ask_sats_per_eih: $('s-ask').value ? Math.round(Number($('s-ask').value)) : null,
       horizon_hours: Number($('s-horizon').value),
-      lightning_address: $('s-ln').value.trim() || null,
+      lnurl: $('s-ln').value.trim() || null,
     });
     say('Saved.', true);
     status();
