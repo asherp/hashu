@@ -14,6 +14,8 @@
 //!   - `GET /v1/hashu/reliability/{hour}`: the signed Nostr event
 //!   - `GET /v1/hashu/reliability/{hour}.ots`: its OpenTimestamps proof
 //!   - `GET /reliability/`: a page that checks it all in the browser
+//!   - `GET /.well-known/nostr.json`: NIP-05 for the mint's kind 0 profile
+//!     (`_@<mint host>`), and `GET /nostr/avatar.png`, its default picture
 //!
 //! An hour is published only if the daemon ran during it, so downtime
 //! shows as a missing hour, which nobody can fill in later.
@@ -32,13 +34,15 @@ use axum::routing::get;
 use axum::Json;
 use hashu_core::redemption::{RedemptionLedger, RedemptionState};
 use hashu_core::reliability::{hour_start, median_and_worst, HourRecord, RedemptionStats, HOUR_S};
-use hashu_mint::discovery::{Announcement, ANNOUNCE_KIND};
+use hashu_mint::discovery::{Announcement, Tip, ANNOUNCE_KIND, AVATAR_PATH, PROFILE_KIND};
 use hashu_mint::reliability::{PublishConfig, RecordStore, RECORD_KIND, RECORD_TAG};
 use hashu_proxy::reliability::{ReliabilityRecorder, OPERATOR_MINT};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 const PAGE: &str = include_str!("reliability.html");
+/// Default Nostr profile picture (Hashu's mark, 512 px).
+const AVATAR: &[u8] = include_bytes!("nostr-avatar.png");
 const TICK: Duration = Duration::from_secs(60);
 /// How often pending timestamps are upgraded.
 const MAINTAIN_EVERY_TICKS: u64 = 30;
@@ -97,6 +101,8 @@ pub struct Reliability {
     keysets: Mutex<HashMap<String, Vec<String>>>,
     /// NIP-87 announcement of each mint with a public URL (#116).
     announcements: Mutex<HashMap<String, Announcement>>,
+    /// Where each mint's profile takes tips (`lud16`/`lud06`).
+    tips: Mutex<HashMap<String, Tip>>,
 }
 
 impl Reliability {
@@ -134,6 +140,7 @@ impl Reliability {
             tracker: Mutex::new(tracker),
             keysets: Mutex::new(HashMap::new()),
             announcements: Mutex::new(HashMap::new()),
+            tips: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -157,6 +164,16 @@ impl Reliability {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(mint.to_string(), a);
+    }
+
+    /// Where `mint`'s Nostr profile takes tips: the operator's tip jar, or a
+    /// supplier's own LNURL. `None` = no tips.
+    pub fn set_tip(&self, mint: &str, tip: Option<Tip>) {
+        let mut t = self.tips.lock().unwrap_or_else(|e| e.into_inner());
+        match tip {
+            Some(tip) => t.insert(mint.to_string(), tip),
+            None => t.remove(mint),
+        };
     }
 
     /// The store for `mint` (`""` = operator); `None` for a supplier that
@@ -246,7 +263,8 @@ impl Reliability {
         self.publish_closed(now).await;
     }
 
-    /// Keep every mint's NIP-87 announcement current, and the operator's
+    /// Keep every mint's NIP-87 announcement and kind 0 profile current,
+    /// and the operator's
     /// recommendation of each supplier mint.
     async fn announce(&self, now: u64) {
         let all = self
@@ -259,6 +277,15 @@ impl Reliability {
             let Some(st) = self.store(&m) else { continue };
             if let Err(e) = st.ensure_announcement(&a, now).await {
                 tracing::warn!(mint = %st.url(), error = %e, "NIP-87 announcement");
+            }
+            let tip = self
+                .tips
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&m)
+                .cloned();
+            if let Err(e) = st.ensure_profile(&a, tip.as_ref(), now).await {
+                tracing::warn!(mint = %st.url(), error = %e, "Nostr profile");
             }
             if m != OPERATOR_MINT && operator_announces {
                 let content = format!(
@@ -463,7 +490,9 @@ pub fn router(rel: Arc<Reliability>, mint: &str) -> axum::Router {
         .route("/v1/hashu/reliability/key", get(key_doc))
         .route("/v1/hashu/reliability/key.ots", get(key_ots))
         .route("/v1/hashu/reliability/{hour}", get(hour))
+        .route("/.well-known/nostr.json", get(nip05))
         .layer(from_fn(cors))
+        .route(AVATAR_PATH, get(avatar))
         .route(
             "/reliability",
             get(|| async { axum::response::Redirect::permanent("/reliability/") }),
@@ -482,6 +511,40 @@ async fn cors(req: axum::extract::Request, next: Next) -> Response {
         HeaderValue::from_static("*"),
     );
     res
+}
+
+#[derive(Deserialize)]
+struct Nip05Query {
+    name: Option<String>,
+}
+
+/// NIP-05: `_@<mint host>` is this mint's receipt key, the key that signs
+/// its profile, announcement and hourly record. Other names are unknown.
+async fn nip05(State(ctx): State<Ctx>, Query(q): Query<Nip05Query>) -> Response {
+    let store = match ctx.store() {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let pk = store.pubkey();
+    if q.name.as_deref().is_some_and(|n| n != "_") {
+        return Json(json!({ "names": {} })).into_response();
+    }
+    let mut relays = serde_json::Map::new();
+    if !store.configured_relays().is_empty() {
+        relays.insert(pk.clone(), json!(store.configured_relays()));
+    }
+    Json(json!({ "names": { "_": pk }, "relays": relays })).into_response()
+}
+
+async fn avatar() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        AVATAR,
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -515,6 +578,13 @@ async fn index(State(ctx): State<Ctx>, Query(q): Query<IndexQuery>) -> Response 
                 .announcement_json()
                 .and_then(|e| serde_json::from_str::<serde_json::Value>(&e).ok()),
             "relays": store.announcement_relays(),
+        },
+        "profile": {
+            "kind": PROFILE_KIND,
+            "event": store
+                .profile_json()
+                .and_then(|e| serde_json::from_str::<serde_json::Value>(&e).ok()),
+            "relays": store.profile_relays(),
         },
         "hours": hours,
     }))
@@ -729,6 +799,13 @@ mod tests {
         r.set_announcement("", announcement("https://mint.example"));
         let alice_a = announcement("https://alice.mint.example");
         r.set_announcement("alice", alice_a.clone());
+        r.set_tip(
+            "alice",
+            Some(Tip::supplier(
+                "alice",
+                &"alice@wallet.example".parse().unwrap(),
+            )),
+        );
         r.step(H + 60, true).await;
 
         let ev = nostr::Event::from_json(r.operator.announcement_json().unwrap()).unwrap();
@@ -770,5 +847,47 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["announcement"]["kind"], 38172);
         assert_eq!(v["announcement"]["event"]["id"], aev.id.to_hex());
+
+        // Each mint has its own kind 0 profile, listed in the index.
+        let pev = nostr::Event::from_json(alice.profile_json().unwrap()).unwrap();
+        pev.verify().unwrap();
+        assert_eq!(pev.kind, nostr::Kind::Metadata);
+        assert_eq!(pev.pubkey.to_hex(), alice.pubkey());
+        let meta: serde_json::Value = serde_json::from_str(&pev.content).unwrap();
+        assert_eq!(meta["nip05"], "_@alice.mint.example");
+        assert_eq!(meta["website"], "https://alice.mint.example");
+        assert_eq!(
+            meta["lud16"], "alice@wallet.example",
+            "tips go to the miner"
+        );
+        assert_eq!(v["profile"]["event"]["id"], pev.id.to_hex());
+        let oev = nostr::Event::from_json(r.operator.profile_json().unwrap()).unwrap();
+        assert_eq!(oev.pubkey.to_hex(), r.operator.pubkey());
+        assert!(!oev.content.contains("lud16"), "no tip jar set");
+
+        // NIP-05 on alice's host names her receipt key, with CORS.
+        let get = |path: &'static str| {
+            router(r.clone(), "alice").oneshot(
+                axum::http::Request::get(path)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+        };
+        let res = get("/.well-known/nostr.json?name=_").await.unwrap();
+        assert_eq!(res.headers()["access-control-allow-origin"], "*");
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let n: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(n["names"]["_"], alice.pubkey());
+        let res = get("/.well-known/nostr.json?name=bob").await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let n: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(n["names"].as_object().unwrap().is_empty());
+        let res = get("/nostr/avatar.png").await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()["content-type"], "image/png");
     }
 }

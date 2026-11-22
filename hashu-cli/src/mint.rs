@@ -180,6 +180,14 @@ pub struct RunArgs {
     /// https URLs). Empty: hours are not timestamped.
     #[arg(long, env = "HASHU_OTS_CALENDARS", default_value = "")]
     pub ots_calendars: String,
+    /// Tips on the mint's Nostr profile, to support Hashu's development
+    /// (never a voucher sale). `on`: the mint's own tip jar at
+    /// `tips@<mint host>` with NIP-57 zaps, when phoenixd is the Lightning
+    /// backend and the mint has a public https URL. A Lightning address or
+    /// LNURL-pay link: point the profile there instead. `off`: no tips.
+    /// Supplier mints always use their own `lnurl` setting.
+    #[arg(long, env = "HASHU_TIPS", default_value = "on")]
+    pub tips: crate::tips::TipsSetting,
     /// Date vouchers to Bitcoin difficulty epochs (2,016 blocks, #126):
     /// the mint sells only the current epoch, rotates its TiH keyset at
     /// each epoch, and converts expired vouchers (melt method `epoch`) to
@@ -773,8 +781,10 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
 
     // Lightning: mint-only.
     let mut fake_lightning = false;
+    let mut phoenixd = false;
     if let Some((node, kind)) = lightning_node(&args).await? {
         fake_lightning = kind == "fake";
+        phoenixd = kind == "phoenixd";
         let issuer = TihIssuer::new(sats_controlled.clone(), node, CurrencyUnit::Sat);
         builder = add_lightning_issuance(builder, issuer, limits)
             .await
@@ -1030,6 +1040,19 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             args.epoch_esplora.trim_end_matches('/').to_string(),
         ))
     });
+    // Tips on the operator's Nostr profile (zaps support development).
+    let tip_routes = {
+        let (tip, routes) = crate::tips::setup(
+            &args.tips,
+            phoenixd,
+            args.mint_url.as_deref(),
+            &args.data_dir,
+            hashu_mint::reliability::PublishConfig::parse(&args.nostr_relays, "").relays,
+        )
+        .context("tips")?;
+        reliability.set_tip("", tip);
+        routes
+    };
     // Registered suppliers' mints, on <name>.<supplier domain>.
     let tenants = supplier_mints(
         &args,
@@ -1088,6 +1111,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         .context("build mint HTTP router")?
         .merge(checkout::router(checkout.clone()))
         .merge(crate::reliability::router(reliability.clone(), ""))
+        .merge(tip_routes.unwrap_or_default())
         .merge(landing::router());
     if let Some(e) = &epochs {
         app = app

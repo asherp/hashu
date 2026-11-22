@@ -111,6 +111,7 @@ services:
       # to these Nostr relays and timestamped by these OpenTimestamps
       # calendars (public, free). Set either to "" to turn that part off.
       HASHU_NOSTR_RELAYS: ${HASHU_NOSTR_RELAYS-wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net}
+      HASHU_TIPS: ${HASHU_TIPS:-on}
       HASHU_OTS_CALENDARS: ${HASHU_OTS_CALENDARS-https://a.pool.opentimestamps.org,https://b.pool.opentimestamps.org,https://a.pool.eternitywall.com}
       # Epoch-dated vouchers (#126); off unless set to true.
       HASHU_EPOCHS: ${HASHU_EPOCHS:-false}

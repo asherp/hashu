@@ -456,6 +456,14 @@ impl Tenants {
                     tracing::warn!(supplier = %name, error = %e, "no NIP-87 announcement: mint info")
                 }
             }
+            // Tips on the supplier's profile go to their own LNURL.
+            rel.set_tip(
+                name,
+                address
+                    .as_deref()
+                    .and_then(|l| l.parse::<hashu_mint::lnaddress::PayEndpoint>().ok())
+                    .map(|e| hashu_mint::discovery::Tip::supplier(name, &e)),
+            );
             app = app.merge(crate::reliability::router(rel.clone(), name));
         }
         if let (Some(e), Some(p)) = (&epochs, &planner) {
