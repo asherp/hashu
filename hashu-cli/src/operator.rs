@@ -288,6 +288,8 @@ pub struct DaemonInfo {
     pub mint_listen: String,
     pub mint_url: Option<String>,
     pub stratum_bind: String,
+    /// The public address miners connect to (`HASHU_STRATUM_URL`).
+    pub stratum: Option<crate::stratum_addr::StratumAddr>,
     pub rails: Vec<String>,
     pub min_redeem_tih: u64,
     pub max_tih: u64,
@@ -868,8 +870,8 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
     let heat = heat_json(
         s,
         &capacity,
-        latest.map(|l| l.hashrate_hs).unwrap_or(0.0),
-        latest.map(|l| l.total_hashes).unwrap_or(0.0),
+        latest.as_ref().map(|l| l.hashrate_hs).unwrap_or(0.0),
+        latest.as_ref().map(|l| l.total_hashes).unwrap_or(0.0),
         now,
     );
     Ok(json!({
@@ -908,6 +910,9 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
         "heat": heat,
         "proxy": {
             "stratum_bind": s.info.stratum_bind,
+            // `{url, host, port}` miners connect to; differs from the
+            // bind behind a port mapping.
+            "stratum": s.info.stratum,
             "default_upstream": s.control.default_upstream,
             "metrics": {
                 "connections_accepted": m.connections_accepted,
@@ -916,8 +921,8 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
                 "shares_rejected": m.shares_rejected,
                 "shares_credited": m.shares_credited,
             },
-            "hashrate_hs": latest.map(|l| l.hashrate_hs).unwrap_or(0.0),
-            "total_hashes": latest.map(|l| l.total_hashes).unwrap_or(0.0),
+            "hashrate_hs": latest.as_ref().map(|l| l.hashrate_hs).unwrap_or(0.0),
+            "total_hashes": latest.as_ref().map(|l| l.total_hashes).unwrap_or(0.0),
             "window_s": s.meter.window().as_secs_f64(),
         },
         "redemptions": redemptions,

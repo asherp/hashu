@@ -252,6 +252,8 @@ pub struct CheckoutState {
     pub orders: Arc<OrderBook>,
     /// The operator's Hashu wallet, linked from the landing and checkout.
     pub app_url: Option<String>,
+    /// Where miners connect to this mint's proxy.
+    pub stratum: Option<crate::stratum_addr::StratumAddr>,
     checkouts: Mutex<HashMap<String, Arc<Mutex<Checkout>>>>,
 }
 
@@ -285,12 +287,19 @@ impl CheckoutState {
             meter,
             orders,
             app_url: None,
+            stratum: None,
             checkouts: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn with_app_url(mut self, app_url: Option<String>) -> Self {
         self.app_url = app_url;
+        self
+    }
+
+    /// The public Stratum address shown in `/checkout/api/info`.
+    pub fn with_stratum(mut self, stratum: crate::stratum_addr::StratumAddr) -> Self {
+        self.stratum = Some(stratum);
         self
     }
 }
@@ -468,6 +477,9 @@ async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
         "mint_url": s.public_url,
         // The operator's Hashu wallet; null when it runs none.
         "app_url": s.app_url,
+        // Where miners point to sell through this mint: `{url, host,
+        // port}` (HASHU_STRATUM_URL); null when not known.
+        "stratum": s.stratum,
         "hashes_per_tih": HASHES_PER_TIH as f64,
         "delivery": delivery_json(&s, &cap.live),
     }))
