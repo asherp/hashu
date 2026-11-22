@@ -12,12 +12,17 @@
 //!   hashrate integrated since the redemption opened, which is what the
 //!   redeemer has been delivered so far against its `target_hashes`.
 //!
+//! With a rig source ([`HashrateMeter::set_rig_source`], the proxy
+//! router's [`crate::router::Router::rig_work`]) each sample also carries
+//! every rig's cumulative work, so the GUI can stack the rigs' hashrates
+//! and show how they sum to the total.
+//!
 //! Share-based hashrate is noisy over short windows (a share every few
 //! seconds per miner is normal), so callers can recompute it over any
 //! window from the cumulative series.
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hashu_core::redemption::{RedemptionLedger, HASHES_PER_TIH};
@@ -31,7 +36,7 @@ pub const MAX_SAMPLES: usize = 3600;
 pub const MAX_REDEMPTION_POINTS: usize = 2000;
 
 /// One tick of the rolling series.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Sample {
     /// Unix time, milliseconds.
     pub t_ms: u64,
@@ -39,7 +44,16 @@ pub struct Sample {
     pub total_hashes: f64,
     /// Hashes per second over the trailing window.
     pub hashrate_hs: f64,
+    /// Each rig's work since the proxy started, in hashes, by rig label.
+    /// Empty without a rig source. A rig missing here has sent no share
+    /// yet (or none for an hour).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub rigs: BTreeMap<String, f64>,
 }
+
+/// Each rig's cumulative work, by label (see
+/// [`crate::router::Router::rig_work`]).
+pub type RigSource = Arc<dyn Fn() -> Vec<(String, f64)> + Send + Sync>;
 
 /// A redemption's delivered work over time.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -73,6 +87,7 @@ pub struct HashrateMeter {
     metrics: Arc<ProxyMetrics>,
     ledger: Arc<RedemptionLedger>,
     window: Duration,
+    rigs: OnceLock<RigSource>,
     inner: Mutex<Inner>,
 }
 
@@ -94,8 +109,15 @@ impl HashrateMeter {
             metrics,
             ledger,
             window,
+            rigs: OnceLock::new(),
             inner: Mutex::new(Inner::default()),
         }
+    }
+
+    /// Also record each rig's work in every sample. Set once; later calls
+    /// are ignored.
+    pub fn set_rig_source(&self, rigs: RigSource) {
+        let _ = self.rigs.set(rigs);
     }
 
     pub fn window(&self) -> Duration {
@@ -110,16 +132,25 @@ impl HashrateMeter {
     /// Sample with an explicit clock, for tests.
     pub fn sample_at(&self, t_ms: u64) {
         let total = self.metrics.accepted_hashes();
+        let rigs: BTreeMap<String, f64> = self
+            .rigs
+            .get()
+            .map(|f| f().into_iter().collect())
+            .unwrap_or_default();
         let redemptions = self.ledger.all();
         let mut inner = self.inner.lock().unwrap();
 
         // Rolling hashrate: work since the oldest sample inside the window.
         let window_ms = self.window.as_millis() as u64;
         let since = t_ms.saturating_sub(window_ms);
-        let base = inner.samples.iter().find(|s| s.t_ms >= since).copied();
+        let base = inner
+            .samples
+            .iter()
+            .find(|s| s.t_ms >= since)
+            .map(|s| (s.t_ms, s.total_hashes));
         let hashrate_hs = match base {
-            Some(b) if t_ms > b.t_ms => {
-                (total - b.total_hashes).max(0.0) * 1000.0 / (t_ms - b.t_ms) as f64
+            Some((b_t, b_total)) if t_ms > b_t => {
+                (total - b_total).max(0.0) * 1000.0 / (t_ms - b_t) as f64
             }
             _ => 0.0,
         };
@@ -127,6 +158,7 @@ impl HashrateMeter {
             t_ms,
             total_hashes: total,
             hashrate_hs,
+            rigs,
         });
         while inner.samples.len() > MAX_SAMPLES {
             inner.samples.pop_front();
@@ -185,7 +217,7 @@ impl HashrateMeter {
             .samples
             .iter()
             .filter(|s| s.t_ms > since_ms)
-            .copied()
+            .cloned()
             .collect()
     }
 
@@ -193,9 +225,9 @@ impl HashrateMeter {
     /// work (steadier than the per-tick rate). `None` before two samples.
     pub fn rate_over(&self, window: Duration) -> Option<f64> {
         let inner = self.inner.lock().unwrap();
-        let last = *inner.samples.back()?;
+        let last = inner.samples.back()?;
         let since = last.t_ms.saturating_sub(window.as_millis() as u64);
-        let first = *inner.samples.iter().find(|x| x.t_ms >= since)?;
+        let first = inner.samples.iter().find(|x| x.t_ms >= since)?;
         if last.t_ms <= first.t_ms {
             return None;
         }
@@ -207,7 +239,7 @@ impl HashrateMeter {
 
     /// The latest sample, if any.
     pub fn latest(&self) -> Option<Sample> {
-        self.inner.lock().unwrap().samples.back().copied()
+        self.inner.lock().unwrap().samples.back().cloned()
     }
 
     /// Every redemption seen, in the order they opened.
@@ -270,6 +302,25 @@ mod tests {
         let expected = 1000.0 * 1000.0 * HASHES_PER_DIFF_ONE as f64 / 10.0;
         assert!((s.hashrate_hs - expected).abs() / expected < 1e-9);
         assert_eq!(s.total_hashes, 1000.0 * 1000.0 * HASHES_PER_DIFF_ONE as f64);
+    }
+
+    #[test]
+    fn samples_carry_each_rigs_work() {
+        let (_, _, h) = meter();
+        h.sample_at(0);
+        assert!(h.latest().unwrap().rigs.is_empty());
+        h.set_rig_source(Arc::new(|| {
+            vec![
+                ("alice.rig1".to_string(), 10.0),
+                ("bob.rig2".to_string(), 5.0),
+            ]
+        }));
+        h.sample_at(1_000);
+        let s = h.latest().unwrap();
+        assert_eq!(s.rigs.get("alice.rig1"), Some(&10.0));
+        assert_eq!(s.rigs.get("bob.rig2"), Some(&5.0));
+        let j = serde_json::to_value(&s).unwrap();
+        assert_eq!(j["rigs"]["bob.rig2"], 5.0);
     }
 
     #[test]

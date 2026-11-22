@@ -87,8 +87,9 @@ pub struct TenantConfig {
     pub fake_lightning: bool,
     /// Live hashrate of a supplier's verified rigs (the proxy router).
     pub hashrate: HashrateFn,
-    /// Port miners connect to, shown on sign-up.
-    pub stratum_port: u16,
+    /// Public Stratum address miners connect to, shown on sign-up. Every
+    /// supplier's rigs use this shared endpoint (`pw=` tells them apart).
+    pub stratum: crate::stratum_addr::StratumAddr,
     pub probe: ProbeFn,
     /// Serves each supplier mint's reliability record (#109).
     pub reliability: Option<Arc<crate::reliability::Reliability>>,
@@ -592,8 +593,9 @@ async fn post_join(State(tenants): State<Arc<Tenants>>, Json(req): Json<JoinRequ
             "dashboard_key": key,
             "mint_url": format!("https://{}", tenants.host_for(&name)),
             "stratum": {
-                "url": tenants.cfg.base,
-                "port": tenants.cfg.stratum_port,
+                "url": tenants.cfg.stratum.url,
+                "host": tenants.cfg.stratum.host,
+                "port": tenants.cfg.stratum.port,
                 "user": format!("{name}.<rig>"),
                 "password": format!("pw={secret}"),
             },
@@ -676,7 +678,10 @@ mod tests {
                 max_tih: 1 << 20,
                 fake_lightning: fake,
                 hashrate: Arc::new(move |n: &str| if n == "alice" { ths * 1e12 } else { 0.0 }),
-                stratum_port: 3335,
+                stratum: crate::stratum_addr::StratumAddr::parse(
+                    "stratum+tcp://mint.example.com:3335",
+                )
+                .unwrap(),
                 reliability: None,
                 probe: Arc::new(|a: LightningAddress| {
                     Box::pin(async move {
@@ -823,6 +828,10 @@ mod tests {
         let j: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(j["mint_url"], "https://bob.mint.example.com");
         assert_eq!(j["stratum"]["user"], "bob.<rig>");
+        // The public address (HASHU_STRATUM_URL), not the bind port.
+        assert_eq!(j["stratum"]["url"], "stratum+tcp://mint.example.com:3335");
+        assert_eq!(j["stratum"]["host"], "mint.example.com");
+        assert_eq!(j["stratum"]["port"], 3335);
         let secret = j["secret"].as_str().unwrap().to_string();
         assert_eq!(j["stratum"]["password"], format!("pw={secret}"));
         let key = j["dashboard_key"].as_str().unwrap().to_string();
