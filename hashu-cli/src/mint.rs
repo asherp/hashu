@@ -1039,10 +1039,23 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     }
 
     let mut router_methods = methods.clone();
+    let mut planner: Option<Arc<crate::planner::Planner>> = None;
     if let Some(e) = &epochs {
         router_methods.push(EPOCH.to_string());
         e.set_plan_inputs(crate::epochs::plan_inputs(capacity.clone()));
         crate::epochs::set_operator(e.clone());
+        let p = Arc::new(crate::planner::Planner {
+            plan: Arc::new(hashu_mint::planner::HashratePlan::open(Some(
+                args.data_dir.join("hashrate-plan.json"),
+            ))?),
+            epochs: e.clone(),
+            capacity: capacity.clone(),
+            record: reliability
+                .store("")
+                .context("operator reliability record")?,
+        });
+        p.start();
+        planner = Some(p);
         let on_rotate: Arc<dyn Fn() + Send + Sync> = {
             let (rel, mint) = (reliability.clone(), mint.clone());
             Arc::new(move || rel.set_keysets("", tih_keyset_ids(&mint)))
@@ -1066,6 +1079,12 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     if let Some(e) = &epochs {
         app = app
             .merge(crate::epochs::router(e.clone(), mint.clone()))
+            .merge(
+                planner
+                    .clone()
+                    .map(crate::planner::public_router)
+                    .unwrap_or_default(),
+            )
             .layer(axum::middleware::from_fn_with_state(
                 e.clone(),
                 crate::epochs::guard,
@@ -1175,6 +1194,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             waitlist: waitlist.clone(),
             mrr: mrr_sync.clone(),
             auth: Arc::new(auth),
+            planner: planner.clone(),
         });
         let listener = tokio::net::TcpListener::bind(bind)
             .await

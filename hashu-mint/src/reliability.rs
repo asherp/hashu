@@ -201,6 +201,15 @@ impl RecordStore {
         self.lock().values().rev().take(limit).cloned().collect()
     }
 
+    /// Work claimed by the published hours that start in
+    /// `[from_s, to_s)`: `(TiH, hours published)`. What a hashrate plan
+    /// is checked against.
+    pub fn work_between(&self, from_s: u64, to_s: u64) -> (f64, u64) {
+        let idx = self.lock();
+        idx.range(from_s..to_s)
+            .fold((0.0, 0), |(w, n), (_, s)| (w + s.work_tih, n + 1))
+    }
+
     /// Totals over every published hour.
     pub fn totals(&self, now_s: u64) -> serde_json::Value {
         let idx = self.lock();
