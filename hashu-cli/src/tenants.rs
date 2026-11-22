@@ -408,6 +408,14 @@ impl Tenants {
                     .map(|e| hashu_mint::discovery::Tip::supplier(name, &e)),
             );
             app = app.merge(crate::reliability::router(rel.clone(), name));
+            // Direct messages to this mint go to its supplier: their
+            // dashboard key reads and answers them.
+            let (registry, who) = (self.registry.clone(), name.to_string());
+            let auth: crate::inbox::AuthFn = Arc::new(move |h: &HeaderMap| {
+                let key = h.get(KEY_HEADER).and_then(|v| v.to_str().ok());
+                registry.check_key(&who, key)
+            });
+            app = app.merge(crate::inbox::router(rel.clone(), name, Some(auth)));
         }
         tracing::info!(
             supplier = %name,

@@ -103,6 +103,8 @@ pub struct Reliability {
     announcements: Mutex<HashMap<String, Announcement>>,
     /// Where each mint's profile takes tips (`lud16`/`lud06`).
     tips: Mutex<HashMap<String, Tip>>,
+    /// Each mint's direct messages ([`crate::inbox`]).
+    pub(crate) inboxes: crate::inbox::Inboxes,
 }
 
 impl Reliability {
@@ -141,6 +143,7 @@ impl Reliability {
             keysets: Mutex::new(HashMap::new()),
             announcements: Mutex::new(HashMap::new()),
             tips: Mutex::new(HashMap::new()),
+            inboxes: Default::default(),
         }))
     }
 
@@ -211,7 +214,12 @@ impl Reliability {
         }
     }
 
-    fn mints(&self) -> Vec<String> {
+    /// Relays every mint posts to (`HASHU_NOSTR_RELAYS`).
+    pub fn configured_relays(&self) -> &[String] {
+        &self.cfg.relays
+    }
+
+    pub(crate) fn mints(&self) -> Vec<String> {
         let mut m = vec![OPERATOR_MINT.to_string()];
         if let Some(s) = &self.suppliers {
             m.extend((s.names)());

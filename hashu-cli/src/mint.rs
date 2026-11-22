@@ -1138,6 +1138,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             .with_reliability(reliability.recorder()),
     );
     tokio::spawn(reliability.clone().run());
+    tokio::spawn(reliability.clone().run_inbox());
     let credit = CreditContext::new(crediter, router.clone());
 
     if args.metrics_interval > 0 {
@@ -1219,6 +1220,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             mrr: mrr_sync.clone(),
             auth: Arc::new(auth),
             planner: planner.clone(),
+            reliability: Some(reliability.clone()),
         });
         let listener = tokio::net::TcpListener::bind(bind)
             .await
