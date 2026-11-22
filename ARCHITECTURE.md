@@ -537,6 +537,30 @@ until a relay takes them, and re-posted weekly. The reliability index
 holding it. Relays come from `HASHU_NOSTR_RELAYS`; with none, nothing is
 posted.
 
+The same receipt key publishes each mint's **kind 0 profile** (NIP-01
+metadata) so ordinary Nostr clients show the mint: `name`/`display_name`,
+`about` (NUT-06 description plus a link to `/reliability/`), `picture`
+(NUT-06 `icon_url`, else Hashu's mark at `/nostr/avatar.png`), `website`
+(mint URL), `nip05` = `_@<mint host>` and NIP-24 `bot: true`. The mint
+answers NIP-05 at `/.well-known/nostr.json` (`_` → receipt pubkey, plus
+its relays, with CORS).
+
+**Tips.** Hashu is open source, and tips support its development. The
+operator's profile has `lud16 = tips@<mint host>` (`HASHU_TIPS=on`, with
+phoenixd and a public https URL): LUD-16 at `/.well-known/lnurlp/tips`,
+LUD-06 callback at `/lnurlp/tips/callback`, NIP-57 `allowsNostr` with the
+receipt key as `nostrPubkey`. Zap invoices commit to the zap request;
+once phoenixd reports one paid, the receipt key signs a kind 9735 zap
+receipt and posts it to the request's relays and the mint's. A tip is a
+plain phoenixd invoice outside cdk's quotes, so it never issues vouchers.
+`HASHU_TIPS` may instead name an external Lightning address/LNURL, or
+`off`. A supplier mint's profile takes tips at the supplier's own `lnurl`
+(`lud16` for an address, `lud06` otherwise); zaps there work only if that
+endpoint supports NIP-57. `about` says where tips go and that a tip buys
+no vouchers. Re-signed and re-posted like the announcement; listed in the reliability
+index under `profile`. This is separate from the `hashu manifest` kind 0
+of §4.7.1, which is signed by the `hashu init` key, not the receipt key.
+
 ## 5. Voucher types & lifecycle
 
 ### 5.1 Hash voucher (denomination: `TiH`)

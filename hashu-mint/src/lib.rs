@@ -20,3 +20,4 @@ pub mod pricing;
 pub mod reliability;
 pub mod stock;
 pub mod tether;
+pub mod tips;
