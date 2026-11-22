@@ -6,7 +6,10 @@
 //!   passed through untouched.
 //! - **Active redemption(s)**: the redeemer's pool, with the miner's
 //!   worker name rewritten to the redeemer's `worker_name` in
-//!   `mining.authorize` and `mining.submit`.
+//!   `mining.authorize` and `mining.submit`. With [`MintHosts`] set, the
+//!   worker label becomes the selling mint's host, so the redeemer's pool
+//!   shows the rig as e.g. `bc1q….mint.hashu.io` or `acct.alice.hashu.io`
+//!   (see [`delivery_worker`]).
 //!
 //! To change a live connection's route the router *signals* it (see
 //! [`Signal`]). In [`SwitchMode::Seamless`] (the default) the connection
@@ -414,6 +417,52 @@ struct Inner {
     /// Accepted work per rig label since the proxy started, for the
     /// operator's per-rig hashrate chart (see [`Router::rig_work`]).
     rig_work: HashMap<String, RigWork>,
+    /// Hosts of the mints served here, for naming delivery workers.
+    hosts: MintHosts,
+}
+
+/// Hosts of the mints whose orders this proxy fills, so a redeemer's pool
+/// sees which mint the hashrate came from (see [`delivery_worker`]).
+/// Unset (the default) leaves the redeemer's worker name as typed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MintHosts {
+    /// The operator's own mint, e.g. `mint.hashu.io`.
+    pub operator: Option<String>,
+    /// Domain supplier mints are named under: supplier `alice` is
+    /// `alice.<suppliers>`, e.g. `alice.hashu.io`.
+    pub suppliers: Option<String>,
+}
+
+impl MintHosts {
+    /// Host of the mint that sold an order: the operator's when
+    /// `supplier` is `None`.
+    pub fn host_for(&self, supplier: Option<&str>) -> Option<String> {
+        match supplier {
+            None => self.operator.clone(),
+            Some(name) => self.suppliers.as_ref().map(|d| format!("{name}.{d}")),
+        }
+    }
+}
+
+/// Worker name to authorize with on a redeemer's pool: the redeemer's
+/// account (everything before the first `.`) with the mint's host as the
+/// worker label, so `bc1q…` or `bc1q….hashu` becomes `bc1q….mint.hashu.io`
+/// and `acct.rig` becomes `acct.alice.hashu.io`. The redeemer's own label is
+/// replaced. Left as typed when there is no host, or when the name looks
+/// like an email or Lightning address (`@`), whose dots are not a label.
+pub fn delivery_worker(redeemer: &str, host: Option<&str>) -> String {
+    let redeemer = redeemer.trim();
+    let Some(host) = host.map(str::trim).filter(|h| !h.is_empty()) else {
+        return redeemer.to_string();
+    };
+    if redeemer.contains('@') {
+        return redeemer.to_string();
+    }
+    let account = redeemer.split('.').next().unwrap_or_default();
+    if account.is_empty() {
+        return redeemer.to_string();
+    }
+    format!("{account}.{host}")
 }
 
 /// One rig's accepted work since the proxy started.
@@ -490,6 +539,13 @@ impl Router {
 
     pub fn home_config(&self) -> &HomeConfig {
         &self.home
+    }
+
+    /// Name the worker on a redeemer's pool after the mint that sold the
+    /// order (see [`delivery_worker`]). Off by default.
+    pub fn with_mint_hosts(self, hosts: MintHosts) -> Self {
+        self.lock().hosts = hosts;
+        self
     }
 
     /// Use `mode` to move live connections (default
@@ -1118,7 +1174,10 @@ fn redemption_route(r: &Redemption, inner: &Inner, now: Instant) -> Option<Route
             pool,
             upstream,
             worker_password: p.authorize_password().to_string(),
-            worker_name: p.worker_name,
+            worker_name: delivery_worker(
+                &p.worker_name,
+                inner.hosts.host_for(r.supplier.as_deref()).as_deref(),
+            ),
         })
     })
 }
@@ -2111,6 +2170,67 @@ mod tests {
         {
             assert!(!worker_password.contains("pw="));
         }
+    }
+
+    #[test]
+    fn delivery_worker_takes_the_mint_host_as_its_label() {
+        let h = Some("mint.hashu.io");
+        assert_eq!(delivery_worker("bc1qabc", h), "bc1qabc.mint.hashu.io");
+        assert_eq!(delivery_worker("bc1qabc.hashu", h), "bc1qabc.mint.hashu.io");
+        assert_eq!(
+            delivery_worker(" acct.rig.7 ", Some("alice.hashu.io")),
+            "acct.alice.hashu.io"
+        );
+        // Already named: unchanged.
+        assert_eq!(
+            delivery_worker("bc1qabc.mint.hashu.io", h),
+            "bc1qabc.mint.hashu.io"
+        );
+        // No host, or an address whose dots are not a label: as typed.
+        assert_eq!(delivery_worker("bc1qabc.hashu", None), "bc1qabc.hashu");
+        assert_eq!(delivery_worker("me@getalby.com", h), "me@getalby.com");
+        assert_eq!(delivery_worker(".x", h), ".x");
+    }
+
+    #[test]
+    fn redeemers_see_the_mint_host_and_idle_rigs_keep_their_name() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = supplier_router(ledger.clone()).with_mint_hosts(MintHosts {
+            operator: Some("mint.hashu.io".into()),
+            suppliers: Some("hashu.io".into()),
+        });
+        open_for(&ledger, 1, Some("alice"));
+        open_for(&ledger, 2, None);
+        let worker = |a: &Assignment| a.route.credentials().map(|(w, _)| w.to_string());
+
+        // Alice's rig fills Alice's order: Bob's pool sees alice.hashu.io.
+        let alice = rig(&router, "alice.rig1", "pw=a-secret");
+        assert_eq!(alice.route.redemption_id(), Some(rid(1)));
+        assert_eq!(worker(&alice).as_deref(), Some("buyer1.alice.hashu.io"));
+        let line =
+            r#"{"id":4,"method":"mining.submit","params":["alice.rig1","j","00","00","00"]}"#;
+        let out: Value =
+            serde_json::from_str(&alice.route.rewrite_miner_line(line).unwrap()).unwrap();
+        assert_eq!(out["params"][0], "buyer1.alice.hashu.io");
+
+        // Hashu's own rig fills the operator mint's order.
+        let op = rig(&router, "hashu.mrr1", "x");
+        assert_eq!(op.route.redemption_id(), Some(rid(2)));
+        assert_eq!(worker(&op).as_deref(), Some("buyer2.mint.hashu.io"));
+
+        // Bob has no order: his rig idles on the default pool under its
+        // own name, its pw= taken out.
+        let idle = rig(&router, "bob.rig1", "pw=b-secret");
+        assert!(
+            matches!(idle.route, Route::Default { .. }),
+            "{:?}",
+            idle.route
+        );
+        let auth = r#"{"id":2,"method":"mining.authorize","params":["bob.rig1","pw=b-secret"]}"#;
+        let out: Value =
+            serde_json::from_str(&idle.route.rewrite_miner_line(auth).unwrap()).unwrap();
+        assert_eq!(out["params"][0], "bob.rig1");
+        assert!(!out["params"][1].as_str().unwrap_or("").contains("pw="));
     }
 
     #[test]
