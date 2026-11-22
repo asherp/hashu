@@ -108,7 +108,8 @@ pub struct PlanRow {
 /// Last epoch the sales window `[now, now + horizon_hours]` reaches.
 pub fn last_epoch(clock: &EpochClock, horizon_hours: f64) -> u64 {
     let beyond = horizon_hours - clock.hours_left();
-    if !(beyond > 0.0) {
+    // `NaN` or no time beyond the current epoch: the current epoch only.
+    if beyond.is_nan() || beyond <= 0.0 {
         return clock.current();
     }
     clock.current() + (beyond / EPOCH_HOURS).ceil() as u64
