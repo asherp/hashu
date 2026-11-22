@@ -537,6 +537,18 @@ until a relay takes them, and re-posted weekly. The reliability index
 holding it. Relays come from `HASHU_NOSTR_RELAYS`; with none, nothing is
 posted.
 
+The same receipt key publishes each mint's **kind 0 profile** (NIP-01
+metadata) so ordinary Nostr clients show the mint: `name`/`display_name`,
+`about` (NUT-06 description plus a link to `/reliability/`), `picture`
+(NUT-06 `icon_url`, else Hashu's mark at `/nostr/avatar.png`), `website`
+(mint URL), `nip05` = `_@<mint host>` and NIP-24 `bot: true`. The mint
+answers NIP-05 at `/.well-known/nostr.json` (`_` → receipt pubkey, plus
+its relays, with CORS). There is deliberately no `lud16`: the mint never
+holds or pays out sats, so a zap would be a gift with nothing to buy.
+Re-signed and re-posted like the announcement; listed in the reliability
+index under `profile`. This is separate from the `hashu manifest` kind 0
+of §4.7.1, which is signed by the `hashu init` key, not the receipt key.
+
 ## 5. Voucher types & lifecycle
 
 ### 5.1 Hash voucher (denomination: `TiH`)

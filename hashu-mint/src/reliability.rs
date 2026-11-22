@@ -386,6 +386,40 @@ impl RecordStore {
         .await
     }
 
+    /// Keep this mint's kind 0 Nostr profile current (re-signed when the
+    /// name, description, icon or URL change; re-posted weekly).
+    pub async fn ensure_profile(
+        &self,
+        a: &crate::discovery::Announcement,
+        now_s: u64,
+    ) -> Result<()> {
+        self.ensure_addressable(
+            "profile",
+            crate::discovery::PROFILE_KIND,
+            a.profile_tags()?,
+            a.profile_content(),
+            now_s,
+        )
+        .await
+    }
+
+    /// The signed kind 0 profile, once made.
+    pub fn profile_json(&self) -> Option<String> {
+        self.load_addressable("profile").map(|a| a.event)
+    }
+
+    /// Relays that hold the profile.
+    pub fn profile_relays(&self) -> Vec<String> {
+        self.load_addressable("profile")
+            .map(|a| a.relays)
+            .unwrap_or_default()
+    }
+
+    /// Relays this mint posts to.
+    pub fn configured_relays(&self) -> &[String] {
+        &self.cfg.relays
+    }
+
     /// Keep a NIP-87 recommendation of another mint current, under `slot`.
     /// `announcer` signs that mint's announcement.
     pub async fn ensure_recommendation(
@@ -445,6 +479,17 @@ impl RecordStore {
         };
         let path = self.addressable_path(slot);
         let old = self.load_addressable(slot);
+        // Replaceable events: relays keep the newest `created_at`, so a
+        // re-sign must be strictly later than the one it replaces even if
+        // the clock went back.
+        let prev_created = old
+            .as_ref()
+            .and_then(|a| Event::from_json(&a.event).ok())
+            .map(|e| e.created_at.as_secs());
+        let created = match prev_created {
+            Some(p) if p >= now_s => p + 1,
+            _ => now_s,
+        };
         let mut cur = match old {
             Some(a) if a.fingerprint == fingerprint => {
                 let stale = a.posted_s + REPOST_EVERY_S <= now_s;
@@ -457,9 +502,9 @@ impl RecordStore {
                 a
             }
             _ => {
-                let event = EventBuilder::new(Kind::Custom(kind), content)
+                let event = EventBuilder::new(Kind::from(kind), content)
                     .tags(tags)
-                    .custom_created_at(nostr::Timestamp::from(now_s))
+                    .custom_created_at(nostr::Timestamp::from(created))
                     .sign_with_keys(&self.keys)?;
                 tracing::info!(mint = %self.url, kind, slot, event = %event.id.to_hex(), "signed nostr event");
                 Addressable {
@@ -863,6 +908,36 @@ mod tests {
             store.pubkey(),
             "receipt_keys reads the same key"
         );
+    }
+
+    #[tokio::test]
+    async fn profile_is_kind0_by_the_receipt_key_and_never_goes_back_in_time() {
+        use crate::discovery::Announcement;
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            RecordStore::open(dir.path(), "https://m.example", PublishConfig::default()).unwrap();
+        let mut a = Announcement {
+            mint_pubkey: None,
+            url: "https://m.example".into(),
+            nuts: vec![1, 2, 3],
+            network: "mainnet".into(),
+            units: vec!["tih".into()],
+            name: Some("m".into()),
+            description: None,
+            icon_url: None,
+        };
+        store.ensure_profile(&a, 500).await.unwrap();
+        let first = Event::from_json(store.profile_json().unwrap()).unwrap();
+        first.verify().unwrap();
+        assert_eq!(first.kind, Kind::Metadata);
+        assert_eq!(first.pubkey.to_hex(), store.pubkey());
+        assert!(first.content.contains("_@m.example"));
+        // Clock went back, and the name changed: still strictly newer.
+        a.name = Some("renamed".into());
+        store.ensure_profile(&a, 400).await.unwrap();
+        let second = Event::from_json(store.profile_json().unwrap()).unwrap();
+        assert_eq!(second.created_at.as_secs(), 501);
+        assert!(second.content.contains("renamed"));
     }
 
     #[test]

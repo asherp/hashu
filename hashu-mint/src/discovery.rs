@@ -10,6 +10,11 @@
 //! has none), `u` = mint URL, `nuts` = supported NUT numbers, `n` =
 //! network. Hashu adds one `unit` tag per unit the mint issues (`tih`),
 //! `t=hashu` and a NIP-31 `alt`. `content` is kind-0 style metadata.
+//!
+//! The same key also publishes a **kind 0** profile (NIP-01 metadata,
+//! NIP-24 extras) so Nostr clients show the mint by name with a picture,
+//! a link and a NIP-05 address (`_@<mint host>`, served by the mint at
+//! `/.well-known/nostr.json`). See [`Announcement::profile_content`].
 
 use cdk::nuts::MintInfo;
 use nostr::Tag;
@@ -21,6 +26,11 @@ pub const ANNOUNCE_KIND: u16 = 38172;
 pub const RECOMMEND_KIND: u16 = 38000;
 /// Hashtag on every announcement.
 pub const ANNOUNCE_TAG: &str = "hashu";
+/// NIP-01 profile metadata.
+pub const PROFILE_KIND: u16 = 0;
+/// Path of the default profile picture on the mint, used when NUT-06 has
+/// no `icon_url`. A PNG, since several clients don't show SVG avatars.
+pub const AVATAR_PATH: &str = "/nostr/avatar.png";
 
 /// What a mint announces.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +112,75 @@ impl Announcement {
         serde_json::Value::Object(m).to_string()
     }
 
+    /// The NIP-05 address `_@<host>` (clients show it as just the host),
+    /// or `None` when the URL has no host. The mint answers it at
+    /// `https://<host>/.well-known/nostr.json?name=_`.
+    pub fn nip05(&self) -> Option<String> {
+        let host = self
+            .url
+            .split_once("://")
+            .map(|(_, r)| r)
+            .unwrap_or(&self.url)
+            .split(['/', '?', '#'])
+            .next()?
+            .to_ascii_lowercase();
+        // NIP-05 is fetched over HTTPS on port 443: a host with a port or
+        // a plain-HTTP mint can't serve it.
+        if host.is_empty() || host.contains(':') || !self.url.starts_with("https://") {
+            return None;
+        }
+        Some(format!("_@{host}"))
+    }
+
+    /// Profile picture: the mint's NUT-06 icon, else Hashu's mark served
+    /// by the mint itself.
+    pub fn picture(&self) -> String {
+        self.icon_url
+            .clone()
+            .unwrap_or_else(|| format!("{}{AVATAR_PATH}", self.url))
+    }
+
+    /// Kind 0 `content`: the mint's profile as Nostr clients show it.
+    ///
+    /// - `name`, `about`, `picture`, `website` from NUT-06 (`about` also
+    ///   points at the hourly delivery record).
+    /// - `nip05` = `_@<mint host>`, so the profile shows a verified domain.
+    /// - `bot: true` (NIP-24): every post from this key is automated.
+    /// - No `lud16`/`lud06`: the mint never pays out or holds sats (closed
+    ///   loop), and a zap to it would be a gift with nothing to buy. Buyers
+    ///   pay through the mint's own quotes instead.
+    pub fn profile_content(&self) -> String {
+        let mut m = serde_json::Map::new();
+        if let Some(n) = &self.name {
+            m.insert("name".into(), n.clone().into());
+            m.insert("display_name".into(), n.clone().into());
+        }
+        let record = format!("Hourly delivery record: {}/reliability/", self.url);
+        let about = match &self.description {
+            Some(d) => format!("{d}\n\n{record}"),
+            None => record,
+        };
+        m.insert("about".into(), about.into());
+        m.insert("picture".into(), self.picture().into());
+        m.insert("website".into(), self.url.clone().into());
+        if let Some(n) = self.nip05() {
+            m.insert("nip05".into(), n.into());
+        }
+        m.insert("bot".into(), true.into());
+        serde_json::Value::Object(m).to_string()
+    }
+
+    /// Kind 0 tags: a NIP-31 `alt` and `t=hashu`.
+    pub fn profile_tags(&self) -> anyhow::Result<Vec<Tag>> {
+        Ok(vec![
+            Tag::hashtag(ANNOUNCE_TAG),
+            Tag::parse([
+                "alt",
+                format!("Nostr profile of the Cashu mint {}", self.url).as_str(),
+            ])?,
+        ])
+    }
+
     /// Kind 38000 tags recommending this mint, whose announcement is
     /// signed by `announcer` (hex pubkey). `relay` is a hint for where to
     /// find it.
@@ -181,6 +260,7 @@ fn issued_units(nuts: &serde_json::Value) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr::JsonUtil;
     use serde_json::json;
 
     fn sample() -> Announcement {
@@ -225,6 +305,42 @@ mod tests {
         let c: serde_json::Value = serde_json::from_str(&a.content()).unwrap();
         assert_eq!(c["name"], "Hashu");
         assert_eq!(c["website"], "https://mint.example");
+    }
+
+    #[test]
+    fn profile_is_kind0_metadata_without_lightning() {
+        let a = sample();
+        let c: serde_json::Value = serde_json::from_str(&a.profile_content()).unwrap();
+        assert_eq!(c["name"], "Hashu");
+        assert_eq!(c["website"], "https://mint.example");
+        assert_eq!(c["nip05"], "_@mint.example");
+        assert_eq!(c["picture"], "https://mint.example/nostr/avatar.png");
+        assert_eq!(c["bot"], true);
+        assert!(c["about"]
+            .as_str()
+            .unwrap()
+            .contains("https://mint.example/reliability/"));
+        assert!(c.get("lud16").is_none() && c.get("lud06").is_none());
+        let meta = nostr::Metadata::from_json(a.profile_content()).unwrap();
+        assert_eq!(meta.name.as_deref(), Some("Hashu"));
+    }
+
+    #[test]
+    fn nip05_only_for_plain_https_hosts() {
+        let mut a = sample();
+        a.url = "https://Alice.Hashu.io".into();
+        assert_eq!(a.nip05().as_deref(), Some("_@alice.hashu.io"));
+        a.url = "https://mint.example:8085".into();
+        assert_eq!(a.nip05(), None);
+        a.url = "http://localhost".into();
+        assert_eq!(a.nip05(), None);
+    }
+
+    #[test]
+    fn picture_prefers_the_mint_icon() {
+        let mut a = sample();
+        a.icon_url = Some("https://cdn.example/i.png".into());
+        assert_eq!(a.picture(), "https://cdn.example/i.png");
     }
 
     #[test]
