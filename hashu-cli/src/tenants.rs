@@ -43,7 +43,7 @@ use futures::future::BoxFuture;
 use hashu_core::redemption::RedemptionLedger;
 use hashu_mint::capacity::MIN_PURCHASE_TIH;
 use hashu_mint::lightning::add_lightning_issuance;
-use hashu_mint::lnaddress::{LightningAddress, LnAddressRail};
+use hashu_mint::lnaddress::{LnAddressRail, PayEndpoint};
 use hashu_mint::melt::{reopen_pending_quotes_in, HashrateMelter, METHOD as HASHRATE};
 use hashu_mint::payment::{tih_unit, TihIssuer};
 use hashu_proxy::suppliers::{
@@ -56,9 +56,8 @@ use crate::supplier::{
     HashrateFn, SupplierBook, SupplierCapacity, SupplierPricer, SupplierSettings,
 };
 
-/// Checks a Lightning address can be invoiced and verified.
-pub type ProbeFn =
-    Arc<dyn Fn(LightningAddress) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
+/// Checks an LNURL-pay endpoint can be invoiced and verified.
+pub type ProbeFn = Arc<dyn Fn(PayEndpoint) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
 /// The real probe: [`hashu_mint::lnaddress::probe`].
 pub fn lnurl_probe() -> ProbeFn {
@@ -216,7 +215,7 @@ impl Tenants {
         Ok(self.get(name).await?.pricer.capacity())
     }
 
-    /// Save new settings for `name`. A changed payment address is probed
+    /// Save new settings for `name`. A changed LNURL-pay endpoint is probed
     /// first and rebuilds the mint (cdk fixes its payment rails at build).
     async fn update_settings(
         &self,
@@ -226,9 +225,9 @@ impl Tenants {
         let new = new.validated()?;
         let t = self.get(name).await.map_err(|e| e.to_string())?;
         let old = t.settings.read().unwrap_or_else(|e| e.into_inner()).clone();
-        let rail_changed = old.lightning_address != new.lightning_address;
+        let rail_changed = old.lnurl != new.lnurl;
         if rail_changed {
-            if let Some(a) = &new.lightning_address {
+            if let Some(a) = &new.lnurl {
                 (self.cfg.probe)(a.parse()?).await?;
             }
         }
@@ -321,14 +320,14 @@ impl Tenants {
         let address = settings
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .lightning_address
+            .lnurl
             .clone();
         let rail: Option<cdk::cdk_payment::DynMintPayment> = match &address {
             Some(a) => {
-                let addr: LightningAddress = a.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+                let addr: PayEndpoint = a.parse().map_err(|e: String| anyhow::anyhow!(e))?;
                 Some(Arc::new(
                     LnAddressRail::new(&addr, Some(dir.join("ln-invoices.json")))
-                        .map_err(|e| anyhow::anyhow!("Lightning address rail: {e}"))?,
+                        .map_err(|e| anyhow::anyhow!("LNURL-pay rail: {e}"))?,
                 ))
             }
             None if self.cfg.fake_lightning => Some(Arc::new(cdk_fake_wallet::FakeWallet::new(
@@ -426,9 +425,9 @@ impl Tenants {
     ) -> Result<(String, String), (StatusCode, String)> {
         let bad = |e: String| (StatusCode::BAD_REQUEST, e);
         let settings = settings.validated().map_err(bad)?;
-        let Some(addr) = settings.lightning_address.as_deref() else {
+        let Some(addr) = settings.lnurl.as_deref() else {
             return Err(bad(
-                "a Lightning address is required, so buyers can pay you".into(),
+                "a Lightning address or LNURL-pay link is required, so buyers can pay you".into(),
             ));
         };
         if settings.ask_sats_per_eih.is_none() {
@@ -545,13 +544,13 @@ async fn supplier_status(State(ctx): State<SupplierCtx>) -> Response {
     Json(json!({
         "name": ctx.name,
         "mint_url": format!("https://{}", tenants.host_for(&ctx.name)),
-        "selling": s.ask_sats_per_eih.is_some() && s.lightning_address.is_some() && cap.available_tih > 0,
+        "selling": s.ask_sats_per_eih.is_some() && s.lnurl.is_some() && cap.available_tih > 0,
         "ask_sats_per_eih": s.ask_sats_per_eih,
         // The same ask in sats per TH/s per day, to compare with markets.
         "ask_sats_per_th_day": s.ask_sats_per_eih.map(|a| {
             hashu_core::denom::sats_per_th_day(hashu_core::denom::msat_per_pih_from_sats_per_eih(a as f64))
         }),
-        "pays_by_lightning": s.lightning_address.is_some(),
+        "pays_by_lightning": s.lnurl.is_some(),
         "capacity": cap,
     }))
     .into_response()
@@ -732,9 +731,9 @@ mod tests {
                 )
                 .unwrap(),
                 reliability: None,
-                probe: Arc::new(|a: LightningAddress| {
+                probe: Arc::new(|a: PayEndpoint| {
                     Box::pin(async move {
-                        if a.domain == "wallet.example" {
+                        if a.lnurlp_url().starts_with("https://wallet.example/") {
                             Ok(())
                         } else {
                             Err("no LUD-21".to_string())
@@ -917,7 +916,7 @@ mod tests {
         let t = tenants(dir.path());
         let app = app(&t);
         let op = "mint.example.com";
-        let join = |name: &str, ln: &str| json!({"name": name, "lightning_address": ln, "ask_sats_per_eih": 600, "horizon_hours": 24});
+        let join = |name: &str, ln: &str| json!({"name": name, "lnurl": ln, "ask_sats_per_eih": 600, "horizon_hours": 24});
         let (s, body) = send(
             &app,
             "POST",
@@ -967,6 +966,36 @@ mod tests {
         .await;
         assert_eq!((s, body.as_str()), (StatusCode::BAD_REQUEST, "no LUD-21"));
         assert!(!t.registry.contains("carol"));
+        // A miner's own LNURL-pay endpoint works as well as an address,
+        // and one on an IP address is refused before anything is fetched.
+        let (s, body) = send(
+            &app,
+            "POST",
+            op,
+            "/api/join",
+            None,
+            Some(join("dave", "lightning:https://wallet.example/lnurlp/dave")),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        assert_eq!(
+            SupplierSettings::load(&dir.path().join("mints/dave"))
+                .unwrap()
+                .lnurl
+                .as_deref(),
+            Some("https://wallet.example/lnurlp/dave")
+        );
+        let (s, _) = send(
+            &app,
+            "POST",
+            op,
+            "/api/join",
+            None,
+            Some(join("erin", "https://10.0.0.1/lnurlp/erin")),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        assert!(!t.registry.contains("erin"));
 
         let bob = "bob.mint.example.com";
         let (s, body) = send(&app, "GET", bob, "/api/supplier", None, None).await;
@@ -997,14 +1026,14 @@ mod tests {
         let short = json!({"ask_sats_per_eih": 620, "horizon_hours": 0.5, "lightning_address": "bob@wallet.example"});
         let (s, _) = send(&app, "POST", bob, "/api/settings", Some(&key), Some(short)).await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
-        let ok = json!({"ask_sats_per_eih": 620, "horizon_hours": 1, "lightning_address": "bob@wallet.example"});
+        let ok = json!({"ask_sats_per_eih": 620, "horizon_hours": 1, "lnurl": "lnurlp://wallet.example/lnurlp/bob"});
         let (s, body) = send(&app, "POST", bob, "/api/settings", Some(&key), Some(ok)).await;
         assert_eq!(s, StatusCode::OK, "{body}");
+        let saved = SupplierSettings::load(&dir.path().join("mints/bob")).unwrap();
+        assert_eq!(saved.ask_sats_per_eih, Some(620));
         assert_eq!(
-            SupplierSettings::load(&dir.path().join("mints/bob"))
-                .unwrap()
-                .ask_sats_per_eih,
-            Some(620)
+            saved.lnurl.as_deref(),
+            Some("https://wallet.example/lnurlp/bob")
         );
         t.stop_all().await;
     }

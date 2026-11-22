@@ -1831,6 +1831,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "bech32",
  "bitcoin",
  "bs58 0.5.1",
  "cdk",
@@ -1854,6 +1855,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tracing",
+ "url",
  "wiremock",
 ]
 
