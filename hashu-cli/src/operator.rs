@@ -319,6 +319,8 @@ pub struct OperatorState {
     pub mrr: Arc<crate::mrr_sync::MrrSync>,
     /// Operator login and cross-site request checks.
     pub auth: Arc<crate::operator_auth::OperatorAuth>,
+    /// Hashrate planner, with epochs on (#126).
+    pub planner: Option<Arc<crate::planner::Planner>>,
 }
 
 /// Largest test mint in one go: 2^22 TiH (≈ 1,281 THH).
@@ -341,6 +343,7 @@ pub fn router(state: Arc<OperatorState>) -> axum::Router {
         .route("/api/test-redeem", post(test_redeem))
         .route("/api/capacity", get(capacity).post(set_capacity))
         .route("/api/mrr", get(mrr_status).post(set_mrr))
+        .route("/api/plan", get(plan_status).post(set_plan))
         .fallback(proxy_control)
         .with_state(state)
         .layer(axum::middleware::from_fn_with_state(
@@ -630,6 +633,30 @@ fn server_error(msg: String) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(json!({ "error": msg })),
+    )
+        .into_response()
+}
+
+/// `GET /api/plan`: the hashrate planner (404 with epochs off).
+async fn plan_status(State(s): State<Arc<OperatorState>>) -> Response {
+    match &s.planner {
+        Some(p) => crate::planner::get_plan(State(p.clone())).await,
+        None => no_planner(),
+    }
+}
+
+/// `POST /api/plan` `{"epochs": {"<epoch>": <TH/s> | null}}`.
+async fn set_plan(State(s): State<Arc<OperatorState>>, body: String) -> Response {
+    match &s.planner {
+        Some(p) => crate::planner::post_plan(State(p.clone()), body).await,
+        None => no_planner(),
+    }
+}
+
+fn no_planner() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "error": "the hashrate planner needs epochs on (HASHU_EPOCHS=true)" })),
     )
         .into_response()
 }

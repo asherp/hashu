@@ -25,6 +25,7 @@ pub mod operator_auth;
 pub mod oracle;
 pub mod orders;
 pub mod paid;
+pub mod planner;
 pub mod proxy;
 pub mod reliability;
 pub mod stratum_addr;
