@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hashu units</title>
+<meta name="description" content="Why Hashu vouchers count hashes in TiH (2^40 hashes), and how TiH converts to TH/s, THh, PHd and hashprice.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f7931a'/%3E%3Cpath d='M10.5 6V20A5.5 5.5 0 0 0 21.5 20V6' stroke='%23111' stroke-width='3' stroke-linecap='round' fill='none'/%3E%3Cpath d='M5 11.5H27M5 18H27' stroke='%23111' stroke-width='2.6' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f6f6f4; --surface: #ffffff; --ink: #1b1b1a; --ink-2: #55534f; --ink-3: #8a8782;
+  --line: rgba(27,27,26,0.12); --brand: #e8850c; --brand-fill: rgba(232,133,12,0.12); --brand-ink: #111;
+  --ten: #3b6fb6; --ten-fill: rgba(59,111,182,0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111110; --surface: #1a1a19; --ink: #f1efea; --ink-2: #b5b2ab; --ink-3: #85827c;
+    --line: rgba(241,239,234,0.14); --brand: #f7931a; --brand-fill: rgba(247,147,26,0.14);
+    --ten: #7fa8e6; --ten-fill: rgba(127,168,230,0.14);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: inherit; }
+.wrap { max-width: 960px; margin: 0 auto; padding: 0 16px; }
+nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 0; flex-wrap: wrap; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; text-decoration: none; }
+.logo svg { width: 28px; height: 28px; }
+nav .links { display: flex; gap: 18px; font-size: 14px; flex-wrap: wrap; }
+nav .links a { color: var(--ink-2); text-decoration: none; }
+nav .links a:hover { color: var(--ink); }
+.hero { padding: 48px 0 32px; }
+.hero .kicker { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--brand); margin: 0 0 12px; }
+.hero h1 { font-size: clamp(34px, 6vw, 56px); line-height: 1.05; letter-spacing: -0.02em; margin: 0 0 18px; max-width: 16ch; }
+.hero h1 span { color: var(--brand); }
+.lede { font-size: 18px; color: var(--ink-2); max-width: 64ch; margin: 0 0 8px; }
+section { padding: 40px 0; border-top: 1px solid var(--line); }
+section > h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-2); margin: 0 0 20px; }
+h3 { margin: 0 0 6px; font-size: 18px; }
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; min-width: 0; }
+.card p { margin: 0; color: var(--ink-2); }
+.card p + p { margin-top: 10px; }
+.card ul { margin: 8px 0 0; padding-left: 18px; color: var(--ink-2); }
+.card li { margin: 4px 0; }
+.card .tag { display: inline-block; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 999px; padding: 2px 10px; margin-bottom: 10px; }
+.card.two { border-color: var(--brand); }
+.card.two .tag { background: var(--brand-fill); color: var(--brand); }
+.card.ten .tag { background: var(--ten-fill); color: var(--ten); }
+.big { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; margin: 2px 0 8px; overflow-wrap: anywhere; }
+.big small { font-size: 14px; font-weight: 500; color: var(--ink-2); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
+.note { color: var(--ink-2); font-size: 15px; max-width: 70ch; margin: 16px 0 0; }
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+tr:last-child th, tr:last-child td { border-bottom: none; }
+thead th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); font-weight: 600; }
+tbody th { font-weight: 650; white-space: nowrap; }
+td { color: var(--ink-2); }
+td.n { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--ink); }
+tr.us th, tr.us td { background: var(--brand-fill); }
+tr.us th { color: var(--brand); }
+tr.group th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); background: var(--bg); padding: 8px 14px; }
+.work { display: grid; gap: 16px; }
+.step { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin-top: 10px; font-variant-numeric: tabular-nums; font-size: 15px; }
+.step span:nth-child(odd) { color: var(--ink-3); white-space: nowrap; }
+.step span:nth-child(even) { overflow-wrap: anywhere; }
+.ladder { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.ladder span { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.ladder span.on { background: var(--brand-fill); border-color: var(--brand); color: var(--ink); }
+.conv { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+.conv label { display: grid; gap: 4px; font-size: 13px; color: var(--ink-3); flex: 1 1 160px; }
+.conv input, .conv select { font: inherit; font-size: 16px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; width: 100%; min-width: 0; }
+.out { margin-top: 16px; }
+.out table { min-width: 0; }
+.out td.n { text-align: right; }
+.out th { white-space: normal; font-weight: 600; }
+.out th, .out td { padding: 9px 12px; }
+@media (max-width: 480px) { .card { padding: 16px; } .out th { font-size: 13px; } }
+footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 14px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+sup { line-height: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="logo" href="/">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#f7931a"/><path d="M10.5 6V20A5.5 5.5 0 0 0 21.5 20V6" stroke="#111" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M5 11.5H27M5 18H27" stroke="#111" stroke-width="2.6" stroke-linecap="round"/></svg>
+      Hashu
+    </a>
+    <div class="links">
+      <a href="/">Home</a>
+      <a href="#why">Why TiH</a>
+      <a href="#table">Unit table</a>
+      <a href="#examples">Examples</a>
+      <a href="#converter">Converter</a>
+      <a href="/redeem/">Pool guides</a>
+      <a href="https://mint.hashu.io/checkout/">Live mint</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <p class="kicker">Units</p>
+    <h1>Counting hashes in <span>base 2</span></h1>
+    <p class="lede">Hashu vouchers count hashes in <b>TiH</b> (tebihash, 2<sup>40</sup> hashes). The mining industry quotes hashrate in base 10, as TH/s, PH/s and EH/s. Pool share accounting and Cashu tokens both work in powers of two. TiH is the unit where those two meet without rounding, and this page shows how it converts to everything else.</p>
+  </header>
+
+  <section id="short">
+    <h2>The short version</h2>
+    <div class="grid3">
+      <div class="card">
+        <h3>A hash</h3>
+        <p>One attempt at a block: a double SHA-256 of an 80-byte block header with one nonce. Hashrate is hashes per second. A Hashu voucher is a quantity of hashes, so it has no time in it.</p>
+      </div>
+      <div class="card two">
+        <h3>1 TiH = 2<sup>40</sup> hashes</h3>
+        <div class="big">1,099,511,627,776 <small>hashes</small></div>
+        <p>About 10% more than a trillion (10<sup>12</sup>). Exactly 256 difficulty-1 shares.</p>
+      </div>
+      <div class="card">
+        <h3>1 THh ≈ 3,274 TiH</h3>
+        <div class="big">3,274.18 <small>TiH</small></div>
+        <p>One TH/s for one hour is 3.6 × 10<sup>15</sup> hashes. It is not a whole number of TiH, and that is the problem TiH solves.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="why">
+    <h2>Two number systems</h2>
+    <div class="grid2">
+      <div class="card ten">
+        <span class="tag">Base 10 · the industry</span>
+        <h3>Hashrate is sold in SI prefixes</h3>
+        <p>Miners, pools, rental markets and hashprice indexes use the metric prefixes: tera (10<sup>12</sup>), peta (10<sup>15</sup>) and exa (10<sup>18</sup>).</p>
+        <ul>
+          <li>A Bitaxe does about 1.2 TH/s, a modern ASIC around 200 TH/s.</li>
+          <li>The network runs at hundreds of EH/s.</li>
+          <li>Hashprice is quoted per TH/s per day or per PH/s per day, as in $/PH/s/Day.</li>
+        </ul>
+      </div>
+      <div class="card two">
+        <span class="tag">Base 2 · the plumbing</span>
+        <h3>Shares and Cashu are powers of two</h3>
+        <p><b>Shares.</b> A pool counts work in shares. A difficulty-1 share takes 2<sup>32</sup> hashes on average, and a share at difficulty D takes D × 2<sup>32</sup>. Pools usually set D to a power of two, like 512, 65,536 or 2<sup>20</sup>.</p>
+        <p><b>Cashu.</b> A Cashu mint signs one key per power of two. Every token amount is a sum of 1, 2, 4, 8 and so on, so any amount splits into at most one note of each size.</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top:32px">Why not count in THh?</h3>
+    <p class="note" style="margin-top:6px">Hashu's first mint did count vouchers in THh (terahash-hours). It worked for selling, but every share the proxy delivered became an awkward decimal fraction of a THh, and the binary pieces never added back up to round numbers.</p>
+    <div class="tbl" style="margin-top:16px"><table>
+      <thead><tr><th>A share at difficulty</th><th>Hashes</th><th>In THh</th><th>In TiH</th></tr></thead>
+      <tbody>
+        <tr><th>1</th><td class="n">2<sup>32</sup> ≈ 4.29 × 10<sup>9</sup></td><td class="n">0.0000011930464…</td><td class="n">1/256 = 0.00390625</td></tr>
+        <tr><th>256</th><td class="n">2<sup>40</sup></td><td class="n">0.000305419…</td><td class="n">1</td></tr>
+        <tr><th>65,536 (2<sup>16</sup>)</th><td class="n">2<sup>48</sup></td><td class="n">0.0781874935…</td><td class="n">256</td></tr>
+        <tr><th>1,048,576 (2<sup>20</sup>)</th><td class="n">2<sup>52</sup></td><td class="n">1.250999896…</td><td class="n">4,096</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">The THh column never ends, because 3.6 × 10<sup>15</sup> = 2<sup>16</sup> × 9 × 5<sup>14</sup>: the factors of 3 and 5 in a THh can't be built from powers of two. In TiH, every share of difficulty 256 or more is a whole number, and smaller shares are exact binary fractions. So:</p>
+    <div class="grid3" style="margin-top:16px">
+      <div class="card"><h3>Exact metering</h3><p>The proxy adds up share difficulty and divides by 256. The running total of delivered work is exact, with nothing lost to rounding as millions of shares arrive.</p></div>
+      <div class="card"><h3>Exact change</h3><p>When a redemption stops early, the change is the undelivered TiH, signed as fresh vouchers. It breaks cleanly into Cashu's power-of-two notes.</p></div>
+      <div class="card"><h3>Same ladder</h3><p>Hashu's keyset has one key for each of 2<sup>0</sup> through 2<sup>40</sup> TiH. A note of 2<sup>n</sup> TiH is exactly 2<sup>n+8</sup> difficulty-1 shares, so token sizes and share sizes sit on the same ladder.</p></div>
+    </div>
+    <p class="note">The "i" comes from the binary prefixes standard (IEC 80000-13), the same one behind GiB versus GB on a disk. Tebi is 2<sup>40</sup>, pebi 2<sup>50</sup>, exbi 2<sup>60</sup>. Each step is 1,024 times the last, a little more than the 1,000 of tera, peta and exa.</p>
+  </section>
+
+  <section id="table">
+    <h2>Unit table</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Unit</th><th>Means</th><th>Hashes</th><th>In TiH</th><th>Where you see it</th></tr></thead>
+      <tbody>
+        <tr class="group"><th colspan="5">Binary: what vouchers count</th></tr>
+        <tr class="us"><th>TiH</th><td>tebihash</td><td class="n">2<sup>40</sup></td><td class="n">1</td><td>The voucher unit. Cashu wallets see it as <span class="mono">tih</span></td></tr>
+        <tr><th>PiH</th><td>pebihash</td><td class="n">2<sup>50</sup></td><td class="n">1,024</td><td>Prices (msat per PiH); minimum purchase and redemption</td></tr>
+        <tr><th>EiH</th><td>exbihash</td><td class="n">2<sup>60</sup></td><td class="n">1,048,576</td><td>Supplier asks (sats per EiH)</td></tr>
+        <tr class="group"><th colspan="5">Decimal: hashrate × time</th></tr>
+        <tr><th>THh</th><td>1 TH/s for an hour</td><td class="n">3.6 × 10<sup>15</sup></td><td class="n">3,274.18</td><td>Wallet display unit</td></tr>
+        <tr><th>PHh</th><td>1 PH/s for an hour (1,000 THh)</td><td class="n">3.6 × 10<sup>18</sup></td><td class="n">3,274,181</td><td>Wallet display unit</td></tr>
+        <tr><th>THd, TH/s/Day</th><td>1 TH/s for a day (24 THh)</td><td class="n">8.64 × 10<sup>16</sup></td><td class="n">78,580.3</td><td>Wallet display unit; checkout; rental markets</td></tr>
+        <tr><th>PHd, PH/s/Day</th><td>1 PH/s for a day (1,000 THd)</td><td class="n">8.64 × 10<sup>19</sup></td><td class="n">78,580,342</td><td>Wallet display unit; hashprice indexes</td></tr>
+        <tr class="group"><th colspan="5">Rates</th></tr>
+        <tr><th>TH/s</th><td>10<sup>12</sup> hashes per second</td><td class="n">—</td><td class="n">0.9095 TiH/s</td><td>Miners, pools, the mint's hashrate</td></tr>
+        <tr><th>TiH/s</th><td>2<sup>40</sup> hashes per second</td><td class="n">—</td><td class="n">1.0995 TH/s</td><td>Wallet hashrate when the display unit is TiH, PiH or EiH</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">THd and TH/s/Day are the same amount written two ways; the wallet offers both because hashrate markets write it the second way. Display units only change how an amount is shown. Every voucher, order and redemption is a whole number of TiH underneath.</p>
+  </section>
+
+  <section id="examples">
+    <h2>Worked conversions</h2>
+    <div class="work grid2">
+      <div class="card">
+        <h3>A Bitaxe for a day</h3>
+        <p>A 1.2 TH/s Bitaxe running for 24 hours:</p>
+        <div class="step">
+          <span>hashes</span><span>1.2 × 10<sup>12</sup> × 86,400 = 1.0368 × 10<sup>17</sup></span>
+          <span>in TiH</span><span>1.0368 × 10<sup>17</sup> ÷ 2<sup>40</sup> ≈ <b>94,296 TiH</b></span>
+          <span>in PiH</span><span>94,296 ÷ 1,024 ≈ <b>92.1 PiH</b></span>
+          <span>check</span><span>1.2 THd × 78,580.3 = 94,296 TiH</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>The minimum purchase</h3>
+        <p>1 PiH is the smallest order and the smallest redemption:</p>
+        <div class="step">
+          <span>hashes</span><span>2<sup>50</sup> ≈ 1.126 × 10<sup>15</sup></span>
+          <span>in THh</span><span>1,024 ÷ 3,274.18 ≈ <b>0.313 THh</b></span>
+          <span>as time</span><span>0.31 TH/s for an hour, or that Bitaxe for about 15.6 minutes</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>A 32 PiH voucher</h3>
+        <p>The checkout's default order is 32,768 TiH:</p>
+        <div class="step">
+          <span>in PiH</span><span>32,768 ÷ 1,024 = <b>32 PiH</b></span>
+          <span>in THh</span><span>32,768 ÷ 3,274.18 ≈ <b>10.0 THh</b></span>
+          <span>in THd</span><span>32,768 ÷ 78,580.3 ≈ <b>0.417 THd</b></span>
+          <span>as notes</span><span>one 2<sup>15</sup> TiH note, a single Cashu proof</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Shares into TiH</h3>
+        <p>A redemption at a pool that sets difficulty 65,536:</p>
+        <div class="step">
+          <span>per share</span><span>65,536 ÷ 256 = <b>256 TiH</b></span>
+          <span>32 PiH</span><span>32,768 ÷ 256 = 128 shares, on average</span>
+          <span>meter</span><span>delivered TiH = Σ share difficulty ÷ 256</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Hashprice</h3>
+        <p>A mint price of 600 msat per PiH, in the units hashrate markets use:</p>
+        <div class="step">
+          <span>per TiH</span><span>600 ÷ 1,024 ≈ 0.586 msat</span>
+          <span>per THd</span><span>600 × 76.739 PiH ≈ <b>46 sats/THd</b></span>
+          <span>per PHd</span><span>600 × 76,738.6 PiH ≈ <b>46,043 sats/PH/s/Day</b></span>
+          <span>per THh</span><span>600 × 3.197 PiH ≈ 1.92 sats/THh</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>A rate in TiH/s</h3>
+        <p>The mint's miners at 7 TH/s:</p>
+        <div class="step">
+          <span>rate</span><span>7 × 10<sup>12</sup> ÷ 2<sup>40</sup> ≈ <b>6.37 TiH/s</b></span>
+          <span>per hour</span><span>6.37 × 3,600 ≈ 22,919 TiH ≈ 22.4 PiH</span>
+          <span>32 PiH</span><span>32,768 ÷ 6.37 ≈ 5,144 s ≈ 1 h 26 min to deliver</span>
+        </div>
+      </div>
+    </div>
+
+    <h3 style="margin-top:32px">How an amount splits into notes</h3>
+    <p class="note" style="margin-top:6px">A Cashu wallet holds one proof per power of two in an amount's binary form. 94,296 TiH (the Bitaxe day) is 10111000001011000 in binary, so it is seven notes, one for each 1:</p>
+    <div class="ladder" aria-label="94,296 TiH as powers of two">
+      <span class="on">2<sup>16</sup> = 65,536</span><span class="on">2<sup>14</sup> = 16,384</span><span class="on">2<sup>13</sup> = 8,192</span><span class="on">2<sup>12</sup> = 4,096</span><span class="on">2<sup>6</sup> = 64</span><span class="on">2<sup>4</sup> = 16</span><span class="on">2<sup>3</sup> = 8</span>
+    </div>
+    <p class="note">65,536 + 16,384 + 8,192 + 4,096 + 64 + 16 + 8 = 94,296. Each note is a whole number of difficulty-256 shares, which no note in a THh-based keyset could be.</p>
+  </section>
+
+  <section id="converter">
+    <h2>Converter</h2>
+    <div class="card">
+      <div class="conv">
+        <label>Amount<input id="c-amt" type="number" inputmode="decimal" value="1" min="0" step="any"></label>
+        <label>Unit<select id="c-unit"></select></label>
+      </div>
+      <p class="note" style="margin-top:12px">Or from hashrate and time:</p>
+      <div class="conv" style="margin-top:8px">
+        <label>Hashrate (TH/s)<input id="c-ths" type="number" inputmode="decimal" placeholder="1.2" min="0" step="any"></label>
+        <label>For (hours)<input id="c-hours" type="number" inputmode="decimal" placeholder="24" min="0" step="any"></label>
+      </div>
+      <div class="out tbl"><table><tbody id="c-out"></tbody></table></div>
+      <p class="note" id="c-notes"></p>
+    </div>
+  </section>
+
+  <section id="wallets">
+    <h2>In Cashu wallets</h2>
+    <div class="grid2">
+      <div class="card"><h3>Any Cashu wallet</h3><p>Hashu vouchers are ordinary Cashu tokens in a custom unit, <span class="mono">tih</span>. A stock wallet such as Cashu.me shows the plain integer, so a 32 PiH voucher reads as 32,768 tih. It can hold and send them, but it can't redeem them as hashrate.</p></div>
+      <div class="card"><h3>The Hashu wallet</h3><p><a href="https://app.hashu.io/">app.hashu.io</a> lets you pick a display unit (TiH, PiH, EiH, THh, PHh, THd, PHd, TH/s/Day or PH/s/Day) and shows prices in the same unit. It redeems straight to your pool.</p></div>
+    </div>
+    <p class="note">A precise footnote: the difficulty-1 target is 0xFFFF × 2<sup>208</sup>, so a difficulty-1 share really takes 2<sup>256</sup> ÷ (0xFFFF × 2<sup>208</sup> + 1) ≈ 4,295,032,833 hashes on average, 0.0015% more than 2<sup>32</sup>. Pools and miners all count a share as D × 2<sup>32</sup> hashes, and so does Hashu.</p>
+  </section>
+
+  <footer>
+    <span>Inquiries: <a href="https://x.com/asherp" rel="noopener">@asherp</a> on X · <a href="mailto:asherp.nostr@gmail.com">asherp.nostr@gmail.com</a></span>
+    <span>Built at bitcoin++ Seoul 2026 · <a href="https://github.com/asherp/hashu">github.com/asherp/hashu</a></span>
+  </footer>
+</div>
+<script>
+// Everything in hashes; TiH = 2^40. Mirrors hashu-core/src/denom.rs.
+const TIH = 2 ** 40
+const UNITS = [
+  ['TiH', 'TiH (2^40 hashes)', TIH],
+  ['PiH', 'PiH (1,024 TiH)', 2 ** 50],
+  ['EiH', 'EiH (1,024 PiH)', 2 ** 60],
+  ['THh', 'THh (1 TH/s × 1 h)', 3.6e15],
+  ['PHh', 'PHh (1 PH/s × 1 h)', 3.6e18],
+  ['THd', 'THd = TH/s/Day', 8.64e16],
+  ['PHd', 'PHd = PH/s/Day', 8.64e19],
+  ['hashes', 'hashes', 1],
+  ['shares', 'difficulty-1 shares (2^32)', 2 ** 32],
+]
+const $ = (id) => document.getElementById(id)
+const sel = $('c-unit')
+sel.innerHTML = UNITS.map(([id, name]) => `<option value="${id}"${id === 'PiH' ? ' selected' : ''}>${name}</option>`).join('')
+function fmt (x) {
+  if (!isFinite(x)) return '—'
+  if (x === 0) return '0'
+  const a = Math.abs(x)
+  if (a >= 1e15 || a < 1e-4) return x.toExponential(4).replace('e+', ' × 10^').replace('e-', ' × 10^-')
+  return Number(x.toPrecision(7)).toLocaleString(undefined, { maximumFractionDigits: 6 })
+}
+function render (hashes) {
+  const tih = hashes / TIH
+  $('c-out').innerHTML = UNITS.map(([id, name, h]) => `<tr><th>${name}</th><td class="n">${fmt(hashes / h)}</td></tr>`).join('')
+  const notes = []
+  if (tih >= 1 && tih < 2 ** 41 && Number.isFinite(tih)) {
+    const whole = Math.floor(tih)
+    const bits = whole.toString(2)
+    const n = [...bits].filter((b) => b === '1').length
+    notes.push(`As a voucher: ${whole.toLocaleString()} TiH${tih > whole ? ' (rounded down to whole TiH)' : ''}, ${n} Cashu note${n === 1 ? '' : 's'} (binary ${bits}).`)
+    if (whole < 1024) notes.push('Below the 1 PiH (1,024 TiH) minimum for a purchase or redemption.')
+  } else if (tih > 0 && tih < 1) {
+    notes.push('Less than 1 TiH, the smallest voucher.')
+  }
+  $('c-notes').textContent = notes.join(' ')
+}
+function fromAmount () {
+  const u = UNITS.find((x) => x[0] === sel.value)
+  $('c-ths').value = ''; $('c-hours').value = ''
+  render((Number($('c-amt').value) || 0) * u[2])
+}
+function fromRate () {
+  const ths = Number($('c-ths').value), h = Number($('c-hours').value)
+  if (!(ths > 0) || !(h > 0)) return
+  const hashes = ths * 1e12 * h * 3600
+  sel.value = 'TiH'
+  $('c-amt').value = Number((hashes / TIH).toPrecision(8))
+  render(hashes)
+}
+$('c-amt').addEventListener('input', fromAmount)
+sel.addEventListener('change', fromAmount)
+$('c-ths').addEventListener('input', fromRate)
+$('c-hours').addEventListener('input', fromRate)
+fromAmount()
+</script>
+</body>
+</html>
