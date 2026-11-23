@@ -30,6 +30,16 @@
 	}
 }
 
+# Hash units explainer page (site/units/), on every host: the mint
+# landing and checkout link to it with a relative /units/.
+(units_page) {
+	redir /units /units/
+	handle /units/* {
+		root * /srv/site
+		file_server
+	}
+}
+
 {$HASHU_DOMAIN} {$HASHU_EXTRA_DOMAINS} {
 	import security_headers
 	encode gzip
@@ -68,6 +78,10 @@
 		root * /srv/site
 		file_server
 	}
+
+	# Hash units explainer (site/units/), linked from the mint landing and
+	# checkout, so supplier mints serve it too (see the blocks below).
+	import units_page
 
 	# MDK demo (optional, HASHU_MDK_DOMAIN): the dashboard runs on its own
 	# host because the MDK shell serves from / (its /auth, /apps and /app-ui
@@ -122,7 +136,10 @@
 	}
 	import security_headers
 	encode gzip
-	reverse_proxy hashu:8085
+	import units_page
+	handle {
+		reverse_proxy hashu:8085
+	}
 }
 
 # MDK dashboard demo (Hashu Heater app on a mock heater), only when

@@ -67,7 +67,10 @@ if [ -n "${HASHU_SUPPLIER_DOMAIN:-}" ]; then
 	}
 	import security_headers
 	encode gzip
-	reverse_proxy hashu:8085
+	import units_page
+	handle {
+		reverse_proxy hashu:8085
+	}
 }
 SITE
 else

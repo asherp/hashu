@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hashu units</title>
+<meta name="description" content="Convert TiH to TH/s, THh, PHd and sats at a hashprice, and why Hashu vouchers count hashes in base 2.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f7931a'/%3E%3Cpath d='M10.5 6V20A5.5 5.5 0 0 0 21.5 20V6' stroke='%23111' stroke-width='3' stroke-linecap='round' fill='none'/%3E%3Cpath d='M5 11.5H27M5 18H27' stroke='%23111' stroke-width='2.6' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f6f6f4; --surface: #ffffff; --ink: #1b1b1a; --ink-2: #55534f; --ink-3: #8a8782;
+  --line: rgba(27,27,26,0.12); --brand: #e8850c; --brand-fill: rgba(232,133,12,0.12); --brand-ink: #111;
+  --ten: #3b6fb6; --ten-fill: rgba(59,111,182,0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111110; --surface: #1a1a19; --ink: #f1efea; --ink-2: #b5b2ab; --ink-3: #85827c;
+    --line: rgba(241,239,234,0.14); --brand: #f7931a; --brand-fill: rgba(247,147,26,0.14);
+    --ten: #7fa8e6; --ten-fill: rgba(127,168,230,0.14);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: inherit; }
+.wrap { max-width: 960px; margin: 0 auto; padding: 0 16px; }
+nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 0; flex-wrap: wrap; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; text-decoration: none; }
+.logo svg { width: 28px; height: 28px; }
+nav .links { display: flex; gap: 18px; font-size: 14px; flex-wrap: wrap; }
+nav .links a { color: var(--ink-2); text-decoration: none; }
+nav .links a:hover { color: var(--ink); }
+.hero { padding: 48px 0 32px; }
+.hero .kicker { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--brand); margin: 0 0 12px; }
+.hero h1 { font-size: clamp(34px, 6vw, 56px); line-height: 1.05; letter-spacing: -0.02em; margin: 0 0 18px; max-width: 16ch; }
+.hero h1 span { color: var(--brand); }
+.lede { font-size: 18px; color: var(--ink-2); max-width: 64ch; margin: 0 0 8px; }
+section { padding: 40px 0; border-top: 1px solid var(--line); }
+section > h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-2); margin: 0 0 20px; }
+h3 { margin: 0 0 6px; font-size: 18px; }
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; min-width: 0; }
+.card p { margin: 0; color: var(--ink-2); }
+.card p + p { margin-top: 10px; }
+.card ul { margin: 8px 0 0; padding-left: 18px; color: var(--ink-2); }
+.card li { margin: 4px 0; }
+.card .tag { display: inline-block; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 999px; padding: 2px 10px; margin-bottom: 10px; }
+.card.two { border-color: var(--brand); }
+.card.two .tag { background: var(--brand-fill); color: var(--brand); }
+.card.ten .tag { background: var(--ten-fill); color: var(--ten); }
+.big { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; margin: 2px 0 8px; overflow-wrap: anywhere; }
+.big small { font-size: 14px; font-weight: 500; color: var(--ink-2); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
+.note { color: var(--ink-2); font-size: 15px; max-width: 70ch; margin: 16px 0 0; }
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+tr:last-child th, tr:last-child td { border-bottom: none; }
+thead th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); font-weight: 600; }
+tbody th { font-weight: 650; white-space: nowrap; }
+td { color: var(--ink-2); }
+td.n { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--ink); }
+tr.us th, tr.us td { background: var(--brand-fill); }
+tr.us th { color: var(--brand); }
+tr.group th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); background: var(--bg); padding: 8px 14px; }
+.work { display: grid; gap: 16px; }
+.step { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin-top: 10px; font-variant-numeric: tabular-nums; font-size: 15px; }
+.step span:nth-child(odd) { color: var(--ink-3); white-space: nowrap; }
+.step span:nth-child(even) { overflow-wrap: anywhere; }
+.ladder { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.ladder span { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.ladder span.on { background: var(--brand-fill); border-color: var(--brand); color: var(--ink); }
+.conv { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+.conv label { display: grid; gap: 4px; font-size: 13px; color: var(--ink-3); flex: 1 1 130px; min-width: 0; }
+.conv input, .conv select { font: inherit; font-size: 16px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; width: 100%; min-width: 0; }
+.out { margin-top: 16px; }
+.out table { min-width: 0; }
+.out td.n, .out .r { text-align: right; }
+.rigs .r, .rigs td.n { text-align: right; }
+.rigs table { min-width: 0; }
+.rigs tbody th { white-space: normal; }
+.rigs td.n { white-space: nowrap; }
+.rigs tbody tr { cursor: pointer; }
+.rigs tbody tr:hover th, .rigs tbody tr:hover td { background: var(--brand-fill); }
+.rigs small { display: block; font-weight: 400; color: var(--ink-3); font-size: 12px; white-space: normal; }
+@media (max-width: 480px) { .rigs table { font-size: 12.5px; } .rigs th, .rigs td { padding: 8px 6px; } .rigs .hide-sm, .rigs small { display: none; } }
+.out th { white-space: normal; font-weight: 600; }
+.out th, .out td { padding: 9px 12px; }
+@media (max-width: 480px) { .card { padding: 16px; } .out table { font-size: 13px; } .out th, .out td { padding: 8px 8px; } }
+footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 14px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+sup { line-height: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="logo" href="/">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#f7931a"/><path d="M10.5 6V20A5.5 5.5 0 0 0 21.5 20V6" stroke="#111" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M5 11.5H27M5 18H27" stroke="#111" stroke-width="2.6" stroke-linecap="round"/></svg>
+      Hashu
+    </a>
+    <div class="links">
+      <a href="/">Home</a>
+      <a href="#converter">Converter</a>
+      <a href="#why">Why base 2</a>
+      <a href="#table">Unit table</a>
+      <a href="#examples">Examples</a>
+      <a href="/redeem/">Pool guides</a>
+      <a href="https://mint.hashu.io/checkout/">Live mint</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <p class="kicker">Units</p>
+    <h1>Counting hashes in <span>base 2</span></h1>
+    <p class="lede">Hashu vouchers count hashes in <b>TiH</b> (2<sup>40</sup> hashes). Shares and Cashu tokens are powers of two; the mining industry quotes base-10 TH/s. TiH is where the two meet without rounding.</p>
+  </header>
+
+  <section id="converter">
+    <h2>Converter</h2>
+    <div class="card">
+      <div class="conv">
+        <label>Amount<input id="c-amt" type="number" inputmode="decimal" value="1" min="0" step="any"></label>
+        <label>Unit<select id="c-unit"></select></label>
+      </div>
+      <div class="conv" style="margin-top:10px">
+        <label>Or hashrate (TH/s)<input id="c-ths" type="number" inputmode="decimal" placeholder="1.2" min="0" step="any"></label>
+        <label>for (hours)<input id="c-hours" type="number" inputmode="decimal" placeholder="24" min="0" step="any"></label>
+      </div>
+      <div class="conv" style="margin-top:10px">
+        <label>Hashprice<input id="c-price" type="number" inputmode="decimal" value="600" min="0" step="any"></label>
+        <label>Price unit<select id="c-punit"></select></label>
+      </div>
+      <p class="note" id="c-src" style="margin-top:8px"></p>
+      <div class="out tbl"><table>
+        <thead><tr><th>Unit</th><th class="r">Amount</th><th class="r">Price each</th></tr></thead>
+        <tbody id="c-out"></tbody>
+      </table></div>
+      <p class="note" id="c-notes"></p>
+    </div>
+  </section>
+
+  <section id="why">
+    <h2>Why a binary unit</h2>
+    <div class="grid2">
+      <div class="card ten">
+        <span class="tag">Base 10 · the industry</span>
+        <p>Miners, pools and rental markets quote TH/s, PH/s and EH/s (10<sup>12</sup>, 10<sup>15</sup>, 10<sup>18</sup>). Hashprice is per TH/s/Day or PH/s/Day.</p>
+      </div>
+      <div class="card two">
+        <span class="tag">Base 2 · the plumbing</span>
+        <p>A difficulty-D share is D × 2<sup>32</sup> hashes, and pools pick D as a power of two. A Cashu mint signs one key per power of two, so every amount is a sum of 1, 2, 4, 8…</p>
+      </div>
+    </div>
+    <div class="tbl" style="margin-top:16px"><table>
+      <thead><tr><th>Share difficulty</th><th>Hashes</th><th>In THh</th><th>In TiH</th></tr></thead>
+      <tbody>
+        <tr><th>1</th><td class="n">2<sup>32</sup></td><td class="n">0.0000011930464…</td><td class="n">1/256</td></tr>
+        <tr><th>256</th><td class="n">2<sup>40</sup></td><td class="n">0.000305419…</td><td class="n">1</td></tr>
+        <tr><th>65,536</th><td class="n">2<sup>48</sup></td><td class="n">0.0781874935…</td><td class="n">256</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">A THh (3.6 × 10<sup>15</sup> = 2<sup>16</sup> × 9 × 5<sup>14</sup> hashes) can't be built from powers of two, so shares never come out even in THh. In TiH they do: delivered work is exactly Σ difficulty ÷ 256, change after an early stop is exact, and a 2<sup>n</sup> TiH note is exactly 2<sup>n+8</sup> difficulty-1 shares. The "i" is the IEC binary prefix, as in GiB: each step is 1,024×.</p>
+  </section>
+
+  <section id="table">
+    <h2>Unit table</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Unit</th><th>Means</th><th>In TiH</th><th>Used for</th></tr></thead>
+      <tbody>
+        <tr class="us"><th>TiH</th><td>2<sup>40</sup> hashes</td><td class="n">1</td><td>Vouchers (<span class="mono">tih</span> in Cashu wallets)</td></tr>
+        <tr><th>PiH</th><td>2<sup>50</sup> hashes</td><td class="n">1,024</td><td>Mint price (msat/PiH); 1 PiH minimum</td></tr>
+        <tr><th>EiH</th><td>2<sup>60</sup> hashes</td><td class="n">1,048,576</td><td>Supplier asks (sats/EiH)</td></tr>
+        <tr><th>THh</th><td>1 TH/s × 1 h</td><td class="n">3,274.18</td><td>Wallet display</td></tr>
+        <tr><th>PHh</th><td>1 PH/s × 1 h</td><td class="n">3,274,181</td><td>Wallet display</td></tr>
+        <tr><th>THd = TH/s/Day</th><td>1 TH/s × 24 h</td><td class="n">78,580.3</td><td>Wallet display; rental markets</td></tr>
+        <tr><th>PHd = PH/s/Day</th><td>1 PH/s × 24 h</td><td class="n">78,580,342</td><td>Wallet display; hashprice indexes</td></tr>
+        <tr><th>TH/s</th><td>10<sup>12</sup> hashes/s</td><td class="n">0.9095 /s</td><td>Miner and mint hashrate</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section id="examples">
+    <h2>Worked conversions</h2>
+    <div class="grid3">
+      <div class="card">
+        <h3>A Bitaxe day</h3>
+        <div class="step">
+          <span>1.2 TH/s × 24 h</span><span>1.0368 × 10<sup>17</sup> hashes</span>
+          <span>÷ 2<sup>40</sup></span><span><b>94,296 TiH</b> ≈ 92.1 PiH</span>
+          <span>as notes</span><span>7 (one per 1 bit)</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Hashprice</h3>
+        <div class="step">
+          <span>mint price</span><span>600 msat/PiH</span>
+          <span>× 76.74 PiH</span><span><b>46 sats/TH/s/Day</b></span>
+          <span>× 76,739 PiH</span><span><b>46,043 sats/PH/s/Day</b></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Shares</h3>
+        <div class="step">
+          <span>difficulty 65,536</span><span>256 TiH per share</span>
+          <span>32 PiH order</span><span>128 shares on average</span>
+          <span>1 PiH minimum</span><span>≈ 0.31 THh</span>
+        </div>
+      </div>
+    </div>
+    <h3 style="margin-top:32px">Rigs for a day</h3>
+    <p class="note" style="margin-top:6px">Typical rated hashrates in TH/s and in binary units (TiH/s, PiH/s, EiH/s), with a day's value at the converter's hashprice (sats, or BTC from 0.01 BTC up). Tap a row to load it into the converter.</p>
+    <div class="tbl rigs" style="margin-top:12px"><table>
+      <thead><tr><th>Rig</th><th class="r">Hashrate</th><th class="r">In binary</th><th class="r">Value / day</th></tr></thead>
+      <tbody id="rigs"></tbody>
+    </table></div>
+    <p class="note">Stock Cashu wallets show the raw integer (32 PiH reads as 32,768 tih). <a href="https://app.hashu.io/">app.hashu.io</a> shows any of these display units and redeems to your pool. Footnote: a difficulty-1 share is really ≈ 4,295,032,833 hashes (2<sup>256</sup> ÷ (0xFFFF × 2<sup>208</sup> + 1)), 0.0015% over 2<sup>32</sup>; pools, miners and Hashu all count 2<sup>32</sup>.</p>
+  </section>
+
+  <footer>
+    <span>Inquiries: <a href="https://x.com/asherp" rel="noopener">@asherp</a> on X · <a href="mailto:asherp.nostr@gmail.com">asherp.nostr@gmail.com</a></span>
+    <span>Built at bitcoin++ Seoul 2026 · <a href="https://github.com/asherp/hashu">github.com/asherp/hashu</a></span>
+  </footer>
+</div>
+<script>
+// Everything in hashes; TiH = 2^40. Mirrors hashu-core/src/denom.rs.
+const TIH = 2 ** 40, PIH = 2 ** 50
+const UNITS = [
+  ['TiH', 'TiH', TIH],
+  ['PiH', 'PiH', PIH],
+  ['EiH', 'EiH', 2 ** 60],
+  ['THh', 'THh', 3.6e15],
+  ['PHh', 'PHh', 3.6e18],
+  ['THd', 'TH/s/Day', 8.64e16],
+  ['PHd', 'PH/s/Day', 8.64e19],
+  ['shares', 'Diff-1 shares', 2 ** 32],
+  ['hashes', 'Hashes', 1],
+]
+// Price units, as msat per hash.
+const PRICE_UNITS = [
+  ['msat/PiH', 1e0 / PIH],
+  ['sats/EiH', 1e3 / 2 ** 60],
+  ['sats/PH/s/Day', 1e3 / 8.64e19],
+  ['sats/TH/s/Day', 1e3 / 8.64e16],
+]
+const $ = (id) => document.getElementById(id)
+const sel = $('c-unit'), psel = $('c-punit')
+sel.innerHTML = UNITS.map(([id, name]) => `<option value="${id}"${id === 'PiH' ? ' selected' : ''}>${name}</option>`).join('') + '<option value="sats">sats (at this price)</option>'
+psel.innerHTML = PRICE_UNITS.map(([id]) => `<option>${id}</option>`).join('')
+function fmt (x, p = 6) {
+  if (!isFinite(x)) return '—'
+  if (x === 0) return '0'
+  const a = Math.abs(x)
+  if (a >= 1e15 || a < 1e-4) return x.toExponential(3).replace('e+', ' × 10^').replace('e-', ' × 10^-')
+  return Number(x.toPrecision(p)).toLocaleString(undefined, { maximumFractionDigits: 6 })
+}
+// A price in sats, falling back to msat below 1 sat.
+function fmtSats (msat) {
+  if (!(msat > 0) || !isFinite(msat)) return '—'
+  return msat >= 1000 ? `${fmt(msat / 1000, 4)} sats` : `${fmt(msat, 4)} msat`
+}
+// msat per hash at the price in the box.
+function msatPerHash () {
+  const u = PRICE_UNITS.find((x) => x[0] === psel.value)
+  const v = Number($('c-price').value)
+  return v > 0 ? v * u[1] : 0
+}
+
+// Rigs, home to industrial, at typical rated hashrate.
+const RIGS = [
+  ['Bitaxe Gamma', 'open-source home miner', 1.2],
+  ['NerdQaxe++', 'four-chip home miner', 4.8],
+  ['Antminer S9', '2016 ASIC, still around', 13.5],
+  ['Antminer S19 Pro', '2020 ASIC', 110],
+  ['Antminer S21', '2023 air-cooled ASIC', 200],
+  ['Antminer S21 XP Hydro', 'water-cooled ASIC', 473],
+  ['Mining container', 'about 300 S21s, ~1 MW', 60000],
+  ['Industrial fleet', 'a large public miner', 50e6],
+]
+function fmtTHs (t) { return t >= 1e6 ? `${fmt(t / 1e6, 3)} EH/s` : t >= 1e3 ? `${fmt(t / 1e3, 3)} PH/s` : `${fmt(t, 4)} TH/s` }
+// TiH per second as TiH/s, PiH/s or EiH/s by size.
+function fmtBinRate (tihs) { let k = 0; while (k < 2 && tihs >= 1024 ** (k + 1)) k++; return `${fmt(tihs / 1024 ** k, 4)} ${['TiH', 'PiH', 'EiH'][k]}/s` }
+// A day's value: sats/d, or BTC/d from 1,000,000 sats (0.01 BTC) up.
+function fmtPerDay (sats) { return sats >= 1e6 ? `${fmt(sats / 1e8, 4)} BTC/d` : `${fmtBig(sats)} sats/d` }
+function fmtBig (x) { return x >= 1e6 ? x.toLocaleString(undefined, { notation: 'compact', maximumSignificantDigits: 4 }) : fmt(x, 4) }
+function renderRigs () {
+  const mph = msatPerHash()
+  $('rigs').innerHTML = RIGS.map(([name, note, ths], k) => {
+    const hashes = ths * 1e12 * 86400, tih = hashes / TIH
+    return `<tr data-k="${k}"><th>${name}<small>${note}</small></th><td class="n">${fmtTHs(ths)}</td><td class="n">${fmtBinRate(ths * 1e12 / TIH)}</td><td class="n">${mph > 0 ? fmtPerDay(mph * hashes / 1000) : '—'}</td></tr>`
+  }).join('')
+}
+$('rigs').addEventListener('click', (e) => {
+  const tr = e.target.closest('tr[data-k]'); if (!tr) return
+  $('c-ths').value = RIGS[tr.dataset.k][2]; $('c-hours').value = 24; fromRate()
+  $('converter').scrollIntoView({ behavior: 'smooth' })
+})
+let hashesNow = 0
+function render (hashes) {
+  hashesNow = hashes
+  renderRigs()
+  const mph = msatPerHash()
+  const rows = UNITS.map(([id, name, h]) => `<tr><th>${name}</th><td class="n">${fmt(hashes / h)}</td><td class="n">${id === 'hashes' ? '' : fmtSats(mph * h)}</td></tr>`)
+  rows.push(`<tr class="us"><th>Cost</th><td class="n" colspan="2">${fmtSats(mph * hashes)}</td></tr>`)
+  $('c-out').innerHTML = rows.join('')
+  const tih = hashes / TIH, notes = []
+  if (tih >= 1 && tih < 2 ** 41) {
+    const whole = Math.floor(tih), bits = whole.toString(2)
+    const n = [...bits].filter((b) => b === '1').length
+    notes.push(`As a voucher: ${whole.toLocaleString()} TiH, ${n} Cashu note${n === 1 ? '' : 's'}.`)
+    if (whole < 1024) notes.push('Below the 1 PiH minimum order.')
+  } else if (tih > 0 && tih < 1) notes.push('Less than 1 TiH, the smallest voucher.')
+  $('c-notes').textContent = notes.join(' ')
+}
+function fromAmount () {
+  $('c-ths').value = ''; $('c-hours').value = ''
+  const v = Number($('c-amt').value) || 0
+  if (sel.value === 'sats') { const mph = msatPerHash(); return render(mph > 0 ? v * 1000 / mph : 0) }
+  render(v * UNITS.find((x) => x[0] === sel.value)[2])
+}
+function fromRate () {
+  const ths = Number($('c-ths').value), h = Number($('c-hours').value)
+  if (!(ths > 0) || !(h > 0)) return
+  const hashes = ths * 1e12 * h * 3600
+  sel.value = 'TiH'
+  $('c-amt').value = Number((hashes / TIH).toPrecision(8))
+  render(hashes)
+}
+// Switching the price unit keeps the same price, re-expressed.
+let lastPunit = psel.value
+psel.addEventListener('change', () => {
+  const from = PRICE_UNITS.find((x) => x[0] === lastPunit)[1], to = PRICE_UNITS.find((x) => x[0] === psel.value)[1]
+  const v = Number($('c-price').value)
+  if (v > 0) $('c-price').value = Number((v * from / to).toPrecision(6))
+  lastPunit = psel.value
+  sel.value === 'sats' ? fromAmount() : render(hashesNow)
+})
+$('c-price').addEventListener('input', () => { $('c-src').textContent = 'Your price.'; sel.value === 'sats' ? fromAmount() : render(hashesNow) })
+$('c-amt').addEventListener('input', fromAmount)
+sel.addEventListener('change', fromAmount)
+$('c-ths').addEventListener('input', fromRate)
+$('c-hours').addEventListener('input', fromRate)
+$('c-src').textContent = 'Example price. Edit it to try your own.'
+fromAmount()
+// This mint's live price, when the page is served by a Hashu mint.
+fetch('/checkout/api/info', { cache: 'no-store' }).then((r) => r.ok ? r.json() : null).then((i) => {
+  if (!i || !(i.msat_per_pih > 0) || $('c-src').textContent === 'Your price.') return
+  psel.value = lastPunit = 'msat/PiH'
+  $('c-price').value = i.msat_per_pih
+  $('c-src').textContent = `This mint's live price (${location.host}). Edit it to try your own.`
+  sel.value === 'sats' ? fromAmount() : render(hashesNow)
+}).catch(() => {})
+</script>
+</body>
+</html>
