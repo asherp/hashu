@@ -44,8 +44,10 @@ textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-siz
 button.act, a.act { text-decoration: none; display: inline-block; border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 8px; padding: 10px 18px; cursor: pointer; font: inherit; }
 button.act.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
 button.act:disabled { opacity: 0.5; cursor: default; }
-.price { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
-.price b { font-size: 26px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.price { display: flex; flex-direction: column; align-items: center; gap: 2px; border-top: 1px solid var(--line); padding-top: 14px; text-align: center; }
+.price b { font-size: 34px; line-height: 1.1; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pay-amt { text-align: center; font-size: 34px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.pay-amt[hidden] { display: none; }
 .capbar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--line); margin: 10px 0 6px; }
 .capbar .alloc { background: var(--target); }
 .capbar .avail { background: var(--brand); }
@@ -107,7 +109,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
 <main>
   <header>
     <h1><span>Hashu</span> · buy hashrate</h1>
-    <p class="lede">Pay for hashes and get them as Chaumian hashrate vouchers (Cashu tokens), counted in TiH (tebihash, 2<sup>40</sup> hashes). Redeem any time by pointing the mint's hashrate at your own pool. 1 TH/s for one hour is about 3,274 TiH.</p>
+    <p class="lede">Hashrate vouchers (Cashu tokens) in TiH, 2<sup>40</sup> hashes each. Redeem any time to your own pool.</p>
   </header>
 
   <div class="steps" id="steps"><span data-s="buy">1 · Choose</span><span data-s="pay">2 · Pay</span><span data-s="token">3 · Your TiH</span><span data-s="redeem">4 · Redeem</span></div>
@@ -124,7 +126,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
     <div class="row" id="methods-row"><span class="note">Pay with</span><div class="seg" id="methods"></div></div>
     <p class="note" id="equiv"></p>
     <p class="note" id="eta"></p>
-    <div class="price"><span class="note" id="price-label">Price</span><b id="price">—</b></div>
+    <div class="price"><b id="price">—</b><span class="note" id="price-label"></span></div>
     <button class="act primary" id="btn-buy">Get invoice</button>
     <p class="note" id="paused" hidden>Sales are paused by the mint operator.</p>
     <div id="cap-bar" hidden></div>
@@ -135,6 +137,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
   <!-- 2. pay -->
   <section class="card" id="s-pay" hidden>
     <div class="row" style="justify-content:space-between"><h2 id="pay-title">Pay the invoice</h2><span class="pill wait" id="pay-state">waiting for payment</span></div>
+    <div class="pay-amt" id="pay-amt" hidden></div>
     <div class="qr" id="qr"></div>
     <div class="mono" id="request"></div>
     <div class="row"><button class="act" id="btn-copy-req">Copy</button><a class="act" id="open-wallet" style="text-decoration:none;color:inherit">Open in wallet</a></div>
@@ -144,7 +147,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
   <!-- 3. token -->
   <section class="card" id="s-token" hidden>
     <div class="row" style="justify-content:space-between"><h2>Your TiH</h2><span class="pill ok" id="token-amt"></span></div>
-    <p class="note">This Cashu token is the hashrate you bought. It is a bearer voucher: anyone holding it can redeem it. Save it in a Cashu wallet, or redeem it now.</p>
+    <p class="note">A bearer voucher: whoever holds it can redeem it. Save it in a Cashu wallet or redeem it now.</p>
     <div class="qr" id="token-qr"></div>
     <p class="note" id="token-qr-note" style="text-align:center"></p>
     <textarea id="token" readonly></textarea>
@@ -365,22 +368,21 @@ function renderPrice () {
   const n = Math.max(1, st.tih)
   const thh = n / TIH_PER_THH
   const hours = Math.round(thh * 10) / 10
-  $('equiv').textContent = `${n.toLocaleString()} TiH${n >= TIH_PER_PIH ? ` (${fmtHashes(n)})` : ''} ≈ ${fmtTih(thh, thh < 10 ? 2 : 1)} TH-hours: ${hours < 48 ? `1 TH/s for ${hours} h` : `${(thh / 24).toFixed(1)} TH/s for a day`}, or ${(n * HASHES_PER_TIH).toExponential(2)} hashes.`
+  $('equiv').textContent = `${n.toLocaleString()} TiH ≈ ${hours < 48 ? `1 TH/s for ${hours} h` : `${(thh / 24).toFixed(1)} TH/s for a day`}`
   $('eta').textContent = etaText(n)
   const coin = STABLES[st.method]
   if (coin && i.usdt_per_pih != null) {
     const sc = amountScale()
     $('price-label').textContent = sc.unit === 'rate'
-      ? `≈ ${(i.usdt_per_pih * sc.f / TIH_PER_PIH).toFixed(4)} ${coin} per ${sc.label} (${(i.usdt_per_pih).toFixed(6)} per PiH)`
-      : `${(i.usdt_per_pih).toFixed(6)} ${coin} per PiH (1,024 TiH)`
+      ? `${(i.usdt_per_pih * sc.f / TIH_PER_PIH).toFixed(4)} ${coin} per ${sc.label}`
+      : `${(i.usdt_per_pih).toFixed(6)} ${coin} per PiH`
     $('price').textContent = `${(n * i.usdt_per_pih / TIH_PER_PIH).toFixed(2)} ${coin}`
   } else if (i.msat_per_pih != null) {
-    const perThh = i.msat_per_pih * TIH_PER_THH / TIH_PER_PIH / 1000
     const sc = amountScale()
     const perUnit = i.msat_per_pih * sc.f / TIH_PER_PIH / 1000
     $('price-label').textContent = sc.unit === 'rate'
-      ? `≈ ${perUnit >= 1 ? `${fmtUnits(perUnit, 3)} sats` : `${fmtUnits(perUnit * 1000, 3)} msat`} per ${sc.label} (${i.msat_per_pih.toLocaleString()} msat per PiH)`
-      : `${i.msat_per_pih.toLocaleString()} msat per PiH (≈ ${perThh.toFixed(2)} sats per TH-hour)`
+      ? `${perUnit >= 1 ? `${fmtUnits(perUnit, 3)} sats` : `${fmtUnits(perUnit * 1000, 3)} msat`} per ${sc.label}`
+      : `${i.msat_per_pih.toLocaleString()} msat per PiH`
     $('price').textContent = `${Math.ceil(n * i.msat_per_pih / TIH_PER_PIH / 1000).toLocaleString()} sats`
   } else { $('price').textContent = '—' }
   updateBuy()
@@ -456,12 +458,12 @@ function etaText (n) {
   const d = st.info && st.info.delivery
   if (!d) return ''
   const hs = d.hashrate_hs || 0
-  if (!(hs > 0)) return 'Delivery estimate: no hashrate on the mint right now, so delivery starts when its miners are back.'
+  if (!(hs > 0)) return 'No hashrate on the mint right now; delivery starts when its miners are back.'
   const total = (d.queue_tih + n) * HASHES_PER_TIH / hs
-  const ahead = d.queue_tih > 0.0005 ? `, after ${fmtTih(d.queue_tih)} TiH still owed to ${d.open_redemptions} earlier redemption${d.open_redemptions === 1 ? '' : 's'}` : ''
-  let t = `Delivery estimate if you redeem now: about ${fmtDur(total)} at ${fmtRate(hs)}${ahead}.`
+  const ahead = d.queue_tih > 0.0005 ? `, after ${d.open_redemptions} earlier redemption${d.open_redemptions === 1 ? '' : 's'}` : ''
+  let t = `Delivers in about ${fmtDur(total)} at ${fmtRate(hs)}${ahead}.`
   const i = st.info
-  if (i.capacity_ends_ms && Date.now() + total * 1000 > i.capacity_ends_ms) t += ' That runs past the mint\'s current hashrate rental.'
+  if (i.capacity_ends_ms && Date.now() + total * 1000 > i.capacity_ends_ms) t += ' Runs past the current rental.'
   return t
 }
 async function loadInfo () {
@@ -474,7 +476,7 @@ async function loadInfo () {
     $('methods-row').hidden = !ms.length
     $('paused').hidden = !st.info.issuance_paused
     const av = st.info.available_tih
-    $('avail').hidden = av == null
+    $('avail').hidden = av == null || (av > 0 && st.info.capacity_tih != null)
     if (av != null) {
       const ends = st.info.capacity_ends_ms ? `, mining for another ${Math.max(0, (st.info.capacity_ends_ms - Date.now()) / 3.6e6).toFixed(1)} h` : ''
       const min = (st.info.min_buy_tih || 1).toLocaleString()
@@ -521,12 +523,14 @@ function showPay () {
   $('qr').innerHTML = c.qr_svg || ''
   $('request').textContent = c.request
   const ln = c.method === 'bolt11'
-  $('pay-title').textContent = ln ? `Pay ${c.price != null ? c.price.toLocaleString() + ' sats' : 'the invoice'} over Lightning` : `Send ${methodName(c.method)}`
-  $('open-wallet').href = ln ? `lightning:${c.request}` : c.request
   const m = !ln && /uint256=(\d+)/.exec(c.request)
+  $('pay-title').textContent = ln ? 'Pay over Lightning' : `Send ${methodName(c.method)}${chainName(c.request)}`
+  $('pay-amt').hidden = !(ln ? c.price != null : m)
+  $('pay-amt').textContent = ln ? `${c.price != null ? c.price.toLocaleString() : ''} sats` : m ? `${(Number(m[1]) / 1e6).toFixed(6)} ${methodName(c.method)}` : ''
+  $('open-wallet').href = ln ? `lightning:${c.request}` : c.request
   $('pay-note').textContent = ln
-    ? `For ${c.amount_tih} TiH. Scan with any Lightning wallet. This page updates when the payment arrives.`
-    : `Send exactly ${m ? (Number(m[1]) / 1e6).toFixed(6) : 'the amount in the request'} ${methodName(c.method)}${chainName(c.request)} to the address in the request; the exact amount identifies your order. ${c.amount_tih} TiH.`
+    ? `For ${c.amount_tih.toLocaleString()} TiH. This page updates when paid.`
+    : `For ${c.amount_tih.toLocaleString()} TiH. Send the exact amount: it identifies your order.`
   $('s-pay').scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 async function pollBuy () {
