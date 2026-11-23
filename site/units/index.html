@@ -208,9 +208,9 @@ sup { line-height: 0; }
       </div>
     </div>
     <h3 style="margin-top:32px">Rigs for a day</h3>
-    <p class="note" style="margin-top:6px">Typical rated hashrates in TH/s and in binary units (TiH/s, PiH/s, EiH/s), with a day's cost at the converter's hashprice. Tap a row to load it into the converter.</p>
+    <p class="note" style="margin-top:6px">Typical rated hashrates in TH/s and in binary units (TiH/s, PiH/s, EiH/s), with a day's value at the converter's hashprice (sats, or BTC from 0.01 BTC up). Tap a row to load it into the converter.</p>
     <div class="tbl rigs" style="margin-top:12px"><table>
-      <thead><tr><th>Rig</th><th class="r">Hashrate</th><th class="r">In binary</th><th class="r">Cost</th></tr></thead>
+      <thead><tr><th>Rig</th><th class="r">Hashrate</th><th class="r">In binary</th><th class="r">Value / day</th></tr></thead>
       <tbody id="rigs"></tbody>
     </table></div>
     <p class="note">Stock Cashu wallets show the raw integer (32 PiH reads as 32,768 tih). <a href="https://app.hashu.io/">app.hashu.io</a> shows any of these display units and redeems to your pool. Footnote: a difficulty-1 share is really ≈ 4,295,032,833 hashes (2<sup>256</sup> ÷ (0xFFFF × 2<sup>208</sup> + 1)), 0.0015% over 2<sup>32</sup>; pools, miners and Hashu all count 2<sup>32</sup>.</p>
@@ -279,12 +279,14 @@ const RIGS = [
 function fmtTHs (t) { return t >= 1e6 ? `${fmt(t / 1e6, 3)} EH/s` : t >= 1e3 ? `${fmt(t / 1e3, 3)} PH/s` : `${fmt(t, 4)} TH/s` }
 // TiH per second as TiH/s, PiH/s or EiH/s by size.
 function fmtBinRate (tihs) { let k = 0; while (k < 2 && tihs >= 1024 ** (k + 1)) k++; return `${fmt(tihs / 1024 ** k, 4)} ${['TiH', 'PiH', 'EiH'][k]}/s` }
+// A day's value: sats/d, or BTC/d from 1,000,000 sats (0.01 BTC) up.
+function fmtPerDay (sats) { return sats >= 1e6 ? `${fmt(sats / 1e8, 4)} BTC/d` : `${fmtBig(sats)} sats/d` }
 function fmtBig (x) { return x >= 1e6 ? x.toLocaleString(undefined, { notation: 'compact', maximumSignificantDigits: 4 }) : fmt(x, 4) }
 function renderRigs () {
   const mph = msatPerHash()
   $('rigs').innerHTML = RIGS.map(([name, note, ths], k) => {
     const hashes = ths * 1e12 * 86400, tih = hashes / TIH
-    return `<tr data-k="${k}"><th>${name}<small>${note}</small></th><td class="n">${fmtTHs(ths)}</td><td class="n">${fmtBinRate(ths * 1e12 / TIH)}</td><td class="n">${mph > 0 ? `${fmtBig(mph * hashes / 1000)} sats/d` : '—'}</td></tr>`
+    return `<tr data-k="${k}"><th>${name}<small>${note}</small></th><td class="n">${fmtTHs(ths)}</td><td class="n">${fmtBinRate(ths * 1e12 / TIH)}</td><td class="n">${mph > 0 ? fmtPerDay(mph * hashes / 1000) : '—'}</td></tr>`
   }).join('')
 }
 $('rigs').addEventListener('click', (e) => {
