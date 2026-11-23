@@ -60,6 +60,12 @@ jobs:
           - name: hashu-phoenixd
             context: deploy/phoenixd
             file: deploy/phoenixd/Dockerfile
+            # Rebuilt only when deploy/phoenixd changes. Every rebuild is a
+            # new image (fresh labels and timestamps), so `compose pull`
+            # would recreate phoenixd on every deploy: Lightning goes
+            # down, and hashu (and with it every miner's connection)
+            # waits for phoenixd to be healthy again.
+            only_if_changed: deploy/phoenixd
     steps:
       - uses: actions/checkout@v4
 
@@ -79,17 +85,45 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Images with `only_if_changed`: tag each build with the git tree
+      # hash of its directory. When that tag is already published the
+      # image is unchanged, so skip the build and point this commit's
+      # sha- tag at the existing image (`latest` already is).
+      - name: Check for an unchanged image
+        id: tree
+        if: matrix.only_if_changed
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}
+          DIR: ${{ matrix.only_if_changed }}
+        run: |
+          tree=$(git rev-parse "HEAD:$DIR")
+          echo "tag=tree-$tree" >> "$GITHUB_OUTPUT"
+          if docker buildx imagetools inspect "$IMAGE:tree-$tree" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "$IMAGE:tree-$tree is already published; not rebuilding"
+          fi
+
+      - name: Tag the unchanged image with this commit
+        if: steps.tree.outputs.skip == 'true' && github.event_name != 'pull_request'
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}
+          TREE_TAG: ${{ steps.tree.outputs.tag }}
+        run: docker buildx imagetools create -t "$IMAGE:sha-${GITHUB_SHA::7}" "$IMAGE:$TREE_TAG"
+
       - id: meta
+        if: steps.tree.outputs.skip != 'true'
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-
+            type=raw,value=${{ steps.tree.outputs.tag }},enable=${{ steps.tree.outputs.tag != '' }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
       - uses: docker/build-push-action@v6
+        if: steps.tree.outputs.skip != 'true'
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}

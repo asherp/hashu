@@ -16,7 +16,8 @@ pub mod startdiff;
 
 pub use connection::{proxy_connection, proxy_connection_with, proxy_routed_connection};
 pub use listener::{
-    run as run_listener, run_routed as run_routed_listener, run_with as run_listener_with,
-    strip_stratum_prefix, ListenerConfig,
+    run as run_listener, run_routed as run_routed_listener,
+    run_routed_on as run_routed_listener_on, run_with as run_listener_with, strip_stratum_prefix,
+    ListenerConfig,
 };
 pub use observe::{observe_line, Direction, PendingSubmits};

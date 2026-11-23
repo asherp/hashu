@@ -542,6 +542,22 @@ Caveats for the demo:
   redeemer's pool again and keep crediting. Shares submitted while `hashu`
   is down are lost (miners are disconnected), so the redemption just takes
   that much longer.
+- What miners see on a deploy: `docker compose up -d` stops `hashu`
+  (it saves its state on SIGTERM; miners stay connected and keep
+  crediting while it does), and the new container binds the Stratum port
+  before anything else, so reconnecting rigs wait in the queue instead of
+  being refused. Expect each rig to drop and reconnect once, a few seconds
+  of hashing lost. phoenixd is only recreated when its image actually
+  changes (the `images` workflow skips it otherwise); when it is, `hashu`
+  waits for it to be healthy, which can take minutes. To redeploy just the
+  mint and leave everything else running:
+  `docker compose pull hashu && docker compose up -d --no-deps hashu`.
+- Backup pools on rigs: a rig with a backup ("fallback") pool may switch to
+  it during the few seconds `hashu` is down and never come back. Bitaxe
+  firmware is reported not to return to the primary (ESP-Miner issue
+  #1618), and stock Antminer firmware usually stays on the backup until
+  it is restarted. Leave the backup pool empty on rigs that mine through
+  Hashu, or point it at this mint's Stratum address too.
 - Stratum on 3335 is plaintext TCP, like most pools.
 - The mint API has no rate limiting; fine for a hackathon, not production.
 - The limited-access phoenixd password was not tested end to end before
