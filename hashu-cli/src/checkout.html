@@ -118,7 +118,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
   <!-- 1. choose -->
   <section class="card" id="s-buy">
     <h2>How much hashrate?</h2>
-    <div class="row" id="units-row"><span class="note">Count in</span><div class="seg" id="units"><button data-u="hash" class="on" title="Hashes: TiH (2^40), PiH or EiH">PiH</button><button data-u="rate" title="Hashrate held for a day: 1 TH/s × 24 h">TH/s/Day</button></div></div>
+    <div class="row" id="units-row"><span class="note">Count in</span><div class="seg" id="units"><button data-u="hash" class="on" title="Hashes: TiH (2^40), PiH or EiH">PiH</button><button data-u="rate" title="Hashrate held for a day: 1 TH/s × 24 h">TH/s/Day</button><button data-u="money" title="How much to spend">sats</button></div></div>
     <label class="f"><span id="amount-label">Pebihashes (PiH)</span>
       <input type="number" id="amount" min="0" step="any" inputmode="decimal" value="32">
     </label>
@@ -273,7 +273,7 @@ const TIH_PER_THH = 3.6e15 / HASHES_PER_TIH
 // 1 TH/s held for a day (86,400 s) is about 78,580 TiH.
 const TIH_PER_THSD = 86400e12 / HASHES_PER_TIH
 const st = { info: null, method: null, checkout: null, redemption: null, pollT: null, tih: 32768, unit: 'hash', scaleKey: '' }
-try { if (localStorage.getItem('hashu.checkout.unit') === 'rate') st.unit = 'rate' } catch {}
+try { const u = localStorage.getItem('hashu.checkout.unit'); if (u === 'rate' || u === 'money') st.unit = u } catch {}
 
 // The operator's Hashu wallet (app_url in api/info), if it runs one.
 const appUrl = () => { const u = st.info && st.info.app_url; return u && /^https?:\/\//.test(u) ? u.replace(/\/+$/, '') : '' }
@@ -301,8 +301,26 @@ const fmtHashes = (tih, k = hashUnit(tih)) => `${inUnit(tih, k)} ${HASH_UNITS[k]
 const HASH_NAMES = ['Tebihashes', 'Pebihashes', 'Exbihashes']
 const RATE_UNITS = ['TH/s/Day', 'PH/s/Day', 'EH/s/Day']
 const sellCap = () => { const i = st.info; if (!i) return null; const av = i.available_tih; return av > 0 ? Math.min(i.max_tih || av, av) : i.max_tih }
+// What the order costs, in sats (Lightning) or the stablecoin, rounded up
+// the way the mint quotes it. null without a price.
+function priceOf (tih) {
+  const i = st.info; if (!i) return null
+  if (STABLES[st.method]) return i.usdt_per_pih != null ? Number((tih * i.usdt_per_pih / TIH_PER_PIH).toFixed(2)) : null
+  return i.msat_per_pih != null ? Math.ceil(tih * i.msat_per_pih / TIH_PER_PIH / 1000) : null
+}
 function amountScale (unit = st.unit) {
   const ref = sellCap() || st.tih
+  const i = st.info
+  if (unit === 'money' && i) {
+    // Spend a sum: TiH per sat (or per USDT/USDC) at the current price.
+    const coin = STABLES[st.method]
+    const per = coin ? i.usdt_per_pih : i.msat_per_pih
+    if (per > 0) {
+      const label = coin || 'sats'
+      return { unit, key: `money-${st.method}`, f: coin ? TIH_PER_PIH / per : TIH_PER_PIH * 1000 / per, label, name: `Spend (${label})`, minStep: coin ? 0.01 : 1 }
+    }
+  }
+  if (unit === 'money') unit = 'hash'
   if (unit === 'rate') {
     let k = 0; while (k < RATE_UNITS.length - 1 && ref >= TIH_PER_THSD * 1000 ** (k + 1)) k++
     return { unit, key: `rate${k}`, f: TIH_PER_THSD * 1000 ** k, label: RATE_UNITS[k], name: `Hashrate-days (${RATE_UNITS[k]})` }
@@ -313,15 +331,18 @@ function amountScale (unit = st.unit) {
 const sig = (x, p = 4) => Number(x.toPrecision(p))
 const fmtUnits = (x, p = 4) => sig(x, p).toLocaleString(undefined, { maximumFractionDigits: 8 })
 // An amount in TiH, in the buyer's chosen unit family.
-const fmtAmount = (tih) => { const sc = amountScale(); return sc.unit === 'rate' ? `${fmtUnits(tih / sc.f, 3)} ${sc.label}` : fmtHashes(tih) }
+const fmtMoney = (x, label) => `${x.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${label === 'sats' && x === 1 ? 'sat' : label}`
+const fmtAmount = (tih) => {
+  const sc = amountScale()
+  if (sc.unit === 'money') return fmtMoney(priceOf(tih), sc.label)
+  return sc.unit === 'rate' ? `${fmtUnits(tih / sc.f, 3)} ${sc.label}` : fmtHashes(tih)
+}
 // Point the toggle, label and box at the chosen unit. The box is only
 // rewritten when its scale changes, so typing is never interrupted.
 function renderUnit (force) {
   const sc = amountScale()
-  const other = amountScale(sc.unit === 'rate' ? 'hash' : 'rate')
   for (const b of $('units').querySelectorAll('button')) {
-    const s = b.dataset.u === sc.unit ? sc : other
-    b.textContent = s.label
+    b.textContent = amountScale(b.dataset.u).label
     b.classList.toggle('on', b.dataset.u === sc.unit)
   }
   $('amount-label').textContent = sc.name
@@ -332,7 +353,12 @@ function renderUnit (force) {
     const cap = sellCap()
     if (cap != null) $('amount').max = sig(cap / sc.f, 8)
   }
-  if (force || sc.key !== st.scaleKey) $('amount').value = sig(st.tih / sc.f, sc.unit === 'rate' ? 4 : 6)
+  if (force || sc.key !== st.scaleKey) {
+    $('amount').value = sc.unit === 'money' ? priceOf(st.tih) : sig(st.tih / sc.f, sc.unit === 'rate' ? 4 : 6)
+  } else if (sc.unit === 'money') {
+    // The typed sum holds still while the price moves; the TiH it buys follow.
+    st.tih = Math.floor((Number($('amount').value) || 0) * sc.f)
+  }
   st.scaleKey = sc.key
 }
 const fmtRate = (hs) => { if (!(hs > 0)) return '0 H/s'; const u = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s']; let i = 0; while (hs >= 1000 && i < u.length - 1) { hs /= 1000; i++ } return `${hs.toFixed(hs >= 100 ? 0 : 1)} ${u[i]}` }
@@ -375,14 +401,14 @@ function renderPrice () {
     const sc = amountScale()
     $('price-label').textContent = sc.unit === 'rate'
       ? `${(i.usdt_per_pih * sc.f / TIH_PER_PIH).toFixed(4)} ${coin} per ${sc.label}`
-      : `${(i.usdt_per_pih).toFixed(6)} ${coin} per PiH`
+      : `${sc.unit === 'money' ? `${fmtHashes(n)} at ` : ''}${(i.usdt_per_pih).toFixed(6)} ${coin} per PiH`
     $('price').textContent = `${(n * i.usdt_per_pih / TIH_PER_PIH).toFixed(2)} ${coin}`
   } else if (i.msat_per_pih != null) {
     const sc = amountScale()
     const perUnit = i.msat_per_pih * sc.f / TIH_PER_PIH / 1000
     $('price-label').textContent = sc.unit === 'rate'
       ? `${perUnit >= 1 ? `${fmtUnits(perUnit, 3)} sats` : `${fmtUnits(perUnit * 1000, 3)} msat`} per ${sc.label}`
-      : `${i.msat_per_pih.toLocaleString()} msat per PiH`
+      : `${sc.unit === 'money' ? `${fmtHashes(n)} at ` : ''}${i.msat_per_pih.toLocaleString()} msat per PiH`
     $('price').textContent = `${Math.ceil(n * i.msat_per_pih / TIH_PER_PIH / 1000).toLocaleString()} sats`
   } else { $('price').textContent = '—' }
   updateBuy()
@@ -410,10 +436,10 @@ function renderChips () {
   if (!(cap >= min)) return
   const sc = amountScale()
   let chips
-  if (sc.unit === 'rate') {
+  if (sc.unit === 'rate' || sc.unit === 'money') {
     // Round 1-2-5 steps in TH/s/Day (or PH/s/Day) between the minimum (or
     // a thousandth of what is left) and what is left, log-spaced, at most four.
-    const hi = cap / sc.f, lo = Math.max(min / sc.f, hi / 1000)
+    const hi = cap / sc.f, lo = Math.max(min / sc.f, hi / 1000, sc.minStep || 0)
     const cand = []
     for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++) {
       for (const m of [1, 2, 5]) { const v = sig(m * 10 ** e, 3); if (v >= lo && v <= hi) cand.push(v) }
@@ -421,7 +447,9 @@ function renderChips () {
     const n = Math.min(4, cand.length)
     const picks = []
     for (let j = 0; j < n; j++) { const v = cand[n === 1 ? cand.length - 1 : Math.round((cand.length - 1) * j / (n - 1))]; if (!picks.includes(v)) picks.push(v) }
-    chips = picks.map((u) => ({ v: Math.min(cap, Math.max(min, Math.round(u * sc.f))), label: `${fmtUnits(u)} ${sc.label}` }))
+    // A sum to spend buys the TiH it covers, rounded down.
+    const toTih = (u) => sc.unit === 'money' ? Math.floor(u * sc.f) : Math.round(u * sc.f)
+    chips = picks.map((u) => ({ v: Math.min(cap, Math.max(min, toTih(u))), u, label: sc.unit === 'money' ? fmtMoney(u, sc.label) : `${fmtUnits(u)} ${sc.label}` }))
   } else {
     const lo = Math.ceil(Math.log2(min))
     const hi = Math.floor(Math.log2(cap))
@@ -433,7 +461,7 @@ function renderChips () {
   const last = chips.length ? chips[chips.length - 1].v : 0
   const all = Math.floor(av)
   if (av != null && av <= (i.max_tih || av) && all > last) chips.push({ v: all, label: `All ${fmtAmount(all)}` })
-  const html = chips.map((c) => `<button data-v="${c.v}" title="${c.v.toLocaleString()} TiH">${c.label}</button>`).join('')
+  const html = chips.map((c) => `<button data-v="${c.v}"${c.u != null ? ` data-u="${c.u}"` : ''} title="${c.v.toLocaleString()} TiH">${c.label}</button>`).join('')
   if ($('chips').innerHTML !== html) $('chips').innerHTML = html
 }
 // Buying needs hashrate to sell: with none left (or an amount above what
@@ -494,7 +522,13 @@ async function loadInfo () {
   } catch (e) { alertMsg(`Cannot reach the mint: ${e.message}`) }
 }
 $('methods').addEventListener('click', (ev) => { const b = ev.target.closest('button'); if (!b) return; st.method = b.dataset.m; loadInfo() })
-$('chips').addEventListener('click', (ev) => { const b = ev.target.closest('button'); if (!b) return; st.tih = Number(b.dataset.v); renderUnit(true); renderPrice() })
+$('chips').addEventListener('click', (ev) => {
+  const b = ev.target.closest('button'); if (!b) return
+  st.tih = Number(b.dataset.v)
+  renderUnit(true)
+  if (b.dataset.u != null && st.unit === 'money') $('amount').value = b.dataset.u
+  renderPrice()
+})
 $('amount').addEventListener('input', () => { st.tih = Math.floor((Number($('amount').value) || 0) * amountScale().f); renderPrice() })
 $('units').addEventListener('click', (ev) => {
   const b = ev.target.closest('button'); if (!b || b.dataset.u === st.unit) return
