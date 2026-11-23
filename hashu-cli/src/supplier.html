@@ -131,6 +131,11 @@ button.ghost { background:transparent; color:var(--ink); border-color:var(--line
 <script>
 const $ = (id) => document.getElementById(id);
 const fmt = (n, d = 0) => Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
+// Hash amounts scale with their size: TiH, then PiH (1,024 TiH), then EiH.
+const HASH_UNITS = ['TiH', 'PiH', 'EiH'];
+const hashUnit = (tih) => { let k = 0; while (k < HASH_UNITS.length - 1 && Math.abs(tih) >= 1024 ** (k + 1)) k++; return k; };
+const inUnit = (tih, k) => { const v = tih / 1024 ** k; return fmt(v, k === 0 || Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 10 ? 1 : 2); };
+const fmtHashes = (tih, k = hashUnit(tih)) => inUnit(tih, k) + ' ' + HASH_UNITS[k];
 function say(text, ok) { const m = $('msg'); m.textContent = text; m.className = 'msg ' + (ok ? 'good' : 'bad'); m.hidden = false; }
 
 // Asks are whole sats per EiH (2^60 hashes = 2^20 TiH). The same ask in
@@ -148,10 +153,12 @@ async function status() {
     document.title = s.name + ' · Hashu supplier mint';
     $('ask').textContent = s.ask_sats_per_eih == null ? '–' : fmt(s.ask_sats_per_eih, 0);
     $('ask-sub').textContent = s.ask_sats_per_eih == null ? 'sats per EiH' : `sats per EiH · ${askEquiv(s.ask_sats_per_eih)}`;
-    $('avail').textContent = fmt(s.capacity.available_tih);
+    const avTih = s.capacity.available_tih, avK = hashUnit(avTih);
+    $('avail').textContent = inUnit(avTih, avK);
+    $('avail').title = fmt(avTih) + ' TiH';
     $('avail-sub').textContent = s.capacity.below_min
-      ? `TiH for sale (${fmt(s.capacity.stock.left_tih, 0)} TiH left, below the 1,024 TiH minimum)`
-      : 'TiH for sale';
+      ? `${HASH_UNITS[avK]} for sale (${fmtHashes(s.capacity.stock.left_tih)} left, below the 1 PiH minimum)`
+      : `${HASH_UNITS[avK]} for sale`;
     $('rate').textContent = fmt(s.capacity.hashrate_ths, 2);
     $('horizon').textContent = fmt(s.capacity.horizon_hours, 1);
     const st = s.capacity.stock, now = Date.now();

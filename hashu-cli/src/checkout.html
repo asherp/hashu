@@ -45,7 +45,7 @@ button.act, a.act { text-decoration: none; display: inline-block; border: 1px so
 button.act.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
 button.act:disabled { opacity: 0.5; cursor: default; }
 .price { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
-.price b { font-size: 26px; font-variant-numeric: tabular-nums; }
+.price b { font-size: 26px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .capbar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--line); margin: 10px 0 6px; }
 .capbar .alloc { background: var(--target); }
 .capbar .avail { background: var(--brand); }
@@ -119,7 +119,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
     <label class="f">Tebihashes (TiH)
       <input type="number" id="amount" min="1024" step="1" value="32768">
     </label>
-    <div class="row chips" id="chips"><button data-v="1024">1,024</button><button data-v="32768">32,768</button><button data-v="262144">262,144</button><button data-v="2097152">2,097,152</button></div>
+    <div class="row chips" id="chips"><button data-v="1024">1 PiH</button><button data-v="32768">32 PiH</button><button data-v="262144">256 PiH</button><button data-v="2097152">2 EiH</button></div>
     <div class="row" id="methods-row"><span class="note">Pay with</span><div class="seg" id="methods"></div></div>
     <p class="note" id="equiv"></p>
     <p class="note" id="eta"></p>
@@ -281,6 +281,12 @@ function walletLink (a, token) {
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const fmtTih = (x, d) => { if (!Number.isFinite(x)) return '—'; d = d ?? (Math.abs(x) < 10 ? 2 : Math.abs(x) < 100 ? 1 : 0); return x.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) }
+// Hash amounts scale with their size: TiH, then PiH (1,024 TiH), then EiH
+// (1,024 PiH). Vouchers stay in the tih unit; this is display only.
+const HASH_UNITS = ['TiH', 'PiH', 'EiH']
+const hashUnit = (tih) => { let k = 0; while (k < HASH_UNITS.length - 1 && Math.abs(tih) >= 1024 ** (k + 1)) k++; return k }
+const inUnit = (tih, k) => { const v = tih / 1024 ** k; return v.toLocaleString(undefined, { maximumFractionDigits: k === 0 || Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 10 ? 1 : 2 }) }
+const fmtHashes = (tih, k = hashUnit(tih)) => `${inUnit(tih, k)} ${HASH_UNITS[k]}`
 const fmtRate = (hs) => { if (!(hs > 0)) return '0 H/s'; const u = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s']; let i = 0; while (hs >= 1000 && i < u.length - 1) { hs /= 1000; i++ } return `${hs.toFixed(hs >= 100 ? 0 : 1)} ${u[i]}` }
 const fmtDur = (s) => { if (!Number.isFinite(s) || s < 0) return '—'; s = Math.round(s); if (s < 60) return `${s}s`; if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`; return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m` }
 const STABLES = { usdt: 'USDT', usdc: 'USDC' }
@@ -314,7 +320,7 @@ function renderPrice () {
   const n = Math.max(1, Math.floor(Number($('amount').value) || 0))
   const thh = n / TIH_PER_THH
   const hours = Math.round(thh * 10) / 10
-  $('equiv').textContent = `${n.toLocaleString()} TiH ≈ ${fmtTih(thh, thh < 10 ? 2 : 1)} TH-hours: ${hours < 48 ? `1 TH/s for ${hours} h` : `${(thh / 24).toFixed(1)} TH/s for a day`}, or ${(n * HASHES_PER_TIH).toExponential(2)} hashes.`
+  $('equiv').textContent = `${n.toLocaleString()} TiH${n >= TIH_PER_PIH ? ` (${fmtHashes(n)})` : ''} ≈ ${fmtTih(thh, thh < 10 ? 2 : 1)} TH-hours: ${hours < 48 ? `1 TH/s for ${hours} h` : `${(thh / 24).toFixed(1)} TH/s for a day`}, or ${(n * HASHES_PER_TIH).toExponential(2)} hashes.`
   $('eta').textContent = etaText(n)
   const coin = STABLES[st.method]
   if (coin && i.usdt_per_pih != null) {
@@ -333,8 +339,32 @@ function capBar (total, allocated, available, fmtN) {
   const t = Math.max(total, allocated, 0)
   const pa = t > 0 ? Math.min(100, allocated / t * 100) : 0
   const pv = t > 0 ? Math.min(100 - pa, available / t * 100) : 0
+  const k = hashUnit(t)
+  const fmtH = (x) => fmtHashes(x, k)
   return `<div class="capbar" role="img" aria-label="${fmtN(allocated)} TiH allocated, ${fmtN(available)} TiH available of ${fmtN(total)} TiH total"><span class="alloc" style="width:${pa}%"></span><span class="avail" style="width:${pv}%"></span></div>` +
-    `<div class="caplegend"><span><i style="background:var(--target)"></i>Allocated ${fmtN(allocated)} TiH</span><span><i style="background:var(--brand)"></i>Available ${fmtN(available)} TiH</span><span>Total ${fmtN(total)} TiH</span></div>`
+    `<div class="caplegend"><span><i style="background:var(--target)"></i>Allocated ${fmtH(allocated)}</span><span><i style="background:var(--brand)"></i>Available ${fmtH(available)}</span><span>Total ${fmtH(total)}</span></div>`
+}
+// Amount chips follow the mint's stock: powers of two from the minimum
+// purchase up to the largest that fits in what is left (or the mint's
+// per-order cap when uncapped), plus one for everything available. A
+// sold-out mint keeps the last set, disabled.
+function renderChips () {
+  const i = st.info; if (!i) return
+  const min = Math.max(1, i.min_buy_tih || TIH_PER_PIH)
+  const av = i.available_tih
+  const cap = av != null ? Math.min(i.max_tih || av, av) : i.max_tih
+  if (!(cap >= min)) return
+  const lo = Math.ceil(Math.log2(min))
+  const hi = Math.floor(Math.log2(cap))
+  const exps = []
+  const n = Math.min(4, hi - lo + 1)
+  for (let j = 0; j < n; j++) { const e = n === 1 ? hi : Math.round(lo + (hi - lo) * j / (n - 1)); if (!exps.includes(e)) exps.push(e) }
+  const vals = exps.map((e) => 2 ** e)
+  const chips = vals.map((v) => ({ v, label: fmtHashes(v) }))
+  const all = Math.floor(av)
+  if (av != null && av <= (i.max_tih || av) && all > vals[vals.length - 1]) chips.push({ v: all, label: `All ${fmtHashes(all)}` })
+  const html = chips.map((c) => `<button data-v="${c.v}" title="${c.v.toLocaleString()} TiH">${c.label}</button>`).join('')
+  if ($('chips').innerHTML !== html) $('chips').innerHTML = html
 }
 // Buying needs hashrate to sell: with none left (or an amount above what
 // is left) the button stays off. The mint refuses such quotes too.
@@ -349,7 +379,7 @@ function updateBuy () {
   $('amount').disabled = soldOut
   for (const b of $('chips').querySelectorAll('button')) b.disabled = soldOut || (av != null && Number(b.dataset.v) > av)
   $('over').hidden = !over
-  if (over) $('over').textContent = `Only ${av.toLocaleString()} TiH available right now. Lower the amount to buy.`
+  if (over) $('over').textContent = `Only ${av.toLocaleString()} TiH${av >= TIH_PER_PIH ? ` (${fmtHashes(av)})` : ''} available right now. Lower the amount to buy.`
 }
 // Delivery estimate: redemptions are served oldest first, so this order
 // waits for the TiH still owed to open ones, then fills at the proxy's
@@ -380,7 +410,7 @@ async function loadInfo () {
     if (av != null) {
       const ends = st.info.capacity_ends_ms ? `, mining for another ${Math.max(0, (st.info.capacity_ends_ms - Date.now()) / 3.6e6).toFixed(1)} h` : ''
       const min = (st.info.min_buy_tih || 1).toLocaleString()
-      $('avail').textContent = av > 0 ? `${av.toLocaleString()} TiH available now (${(st.info.rented_ths || 0).toFixed(1)} TH/s rented${ends}).`
+      $('avail').textContent = av > 0 ? `${fmtHashes(av)} available now (${(st.info.rented_ths || 0).toFixed(1)} TH/s rented${ends}).`
         : st.info.below_min ? `Sold out: ${fmtTih(st.info.headroom_tih, 0)} TiH of headroom left, below the ${min} TiH minimum purchase. Capacity counts the mint's declared hashrate rentals × hours left, not live hashrate. Purchases reopen when more is rented; this page updates on its own.`
         : 'Sold out: the mint has no hashrate available to sell right now. Purchases reopen when new hashrate is rented; this page updates on its own.'
     }
@@ -389,6 +419,7 @@ async function loadInfo () {
     $('cap-bar').hidden = av == null || total == null
     if (av != null && total != null) $('cap-bar').innerHTML = capBar(total, st.info.allocated_tih || 0, av, (n) => Math.floor(n).toLocaleString())
     $('amount').max = av != null ? Math.min(st.info.max_tih, av) : st.info.max_tih
+    renderChips()
     renderPrice()
   } catch (e) { alertMsg(`Cannot reach the mint: ${e.message}`) }
 }
