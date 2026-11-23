@@ -76,6 +76,14 @@ tr.group th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em
 .out { margin-top: 16px; }
 .out table { min-width: 0; }
 .out td.n, .out .r { text-align: right; }
+.rigs .r, .rigs td.n { text-align: right; }
+.rigs table { min-width: 0; }
+.rigs tbody th { white-space: normal; }
+.rigs td.n { white-space: nowrap; }
+.rigs tbody tr { cursor: pointer; }
+.rigs tbody tr:hover th, .rigs tbody tr:hover td { background: var(--brand-fill); }
+.rigs small { display: block; font-weight: 400; color: var(--ink-3); font-size: 12px; white-space: normal; }
+@media (max-width: 480px) { .rigs table { font-size: 12.5px; } .rigs th, .rigs td { padding: 8px 6px; } .rigs .hide-sm, .rigs small { display: none; } }
 .out th { white-space: normal; font-weight: 600; }
 .out th, .out td { padding: 9px 12px; }
 @media (max-width: 480px) { .card { padding: 16px; } .out table { font-size: 13px; } .out th, .out td { padding: 8px 8px; } }
@@ -199,6 +207,12 @@ sup { line-height: 0; }
         </div>
       </div>
     </div>
+    <h3 style="margin-top:32px">Rigs for a day</h3>
+    <p class="note" style="margin-top:6px">Typical rated hashrates, run for 24 hours, priced at the converter's hashprice. Tap a row to load it into the converter.</p>
+    <div class="tbl rigs" style="margin-top:12px"><table>
+      <thead><tr><th>Rig</th><th class="r">Hashrate</th><th class="r hide-sm">TiH / day</th><th class="r">PiH / day</th><th class="r">sats / day</th></tr></thead>
+      <tbody id="rigs"></tbody>
+    </table></div>
     <p class="note">Stock Cashu wallets show the raw integer (32 PiH reads as 32,768 tih). <a href="https://app.hashu.io/">app.hashu.io</a> shows any of these display units and redeems to your pool. Footnote: a difficulty-1 share is really ≈ 4,295,032,833 hashes (2<sup>256</sup> ÷ (0xFFFF × 2<sup>208</sup> + 1)), 0.0015% over 2<sup>32</sup>; pools, miners and Hashu all count 2<sup>32</sup>.</p>
   </section>
 
@@ -250,9 +264,36 @@ function msatPerHash () {
   const v = Number($('c-price').value)
   return v > 0 ? v * u[1] : 0
 }
+
+// Rigs, home to industrial, at typical rated hashrate.
+const RIGS = [
+  ['Bitaxe Gamma', 'open-source home miner', 1.2],
+  ['NerdQaxe++', 'four-chip home miner', 4.8],
+  ['Antminer S9', '2016 ASIC, still around', 13.5],
+  ['Antminer S19 Pro', '2020 ASIC', 110],
+  ['Antminer S21', '2023 air-cooled ASIC', 200],
+  ['Antminer S21 XP Hydro', 'water-cooled ASIC', 473],
+  ['Mining container', 'about 300 S21s, ~1 MW', 60000],
+  ['Industrial fleet', 'a large public miner', 50e6],
+]
+function fmtTHs (t) { return t >= 1e6 ? `${fmt(t / 1e6, 3)} EH/s` : t >= 1e3 ? `${fmt(t / 1e3, 3)} PH/s` : `${fmt(t, 4)} TH/s` }
+function fmtBig (x) { return x >= 1e9 ? x.toExponential(2).replace('e+', ' × 10^') : fmt(x, 4) }
+function renderRigs () {
+  const mph = msatPerHash()
+  $('rigs').innerHTML = RIGS.map(([name, note, ths], k) => {
+    const hashes = ths * 1e12 * 86400, tih = hashes / TIH
+    return `<tr data-k="${k}"><th>${name}<small>${note}</small></th><td class="n">${fmtTHs(ths)}</td><td class="n hide-sm">${fmtBig(tih)}</td><td class="n">${fmtBig(tih / 1024)}</td><td class="n">${mph > 0 ? fmtBig(mph * hashes / 1000) : '—'}</td></tr>`
+  }).join('')
+}
+$('rigs').addEventListener('click', (e) => {
+  const tr = e.target.closest('tr[data-k]'); if (!tr) return
+  $('c-ths').value = RIGS[tr.dataset.k][2]; $('c-hours').value = 24; fromRate()
+  $('converter').scrollIntoView({ behavior: 'smooth' })
+})
 let hashesNow = 0
 function render (hashes) {
   hashesNow = hashes
+  renderRigs()
   const mph = msatPerHash()
   const rows = UNITS.map(([id, name, h]) => `<tr><th>${name}</th><td class="n">${fmt(hashes / h)}</td><td class="n">${id === 'hashes' ? '' : fmtSats(mph * h)}</td></tr>`)
   rows.push(`<tr class="us"><th>Cost</th><td class="n" colspan="2">${fmtSats(mph * hashes)}</td></tr>`)
