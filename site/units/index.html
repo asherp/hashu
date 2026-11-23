@@ -92,10 +92,10 @@ sup { line-height: 0; }
     </a>
     <div class="links">
       <a href="/">Home</a>
+      <a href="#converter">Converter</a>
       <a href="#why">Why TiH</a>
       <a href="#table">Unit table</a>
       <a href="#examples">Examples</a>
-      <a href="#converter">Converter</a>
       <a href="/redeem/">Pool guides</a>
       <a href="https://mint.hashu.io/checkout/">Live mint</a>
     </div>
@@ -106,6 +106,23 @@ sup { line-height: 0; }
     <h1>Counting hashes in <span>base 2</span></h1>
     <p class="lede">Hashu vouchers count hashes in <b>TiH</b> (tebihash, 2<sup>40</sup> hashes). The mining industry quotes hashrate in base 10, as TH/s, PH/s and EH/s. Pool share accounting and Cashu tokens both work in powers of two. TiH is the unit where those two meet without rounding, and this page shows how it converts to everything else.</p>
   </header>
+
+  <section id="converter">
+    <h2>Converter</h2>
+    <div class="card">
+      <div class="conv">
+        <label>Amount<input id="c-amt" type="number" inputmode="decimal" value="1" min="0" step="any"></label>
+        <label>Unit<select id="c-unit"></select></label>
+      </div>
+      <p class="note" style="margin-top:12px">Or from hashrate and time:</p>
+      <div class="conv" style="margin-top:8px">
+        <label>Hashrate (TH/s)<input id="c-ths" type="number" inputmode="decimal" placeholder="1.2" min="0" step="any"></label>
+        <label>For (hours)<input id="c-hours" type="number" inputmode="decimal" placeholder="24" min="0" step="any"></label>
+      </div>
+      <div class="out tbl"><table><tbody id="c-out"></tbody></table></div>
+      <p class="note" id="c-notes"></p>
+    </div>
+  </section>
 
   <section id="short">
     <h2>The short version</h2>
@@ -258,23 +275,6 @@ sup { line-height: 0; }
       <span class="on">2<sup>16</sup> = 65,536</span><span class="on">2<sup>14</sup> = 16,384</span><span class="on">2<sup>13</sup> = 8,192</span><span class="on">2<sup>12</sup> = 4,096</span><span class="on">2<sup>6</sup> = 64</span><span class="on">2<sup>4</sup> = 16</span><span class="on">2<sup>3</sup> = 8</span>
     </div>
     <p class="note">65,536 + 16,384 + 8,192 + 4,096 + 64 + 16 + 8 = 94,296. Each note is a whole number of difficulty-256 shares, which no note in a THh-based keyset could be.</p>
-  </section>
-
-  <section id="converter">
-    <h2>Converter</h2>
-    <div class="card">
-      <div class="conv">
-        <label>Amount<input id="c-amt" type="number" inputmode="decimal" value="1" min="0" step="any"></label>
-        <label>Unit<select id="c-unit"></select></label>
-      </div>
-      <p class="note" style="margin-top:12px">Or from hashrate and time:</p>
-      <div class="conv" style="margin-top:8px">
-        <label>Hashrate (TH/s)<input id="c-ths" type="number" inputmode="decimal" placeholder="1.2" min="0" step="any"></label>
-        <label>For (hours)<input id="c-hours" type="number" inputmode="decimal" placeholder="24" min="0" step="any"></label>
-      </div>
-      <div class="out tbl"><table><tbody id="c-out"></tbody></table></div>
-      <p class="note" id="c-notes"></p>
-    </div>
   </section>
 
   <section id="wallets">
