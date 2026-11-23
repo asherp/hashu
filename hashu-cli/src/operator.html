@@ -76,6 +76,9 @@ h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacin
 .chart .band { stroke: var(--surface); stroke-width: 1.5; stroke-linejoin: round; }
 .chart .series.total { stroke: var(--ink); stroke-width: 1.5; }
 .chart .dot.total { fill: var(--ink); }
+details.how { margin-top: 8px; }
+details.how summary { cursor: pointer; list-style-position: inside; }
+details.how p { margin: 6px 0 0; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--ink-2); margin: 0; padding: 0; list-style: none; }
 .legend li { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .legend .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
@@ -185,7 +188,7 @@ td.num, th.num { text-align: right; }
     </div>
     <div class="chart" id="c-rate"></div>
     <ul class="legend" id="rate-legend" aria-label="Rigs"></ul>
-    <p class="note">Estimated from accepted shares: each share of difficulty D is D × 2<sup>32</sup> hashes. A rig's total work is exact at each share and grows steadily between shares, so it is read off every 30 s and each slot's rate is the work in it ÷ 30 s; a slot sharing a gap between two shares gets its part of it. A rig does no work while it is disconnected (grey, <i>Offline</i> when no rig is connected) or while the daemon is down (light grey): the first share after a reconnect counts from the reconnect, not across the outage. The 1 and 5 min averages spread each slot's work over a centred triangular window that wide at half height, only onto time the rig was connected, so the area under the line (rate × time) is exactly the work of the shares. The newest slots wait for each connected rig's next share. Each rig name (the Stratum user after its first dot; rigs sharing a name add up) is a band; the bands stack to the total line. Includes hashrate sent to the default pool and to redeemers.</p>
+    <details class="note how"><summary>From accepted shares, in 30 s slots. Grey = offline.</summary><p>Estimated from accepted shares: each share of difficulty D is D × 2<sup>32</sup> hashes. A rig's total work is exact at each share and grows steadily between shares, so it is read off every 30 s and each slot's rate is the work in it ÷ 30 s; a slot sharing a gap between two shares gets its part of it. A rig does no work while it is disconnected (grey, <i>Offline</i> when no rig is connected) or while the daemon is down (light grey): the first share after a reconnect counts from the reconnect, not across the outage. The 1 and 5 min averages spread each slot's work over a centred triangular window that wide at half height, only onto time the rig was connected, so the area under the line (rate × time) is exactly the work of the shares. The newest slots wait for each connected rig's next share. Each rig name (the Stratum user after its first dot; rigs sharing a name add up) is a band; the bands stack to the total line. Includes hashrate sent to the default pool and to redeemers.</p></details>
   </section>
 
   <section class="card" aria-labelledby="h-red">
