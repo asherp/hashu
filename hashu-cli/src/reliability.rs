@@ -103,6 +103,8 @@ pub struct Reliability {
     announcements: Mutex<HashMap<String, Announcement>>,
     /// Where each mint's profile takes tips (`lud16`/`lud06`).
     tips: Mutex<HashMap<String, Tip>>,
+    /// Exact `about` for a mint's profile, when set.
+    abouts: Mutex<HashMap<String, String>>,
     /// Each mint's direct messages ([`crate::inbox`]).
     pub(crate) inboxes: crate::inbox::Inboxes,
     /// Where wallets message each supplier mint: the supplier's own npub,
@@ -147,6 +149,7 @@ impl Reliability {
             keysets: Mutex::new(HashMap::new()),
             announcements: Mutex::new(HashMap::new()),
             tips: Mutex::new(HashMap::new()),
+            abouts: Mutex::new(HashMap::new()),
             inboxes: Default::default(),
             message_targets: Mutex::new(HashMap::new()),
         }))
@@ -172,6 +175,16 @@ impl Reliability {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(mint.to_string(), a);
+    }
+
+    /// `mint`'s profile `about`, exactly as written. `None`: built from
+    /// its description, record link and tip note.
+    pub fn set_profile_about(&self, mint: &str, about: Option<String>) {
+        let mut a = self.abouts.lock().unwrap_or_else(|e| e.into_inner());
+        match about.filter(|s| !s.trim().is_empty()) {
+            Some(s) => a.insert(mint.to_string(), s),
+            None => a.remove(mint),
+        };
     }
 
     /// Where `mint`'s Nostr profile takes tips: the operator's tip jar, or a
@@ -320,7 +333,16 @@ impl Reliability {
                 .unwrap_or_else(|e| e.into_inner())
                 .get(&m)
                 .cloned();
-            if let Err(e) = st.ensure_profile(&a, tip.as_ref(), now).await {
+            let about = self
+                .abouts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&m)
+                .cloned();
+            if let Err(e) = st
+                .ensure_profile(&a, tip.as_ref(), about.as_deref(), now)
+                .await
+            {
                 tracing::warn!(mint = %st.url(), error = %e, "Nostr profile");
             }
             if m != OPERATOR_MINT && operator_announces {
@@ -849,6 +871,8 @@ mod tests {
                 &"alice@wallet.example".parse().unwrap(),
             )),
         );
+        let about = "Hashu mints hash vouchers redeemable for hashrate directed at your pool.";
+        r.set_profile_about("", Some(about.into()));
         r.step(H + 60, true).await;
 
         let ev = nostr::Event::from_json(r.operator.announcement_json().unwrap()).unwrap();
@@ -907,6 +931,9 @@ mod tests {
         let oev = nostr::Event::from_json(r.operator.profile_json().unwrap()).unwrap();
         assert_eq!(oev.pubkey.to_hex(), r.operator.pubkey());
         assert!(!oev.content.contains("lud16"), "no tip jar set");
+        let ometa: serde_json::Value = serde_json::from_str(&oev.content).unwrap();
+        assert_eq!(ometa["about"], about, "operator about exactly as set");
+        assert!(meta["about"].as_str().unwrap().contains("Tips go to alice"));
 
         // NIP-05 on alice's host names her receipt key, with CORS.
         let get = |path: &'static str| {

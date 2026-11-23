@@ -200,7 +200,10 @@ impl Announcement {
     /// - `tip`: `lud16`/`lud06` where tips go (the operator's tip jar, or a
     ///   supplier's own LNURL), with a line in `about` saying a tip buys no
     ///   vouchers. Vouchers are bought through the mint's quotes.
-    pub fn profile_content(&self, tip: Option<&Tip>) -> String {
+    ///
+    /// `about`, when given, is the profile's `about` exactly as written
+    /// (the operator's `HASHU_NOSTR_ABOUT`); the tip field is still set.
+    pub fn profile_content(&self, tip: Option<&Tip>, about_override: Option<&str>) -> String {
         let mut m = serde_json::Map::new();
         if let Some(n) = &self.name {
             m.insert("name".into(), n.clone().into());
@@ -216,6 +219,11 @@ impl Announcement {
             about.push_str(&t.note);
             m.insert(t.field.into(), t.value.clone().into());
         }
+        let about = about_override
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .unwrap_or(about);
         m.insert("about".into(), about.into());
         m.insert("picture".into(), self.picture().into());
         m.insert("website".into(), self.url.clone().into());
@@ -366,7 +374,7 @@ mod tests {
     #[test]
     fn profile_is_kind0_metadata_without_lightning() {
         let a = sample();
-        let c: serde_json::Value = serde_json::from_str(&a.profile_content(None)).unwrap();
+        let c: serde_json::Value = serde_json::from_str(&a.profile_content(None, None)).unwrap();
         assert_eq!(c["name"], "Hashu");
         assert_eq!(c["website"], "https://mint.example");
         assert_eq!(c["nip05"], "_@mint.example");
@@ -377,8 +385,20 @@ mod tests {
             .unwrap()
             .contains("https://mint.example/reliability/"));
         assert!(c.get("lud16").is_none() && c.get("lud06").is_none());
-        let meta = nostr::Metadata::from_json(a.profile_content(None)).unwrap();
+        let meta = nostr::Metadata::from_json(a.profile_content(None, None)).unwrap();
         assert_eq!(meta.name.as_deref(), Some("Hashu"));
+    }
+
+    #[test]
+    fn about_can_be_set_exactly() {
+        use crate::lnaddress::PayEndpoint;
+        let a = sample();
+        let op = Tip::operator(&"tips@mint.example".parse::<PayEndpoint>().unwrap());
+        let s = "Hashu mints hash vouchers redeemable for hashrate directed at your pool.";
+        let c: serde_json::Value =
+            serde_json::from_str(&a.profile_content(Some(&op), Some(s))).unwrap();
+        assert_eq!(c["about"], s);
+        assert_eq!(c["lud16"], "tips@mint.example", "tips still offered");
     }
 
     #[test]
@@ -386,7 +406,8 @@ mod tests {
         use crate::lnaddress::PayEndpoint;
         let a = sample();
         let op = Tip::operator(&"tips@mint.example".parse::<PayEndpoint>().unwrap());
-        let c: serde_json::Value = serde_json::from_str(&a.profile_content(Some(&op))).unwrap();
+        let c: serde_json::Value =
+            serde_json::from_str(&a.profile_content(Some(&op), None)).unwrap();
         assert_eq!(c["lud16"], "tips@mint.example");
         assert!(c["about"]
             .as_str()
@@ -398,7 +419,8 @@ mod tests {
         assert!(sup.value.starts_with("lnurl1"));
         // Round-trips through the same parser suppliers sign up with.
         assert_eq!(sup.value.parse::<PayEndpoint>().unwrap(), url);
-        let c: serde_json::Value = serde_json::from_str(&a.profile_content(Some(&sup))).unwrap();
+        let c: serde_json::Value =
+            serde_json::from_str(&a.profile_content(Some(&sup), None)).unwrap();
         assert!(c["about"].as_str().unwrap().contains("Tips go to alice"));
         assert!(c.get("lud16").is_none());
     }

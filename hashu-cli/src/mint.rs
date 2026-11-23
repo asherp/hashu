@@ -199,6 +199,15 @@ pub struct RunArgs {
     /// Supplier mints always use their own `lnurl` setting.
     #[arg(long, env = "HASHU_TIPS", default_value = "on")]
     pub tips: crate::tips::TipsSetting,
+    /// The `about` of the operator mint's Nostr profile, exactly as
+    /// written. Empty: the mint description, a link to its delivery
+    /// record and where tips go.
+    #[arg(
+        long,
+        env = "HASHU_NOSTR_ABOUT",
+        default_value = "Hashu mints hash vouchers redeemable for hashrate directed at your pool."
+    )]
+    pub nostr_about: String,
     /// Date vouchers to Bitcoin difficulty epochs (2,016 blocks, #126):
     /// the mint sells only the current epoch, rotates its TiH keyset at
     /// each epoch, and converts expired vouchers (melt method `epoch`) to
@@ -1080,6 +1089,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         )
         .context("tips")?;
         reliability.set_tip("", tip);
+        reliability.set_profile_about("", Some(args.nostr_about.clone()));
         routes
     };
     // Registered suppliers' mints, on <name>.<supplier domain>.
