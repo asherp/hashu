@@ -53,7 +53,7 @@ use hashu_proxy::control::ControlState;
 use hashu_proxy::credit::{CreditContext, ShareCrediter};
 use hashu_proxy::meter::HashrateMeter;
 use hashu_proxy::router::{Router, SwitchMode};
-use hashu_proxy::stratum::run_routed_listener;
+use hashu_proxy::stratum::run_routed_listener_on;
 use hashu_proxy::upstream::normalize_upstream;
 use hashu_proxy::ProxyMetrics;
 
@@ -660,6 +660,14 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             "HASHU_UPSTREAM must be stratum+tcp://host:port, stratum+ssl://host:port or stratum2+tcp://host[:port]/<authority key> (got {raw_upstream})"
         );
     };
+    // Bind the Stratum port before anything slow (oracle, Lightning node,
+    // mint database). After a deploy the rigs are already retrying: a
+    // bound port queues their connections until the proxy starts
+    // accepting, where a closed one refuses them, so they back off or
+    // fail over to a backup pool.
+    let stratum_listener = tokio::net::TcpListener::bind(args.stratum_bind)
+        .await
+        .with_context(|| format!("bind Stratum on {}", args.stratum_bind))?;
     let mut contacts = parse_contacts(&args.contact)?;
     // The mint's own Nostr identity: the receipt key that signs its
     // reliability record and NIP-87 announcement (#109, #116).
@@ -1291,8 +1299,8 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     }
 
     tracing::info!(bind = %args.stratum_bind, %upstream, "stratum proxy listening");
-    let proxy = run_routed_listener(
-        args.stratum_bind,
+    let proxy = run_routed_listener_on(
+        stratum_listener,
         router,
         metrics,
         Some(credit),

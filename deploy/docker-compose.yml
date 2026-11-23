@@ -16,8 +16,8 @@
 #                        also answers for $HASHU_EXTRA_DOMAINS (optional)
 #                        -> /mdk redirects to the MDK dashboard demo at
 #                           https://$HASHU_MDK_DOMAIN/ (optional, profile "mdk")
-#   $HASHU_STRATUM_PORT (3335)  Stratum proxy, raw TCP, straight to the
-#                        hashu container
+#   $HASHU_STRATUM_PORT (3335)  Stratum, raw TCP, to the relay container,
+#                        which forwards to the hashu container's proxy
 # Private (compose network only, never published on the host):
 #   hashu:3334  control API + operator GUI (POST api/controls changes pricing)
 #   phoenixd:9740  phoenixd HTTP API (mainnet wallet)
@@ -204,11 +204,32 @@ services:
       - --network=${HASHU_NETWORK:-bitcoin}
     volumes:
       - hashu_data:/data
+    # No `ports:` for Stratum: miners reach it through `relay` below, which
+    # keeps their connections open while this container is redeployed.
+    networks: [backend, edge]
+    restart: unless-stopped
+
+  # Stratum relay: what miners connect to (raw TCP, no TLS). It holds each
+  # miner's connection and, when `hashu` restarts (every deploy), resumes
+  # the miner's session on the new build without the miner reconnecting.
+  # Its image is rebuilt only when hashu-relay/ changes, so `compose pull`
+  # leaves it running. No depends_on on purpose: recreating `hashu` must
+  # never recreate the relay. While `hashu` is down it holds miners for
+  # HASHU_RELAY_HOLD_SECS (default 300) before letting them go.
+  relay:
+    build:
+      context: ..
+      dockerfile: hashu-relay/Dockerfile
+    image: ${HASHU_REGISTRY:-ghcr.io/asherp}/hashu-relay:${HASHU_IMAGE_TAG:-latest}
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      HASHU_RELAY_LISTEN: 0.0.0.0:3333
+      HASHU_RELAY_UPSTREAM: hashu:3333
+      HASHU_RELAY_HOLD_SECS: ${HASHU_RELAY_HOLD_SECS:-300}
     ports:
-      # Miners connect straight to the Stratum proxy (raw TCP, no TLS).
       # Host port 3335 by default (set HASHU_STRATUM_PORT=3333 if it is free).
       - "${HASHU_STRATUM_PORT:-3335}:3333"
-    networks: [backend, edge]
+    networks: [edge]
     restart: unless-stopped
 
   # MDK demo (Hashrate at Home): the Hashu Heater app and a mock heater in

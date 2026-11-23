@@ -1962,6 +1962,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashu-relay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "hashu-core",
+ "hashu-proxy",
+ "hex",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

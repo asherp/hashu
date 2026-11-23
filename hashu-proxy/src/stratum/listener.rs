@@ -74,6 +74,22 @@ pub async fn run_routed(
     let listener = TcpListener::bind(bind)
         .await
         .with_context(|| format!("bind {bind}"))?;
+    run_routed_on(listener, router, metrics, credit, reconcile_every).await
+}
+
+/// [`run_routed`] on a listener the caller already bound. A daemon binds
+/// its Stratum port first thing at startup, so miners reconnecting after
+/// a deploy are queued in the kernel's accept backlog while the rest of
+/// the daemon starts, instead of being refused and backing off (or
+/// failing over to a backup pool they may never leave).
+pub async fn run_routed_on(
+    listener: TcpListener,
+    router: Arc<Router>,
+    metrics: Arc<ProxyMetrics>,
+    credit: Option<CreditContext>,
+    reconcile_every: std::time::Duration,
+) -> Result<()> {
+    let bind = listener.local_addr().context("listener address")?;
     tracing::info!(%bind, default_upstream = router.default_upstream(), "routed stratum proxy listening");
 
     let completions = credit.as_ref().map(|c| c.crediter.subscribe_completions());
