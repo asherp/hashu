@@ -42,6 +42,9 @@ code { font:14px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-a
     <label for="ln">Lightning address or LNURL <span class="hint">a Lightning address, or your own LNURL-pay endpoint (lnurl1…, lnurlp:// or https://); it must support payment verification (LUD-21)</span></label>
     <input id="ln" required placeholder="you@wallet.example or lnurl1…" autocomplete="off" autocapitalize="none" spellcheck="false">
 
+    <label for="npub">Your npub <span class="hint">optional; wallets send private messages (NIP-17) for your mint to this Nostr key, so they reach you, not Hashu</span></label>
+    <input id="npub" placeholder="npub1…" autocomplete="off" autocapitalize="none" spellcheck="false">
+
     <label for="ask">Ask <span class="hint">whole sats per EiH (2^60 hashes); about 640 is 2 sats per TH-hour</span></label>
     <input id="ask" type="number" min="1" step="1" required>
     <p class="hint" id="ask-eq"></p>
@@ -94,6 +97,7 @@ $('join').addEventListener('submit', async (e) => {
       body: JSON.stringify({
         name: $('name').value.trim().toLowerCase(),
         lnurl: $('ln').value.trim(),
+        npub: $('npub').value.trim() || null,
         ask_sats_per_eih: Math.round(Number($('ask').value)),
         horizon_hours: Number($('horizon').value),
       }),

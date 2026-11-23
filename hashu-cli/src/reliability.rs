@@ -103,6 +103,12 @@ pub struct Reliability {
     announcements: Mutex<HashMap<String, Announcement>>,
     /// Where each mint's profile takes tips (`lud16`/`lud06`).
     tips: Mutex<HashMap<String, Tip>>,
+    /// Each mint's direct messages ([`crate::inbox`]).
+    pub(crate) inboxes: crate::inbox::Inboxes,
+    /// Where wallets message each supplier mint: the supplier's own npub,
+    /// or `None` (no messages). The operator's mint is messaged at its own
+    /// key and read on the operator dashboard.
+    message_targets: Mutex<HashMap<String, Option<String>>>,
 }
 
 impl Reliability {
@@ -141,6 +147,8 @@ impl Reliability {
             keysets: Mutex::new(HashMap::new()),
             announcements: Mutex::new(HashMap::new()),
             tips: Mutex::new(HashMap::new()),
+            inboxes: Default::default(),
+            message_targets: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -174,6 +182,29 @@ impl Reliability {
             Some(tip) => t.insert(mint.to_string(), tip),
             None => t.remove(mint),
         };
+    }
+
+    /// Where wallets send direct messages for supplier `mint`: the
+    /// supplier's npub, or `None`.
+    pub fn set_message_target(&self, mint: &str, npub: Option<String>) {
+        self.message_targets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(mint.to_string(), npub);
+    }
+
+    /// The npub wallets should message for `mint`, or `None` when it takes
+    /// no messages. The operator's mint: its own key.
+    pub fn message_target(&self, mint: &str) -> Option<String> {
+        if mint == OPERATOR_MINT {
+            return self.store(mint).map(|s| s.npub());
+        }
+        self.message_targets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(mint)
+            .cloned()
+            .flatten()
     }
 
     /// The store for `mint` (`""` = operator); `None` for a supplier that
@@ -211,7 +242,12 @@ impl Reliability {
         }
     }
 
-    fn mints(&self) -> Vec<String> {
+    /// Relays every mint posts to (`HASHU_NOSTR_RELAYS`).
+    pub fn configured_relays(&self) -> &[String] {
+        &self.cfg.relays
+    }
+
+    pub(crate) fn mints(&self) -> Vec<String> {
         let mut m = vec![OPERATOR_MINT.to_string()];
         if let Some(s) = &self.suppliers {
             m.extend((s.names)());
@@ -579,6 +615,13 @@ async fn index(State(ctx): State<Ctx>, Query(q): Query<IndexQuery>) -> Response 
                 .and_then(|e| serde_json::from_str::<serde_json::Value>(&e).ok()),
             "relays": store.announcement_relays(),
         },
+        // Direct messages (NIP-17): whom to write to. A supplier mint names
+        // the supplier's own npub; `null` = this mint takes no messages.
+        "messages": ctx.rel.message_target(&ctx.mint).map(|npub| json!({
+            "npub": npub,
+            "pubkey": nostr::PublicKey::parse(&npub).map(|p| p.to_hex()).unwrap_or_default(),
+            "relays": store.configured_relays(),
+        })),
         "profile": {
             "kind": PROFILE_KIND,
             "event": store

@@ -1874,6 +1874,7 @@ dependencies = [
  "hashu-proxy",
  "hex",
  "nostr",
+ "nostr-sdk",
  "qrcode",
  "rand 0.8.6",
  "reqwest",

@@ -57,6 +57,12 @@ pub struct SupplierSettings {
     /// ([`PayEndpoint`]'s `Display`).
     #[serde(default, alias = "lightning_address")]
     pub lnurl: Option<String>,
+    /// The supplier's own Nostr key (npub). Direct messages to the
+    /// supplier's mint go here: it is listed first in the mint's NUT-06
+    /// contact and named as the mint's message target. Hashu never holds
+    /// its secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub npub: Option<String>,
 }
 
 impl Default for SupplierSettings {
@@ -65,6 +71,7 @@ impl Default for SupplierSettings {
             ask_sats_per_eih: None,
             horizon_hours: DEFAULT_HORIZON_HOURS,
             lnurl: None,
+            npub: None,
         }
     }
 }
@@ -82,6 +89,10 @@ impl SupplierSettings {
         self.lnurl = match self.lnurl.as_deref().map(str::trim) {
             None | Some("") => None,
             Some(a) => Some(a.parse::<PayEndpoint>()?.to_string()),
+        };
+        self.npub = match self.npub.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(n) => Some(normalize_npub(n)?),
         };
         Ok(self)
     }
@@ -426,6 +437,7 @@ mod tests {
                 ask_sats_per_eih: ask,
                 horizon_hours: horizon,
                 lnurl: None,
+                npub: None,
             })),
             Arc::new(move |n: &str| {
                 if n == "alice" {
@@ -542,6 +554,7 @@ mod tests {
                 ask_sats_per_eih: Some(600),
                 horizon_hours: 400.0,
                 lnurl: None,
+                npub: None,
             })),
             Arc::new(|_: &str| 1e12),
             Arc::new(Mutex::new(SupplierBook::load(dir.path()).unwrap())),
@@ -621,6 +634,7 @@ mod tests {
             ask_sats_per_eih: Some(45),
             horizon_hours: 12.0,
             lnurl: Some(" Alice@Wallet.Example ".into()),
+            npub: None,
         }
         .validated()
         .unwrap();
@@ -677,5 +691,54 @@ mod tests {
         ] {
             assert!(bad.validated().is_err());
         }
+    }
+}
+
+/// A Nostr public key as npub (accepts npub, `nostr:npub…` or hex).
+pub fn normalize_npub(n: &str) -> Result<String, String> {
+    use nostr::ToBech32;
+    let n = n.trim();
+    let n = n.strip_prefix("nostr:").unwrap_or(n);
+    nostr::PublicKey::parse(n)
+        .ok()
+        .and_then(|p| p.to_bech32().ok())
+        .ok_or_else(|| "npub: a Nostr public key starting npub1".to_string())
+}
+
+#[cfg(test)]
+mod npub_tests {
+    use super::*;
+
+    #[test]
+    fn npub_is_optional_and_normalized() {
+        let npub = "npub1sg6plzptd64u62a878hep2kev88swjh3tw00gjsfl8f237lmu63q0uf63m";
+        let hex = nostr::PublicKey::parse(npub).unwrap().to_hex();
+        for given in [
+            npub.to_string(),
+            format!("nostr:{npub}"),
+            hex,
+            format!(" {npub} "),
+        ] {
+            let s = SupplierSettings {
+                npub: Some(given),
+                ..Default::default()
+            }
+            .validated()
+            .unwrap();
+            assert_eq!(s.npub.as_deref(), Some(npub));
+        }
+        let blank = SupplierSettings {
+            npub: Some("  ".into()),
+            ..Default::default()
+        };
+        assert_eq!(blank.validated().unwrap().npub, None);
+        let bad = SupplierSettings {
+            npub: Some("npub1nope".into()),
+            ..Default::default()
+        };
+        assert!(bad.validated().is_err());
+        // Older settings files have no npub.
+        let old: SupplierSettings = serde_json::from_str(r#"{"horizon_hours":24}"#).unwrap();
+        assert_eq!(old.npub, None);
     }
 }

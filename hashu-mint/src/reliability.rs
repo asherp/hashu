@@ -187,6 +187,17 @@ impl RecordStore {
         &self.cfg.relays
     }
 
+    /// The receipt key: the mint's Nostr identity, which also opens and
+    /// answers its direct messages ([`crate::inbox`]).
+    pub fn keys(&self) -> &Keys {
+        &self.keys
+    }
+
+    /// The store's directory.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// Newest published hour.
     pub fn last_hour(&self) -> Option<u64> {
         self.lock().keys().next_back().copied()

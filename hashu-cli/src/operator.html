@@ -124,6 +124,23 @@ select { padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); ba
 #plan-rows tr, #plan-hist tr { cursor: default; }
 td.num, th.num { text-align: right; }
 .muted { color: var(--ink-3); }
+/* Direct messages to the mint (NIP-17). */
+.inbox { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 900px) { .inbox { grid-template-columns: minmax(220px, 1fr) 2fr; } }
+.convs { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 8px; max-height: 360px; overflow-y: auto; }
+.convs li { padding: 8px 10px; border-bottom: 1px solid var(--line); cursor: pointer; min-width: 0; }
+.convs li:last-child { border-bottom: 0; }
+.convs li.sel { background: var(--brand-fill); }
+.convs .who { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
+.convs .who span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.convs .prev { color: var(--ink-2); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.unread { background: var(--brand); color: var(--brand-ink); border-radius: 999px; font-size: 11px; font-weight: 700; padding: 0 7px; }
+.thread { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.bubbles { display: flex; flex-direction: column; gap: 6px; max-height: 300px; overflow-y: auto; padding: 4px; }
+.bubble { max-width: 85%; padding: 7px 10px; border-radius: 10px; background: var(--grid); white-space: pre-wrap; overflow-wrap: anywhere; }
+.bubble.out { align-self: flex-end; background: var(--brand-fill); }
+.bubble small { display: block; color: var(--ink-3); font-size: 11px; margin-top: 2px; }
+.thread textarea { width: 100%; min-height: 64px; padding: 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; resize: vertical; }
 @media (max-width: 640px) { .plan-wide { display: none; } #plan-rows input[type=number] { width: 80px; } #plan-rows .src { display: none; } }
 </style>
 </head>
@@ -188,6 +205,23 @@ td.num, th.num { text-align: right; }
         <thead><tr><th>Opened</th><th>Pool / worker</th><th>TiH</th><th style="width:28%">Progress</th><th>State</th></tr></thead>
         <tbody id="red-rows"><tr><td colspan="5" class="sub">None yet.</td></tr></tbody>
       </table>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="h-inbox" id="inbox-card" hidden>
+    <div class="card-head">
+      <h2 id="h-inbox">Messages <span class="unread" id="inbox-unread" hidden></span></h2>
+      <span class="sub mono" id="inbox-npub"></span>
+    </div>
+    <p class="note" id="inbox-note">Private Nostr messages (NIP-17) sent to this mint's key from wallets. Replies are signed by the mint.</p>
+    <div class="inbox">
+      <ul class="convs" id="inbox-convs"><li class="sub">No messages yet.</li></ul>
+      <div class="thread" id="inbox-thread" hidden>
+        <div class="row" style="justify-content:space-between"><b class="mono" id="inbox-peer"></b><a id="inbox-open" target="_blank" rel="noopener" class="sub">Open in Nostr</a></div>
+        <div class="bubbles" id="inbox-bubbles"></div>
+        <textarea id="inbox-text" maxlength="4000" placeholder="Reply as the mint"></textarea>
+        <div class="row"><button class="act primary" id="inbox-send">Send reply</button><span class="note" id="inbox-msg"></span></div>
+      </div>
     </div>
   </section>
 
@@ -1177,6 +1211,65 @@ $('btn-plan').addEventListener('click', async () => {
 $('btn-plan-reset').addEventListener('click', () => { state.planEdits = {}; $('plan-note').textContent = ''; renderPlan() })
 pollPlan()
 setInterval(pollPlan, 15000)
+
+// ---- direct messages (NIP-17) ------------------------------------------
+const inbox = { data: null, peer: null }
+const shortNpub = (n) => n ? n.slice(0, 12) + '…' + n.slice(-6) : ''
+const fmtWhen = (s) => new Date(s * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+async function pollInbox () {
+  try { inbox.data = await api('api/inbox') } catch (e) { return }
+  $('inbox-card').hidden = false
+  renderInbox()
+}
+function renderInbox () {
+  const d = inbox.data
+  if (!d) return
+  $('inbox-npub').textContent = shortNpub(d.npub)
+  $('inbox-npub').title = d.npub
+  $('inbox-unread').hidden = !d.unread
+  $('inbox-unread').textContent = d.unread
+  if (!d.on) $('inbox-note').textContent = 'Set HASHU_NOSTR_RELAYS to receive private messages (NIP-17) at this mint\'s key.'
+  const convs = d.conversations || []
+  $('inbox-convs').innerHTML = convs.length ? convs.map((c) => {
+    const last = c.messages[c.messages.length - 1] || {}
+    return `<li data-peer="${esc(c.peer)}" class="${c.peer === inbox.peer ? 'sel' : ''}">
+      <div class="who"><span class="mono">${esc(shortNpub(c.npub))}</span>${c.unread ? `<span class="unread">${c.unread}</span>` : `<small class="muted">${esc(fmtWhen(c.last_at))}</small>`}</div>
+      <div class="prev">${last.outgoing ? 'You: ' : ''}${esc(last.text)}</div></li>`
+  }).join('') : '<li class="sub">No messages yet.</li>'
+  const c = convs.find((x) => x.peer === inbox.peer)
+  $('inbox-thread').hidden = !c
+  if (!c) return
+  $('inbox-peer').textContent = shortNpub(c.npub)
+  $('inbox-peer').title = c.npub
+  $('inbox-open').href = 'https://njump.me/' + c.npub
+  const box = $('inbox-bubbles')
+  const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 8
+  box.innerHTML = c.messages.map((m) => `<div class="bubble ${m.outgoing ? 'out' : ''}">${esc(m.text)}<small>${esc(fmtWhen(m.created_at))}</small></div>`).join('')
+  if (atEnd || box._peer !== c.peer) box.scrollTop = box.scrollHeight
+  box._peer = c.peer
+}
+$('inbox-convs').addEventListener('click', async (e) => {
+  const li = e.target.closest('li[data-peer]')
+  if (!li) return
+  inbox.peer = li.dataset.peer
+  $('inbox-msg').textContent = ''
+  renderInbox()
+  try { await postJson('api/inbox/read', { peer: inbox.peer }); pollInbox() } catch (err) {}
+})
+$('inbox-send').addEventListener('click', async () => {
+  const text = $('inbox-text').value.trim()
+  if (!text || !inbox.peer) return
+  $('inbox-send').disabled = true
+  $('inbox-msg').textContent = 'Sending…'
+  try {
+    await postJson('api/inbox/reply', { peer: inbox.peer, text })
+    $('inbox-text').value = ''
+    $('inbox-msg').textContent = 'Sent.'
+    await pollInbox()
+  } catch (e) { $('inbox-msg').textContent = e.message } finally { $('inbox-send').disabled = false }
+})
+pollInbox()
+setInterval(pollInbox, 15000)
 window.addEventListener('resize', () => { drawRate(); drawRedemption(); drawPlan() })
 
 poll()

@@ -321,6 +321,8 @@ pub struct OperatorState {
     pub auth: Arc<crate::operator_auth::OperatorAuth>,
     /// Hashrate planner, with epochs on (#126).
     pub planner: Option<Arc<crate::planner::Planner>>,
+    /// The operator mint's record, for its direct messages (`/api/inbox`).
+    pub reliability: Option<Arc<crate::reliability::Reliability>>,
 }
 
 /// Largest test mint in one go: 2^22 TiH (≈ 1,281 THH).
@@ -330,6 +332,10 @@ pub fn router(state: Arc<OperatorState>) -> axum::Router {
     let mut r = axum::Router::new();
     if let Some(w) = &state.waitlist {
         r = r.merge(crate::waitlist::operator_router(w.clone()));
+    }
+    if let Some(rel) = &state.reliability {
+        // Behind the operator login below, like every other route here.
+        r = r.merge(crate::inbox::router(rel.clone(), "", None));
     }
     let auth = state.auth.clone();
     r.route("/", get(page))

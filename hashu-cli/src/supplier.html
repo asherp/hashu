@@ -118,12 +118,15 @@ button.ghost { background:transparent; color:var(--ink); border-color:var(--line
         <input id="s-horizon" type="number" min="1" step="1">
         <label for="s-ln">Lightning address or LNURL <span class="hint">where buyers pay: an address or your own LNURL-pay endpoint (lnurl1…, lnurlp:// or https://); needs payment verification (LUD-21)</span></label>
         <input id="s-ln" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="you@wallet.example or lnurl1…">
+        <label for="s-npub">Your npub <span class="hint">optional; wallets send private messages (NIP-17) for your mint to this Nostr key, so they reach you, not Hashu. Read them in any Nostr client that supports NIP-17 DMs.</span></label>
+        <input id="s-npub" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="npub1…">
         <button>Save</button>
         <button type="button" id="restock">Restock now</button>
       </form>
       <div class="msg" id="msg" hidden></div>
     </details>
   </div>
+
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -194,9 +197,11 @@ $('unlock').addEventListener('click', async () => {
     $('s-ask-eq').textContent = askEquiv(s.ask_sats_per_eih);
     $('s-horizon').value = s.horizon_hours;
     $('s-ln').value = s.lnurl ?? '';
+    $('s-npub').value = s.npub ?? '';
     $('settings').hidden = false;
   } catch (e) { say(e.message, false); }
 });
+
 
 $('settings').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -205,6 +210,7 @@ $('settings').addEventListener('submit', async (e) => {
       ask_sats_per_eih: $('s-ask').value ? Math.round(Number($('s-ask').value)) : null,
       horizon_hours: Number($('s-horizon').value),
       lnurl: $('s-ln').value.trim() || null,
+      npub: $('s-npub').value.trim() || null,
     });
     say('Saved.', true);
     status();
