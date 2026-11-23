@@ -318,6 +318,28 @@ struct MinerFacts {
     suggest_difficulty: Option<Value>,
     /// Extranonce the miner is working with.
     downstream: Option<Extranonce>,
+    /// Extranonce a Stratum relay asked to keep (see [`RESUME_METHOD`]).
+    resume: Option<Extranonce>,
+}
+
+/// Sent by a Stratum relay (`hashu-relay`) before it replays a miner's
+/// handshake on a new connection, e.g. after this daemon restarted:
+/// `{"id":null,"method":"hashu.resume","params":["<extranonce1 hex>",
+/// <extranonce2 size>]}`. The proxy hands the miner that extranonce
+/// again when the pool's extranonce2 can hold it, so the miner keeps
+/// working without reconnecting. Never forwarded to a pool. Honouring it
+/// is harmless: each miner connection has its own pool session.
+pub const RESUME_METHOD: &str = "hashu.resume";
+
+/// The extranonce a [`RESUME_METHOD`] line asks for.
+fn resume_request(params: Option<&Value>) -> Option<Extranonce> {
+    let p = params?.as_array()?;
+    let en1 = hex::decode(p.first()?.as_str()?).ok()?;
+    let en2_size = usize::try_from(p.get(1)?.as_u64()?).ok()?;
+    if en1.is_empty() || en1.len() > 16 || en2_size == 0 || en2_size > 16 {
+        return None;
+    }
+    Some(Extranonce { en1, en2_size })
 }
 
 enum Ev {
@@ -760,6 +782,11 @@ impl Conn {
         let params = v.as_ref().and_then(|v| v.get("params")).cloned();
         let m = &mut self.miner;
         match method {
+            Some(RESUME_METHOD) => {
+                m.resume = resume_request(params.as_ref());
+                tracing::info!(conn = %self.ctx.conn, extranonce = ?m.resume.as_ref().map(|e| hex::encode(&e.en1)), "relay resuming a miner's session");
+                return Ok(()); // for this proxy only
+            }
             Some("mining.subscribe") if m.subscribe_id.is_none() => {
                 m.subscribe_id = id;
                 m.subscribe_params = params;
@@ -894,7 +921,15 @@ impl Conn {
             en1: self.cur.session.extranonce1.clone()?,
             en2_size: self.cur.session.extranonce2_size?,
         };
-        let virt = if self.ctx.seamless {
+        // A relay resuming a miner's session: give back the extranonce it
+        // already works with, if this pool's extranonce2 can hold it.
+        let resumed = self.miner.resume.take().and_then(|want| {
+            let l = rewrite_subscribe_result(line, &want)?;
+            Some((ExtranonceMap::new(up.clone(), want)?, l))
+        });
+        let virt = if resumed.is_some() {
+            resumed
+        } else if self.ctx.seamless {
             virtual_downstream(&up, self.ctx.conn.0 as u16).and_then(|d| {
                 let l = rewrite_subscribe_result(line, &d)?;
                 Some((ExtranonceMap::new(up.clone(), d)?, l))

@@ -14,7 +14,9 @@ pub mod replay;
 pub mod session;
 pub mod startdiff;
 
-pub use connection::{proxy_connection, proxy_connection_with, proxy_routed_connection};
+pub use connection::{
+    proxy_connection, proxy_connection_with, proxy_routed_connection, RESUME_METHOD,
+};
 pub use listener::{
     run as run_listener, run_routed as run_routed_listener,
     run_routed_on as run_routed_listener_on, run_with as run_listener_with, strip_stratum_prefix,

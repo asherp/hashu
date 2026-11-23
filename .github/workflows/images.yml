@@ -6,6 +6,8 @@
 #                                  hashu.me wallet (asherp/hashu.me main) baked in
 #   ghcr.io/asherp/hashu-mdk       MDK dashboard demo
 #   ghcr.io/asherp/hashu-phoenixd  phoenixd with the seed-import entrypoint
+#   ghcr.io/asherp/hashu-relay     Stratum relay that keeps miners connected
+#                                  through hashu deploys
 #
 # Pushes to main publish :latest and :sha-<short>. Pull requests only build
 # (nothing is pushed), as a check that the images still build.
@@ -57,6 +59,12 @@ jobs:
           - name: hashu-mdk
             context: .
             file: deploy/mdk/Dockerfile
+          - name: hashu-relay
+            context: .
+            file: hashu-relay/Dockerfile
+            # Miners stay connected only while the relay keeps running:
+            # rebuild (and so restart) it only when its own code changes.
+            only_if_changed: hashu-relay
           - name: hashu-phoenixd
             context: deploy/phoenixd
             file: deploy/phoenixd/Dockerfile

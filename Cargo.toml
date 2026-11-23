@@ -5,6 +5,7 @@ members = [
     "hashu-mint",
     "hashu-proxy",
     "hashu-cli",
+    "hashu-relay",
 ]
 
 [workspace.package]
