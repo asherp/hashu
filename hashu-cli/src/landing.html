@@ -107,12 +107,9 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     <div class="stats" aria-live="polite">
       <div class="stat"><div class="k">Hashes available</div><div class="v" id="s-avail">—</div></div>
       <div class="stat"><div class="k">Hashrate</div><div class="v" id="s-rate">—</div></div>
-      <div class="stat" data-rail="bolt11" hidden><div class="k">Price</div><div class="v" id="s-price">—</div></div>
-      <div class="stat" data-rail="bolt11" hidden><div class="k">Pay with</div><div class="v">Lightning</div></div>
-      <div class="stat" data-rail="usdt" hidden><div class="k">Price in USDT</div><div class="v" data-usd-price>—</div></div>
-      <div class="stat" data-rail="usdt" hidden><div class="k">Pay with</div><div class="v">USDT</div></div>
-      <div class="stat" data-rail="usdc" hidden><div class="k">Price in USDC</div><div class="v" data-usd-price>—</div></div>
-      <div class="stat" data-rail="usdc" hidden><div class="k">Pay with</div><div class="v">USDC</div></div>
+      <div class="stat" data-rail="bolt11" hidden><div class="k">Pay with Lightning</div><div class="v" id="s-price">—</div></div>
+      <div class="stat" data-rail="usdt" hidden><div class="k">Pay with USDT</div><div class="v" data-usd-price>—</div></div>
+      <div class="stat" data-rail="usdc" hidden><div class="k">Pay with USDC</div><div class="v" data-usd-price>—</div></div>
       <div class="stat"><div class="k">Sales</div><div class="v" id="s-sales">—</div></div>
     </div>
   </header>
@@ -258,8 +255,8 @@ async function load() {
     if (!r.ok) throw new Error(r.status);
     const i = await r.json();
     $('s-price').innerHTML = i.msat_per_pih != null ? fmt(i.msat_per_pih) + ' <small>msat / PiH</small>' + (i.sats_per_th_day != null ? `<div class="sub">${fmt(i.sats_per_th_day, 1)} sats / TH/s / day</div>` : '') : '—';
-    // Each rail the mint sells over gets its price (stablecoins share one
-    // dollar price) and a "Pay with" card; rails it does not offer stay hidden.
+    // One "Pay with" card per rail the mint sells over, holding its price
+    // (stablecoins share one dollar price); rails it does not offer stay hidden.
     const methods = i.methods || [];
     document.querySelectorAll('.stats [data-rail]').forEach((el) => {
       const rail = el.dataset.rail;
