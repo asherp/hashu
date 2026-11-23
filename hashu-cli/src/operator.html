@@ -70,6 +70,9 @@ h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacin
 .chart .empty { fill: var(--ink-3); font-size: 13px; }
 .chart .proj { fill: none; stroke: var(--brand); stroke-width: 1.5; stroke-dasharray: 3 4; opacity: 0.8; }
 .chart .eta-dot { fill: var(--surface); stroke: var(--brand); stroke-width: 2; }
+.chart .span-offline { fill: var(--ink-3); opacity: 0.14; }
+.chart .span-nodata { fill: var(--ink-3); opacity: 0.08; }
+.chart .span-label { fill: var(--ink-2); font-size: 11px; }
 .chart .band { stroke: var(--surface); stroke-width: 1.5; stroke-linejoin: round; }
 .chart .series.total { stroke: var(--ink); stroke-width: 1.5; }
 .chart .dot.total { fill: var(--ink); }
@@ -182,7 +185,7 @@ td.num, th.num { text-align: right; }
     </div>
     <div class="chart" id="c-rate"></div>
     <ul class="legend" id="rate-legend" aria-label="Rigs"></ul>
-    <p class="note">Estimated from accepted shares: each share of difficulty D is D × 2<sup>32</sup> hashes, summed into 30-second buckets, then smoothed over the chosen average (30 s = the raw buckets; 1 or 5 min = a centred triangular window that wide at half height). Smoothing only moves work between neighbouring buckets, so the area under the line (rate × time) is exactly the work of the shares. Each rig name (the Stratum user after its first dot; rigs sharing a name add up) is a band; the bands stack to the total line. Includes hashrate sent to the default pool and to redeemers.</p>
+    <p class="note">Estimated from accepted shares: each share of difficulty D is D × 2<sup>32</sup> hashes. A rig's total work is exact at each share and grows steadily between shares, so it is read off every 30 s and each slot's rate is the work in it ÷ 30 s; a slot sharing a gap between two shares gets its part of it. A rig does no work while it is disconnected (grey, <i>Offline</i> when no rig is connected) or while the daemon is down (light grey): the first share after a reconnect counts from the reconnect, not across the outage. The 1 and 5 min averages spread each slot's work over a centred triangular window that wide at half height, only onto time the rig was connected, so the area under the line (rate × time) is exactly the work of the shares. The newest slots wait for each connected rig's next share. Each rig name (the Stratum user after its first dot; rigs sharing a name add up) is a band; the bands stack to the total line. Includes hashrate sent to the default pool and to redeemers.</p>
   </section>
 
   <section class="card" aria-labelledby="h-red">
@@ -480,6 +483,13 @@ function drawChart (el, cfg) {
     s += `<text x="${X(t)}" y="${H - 6}" text-anchor="${i === 0 ? 'start' : i === nx ? 'end' : 'middle'}">${esc(cfg.xFmt(t))}</text>`
   }
   s += '</g>'
+  // Shaded spans (rate chart): no rig connected, or the daemon down.
+  for (const b of cfg.bands || []) {
+    const bx0 = X(Math.max(b.from, x0)), bx1 = X(Math.min(b.to, x1))
+    if (!(bx1 - bx0 > 0.5)) continue
+    s += `<rect class="span-${b.cls}" x="${bx0.toFixed(1)}" y="${m.t}" width="${(bx1 - bx0).toFixed(1)}" height="${H - m.t - m.b}"/>`
+    if (b.cls === 'offline' && bx1 - bx0 > 56) s += `<text class="span-label" x="${((bx0 + bx1) / 2).toFixed(1)}" y="${m.t + 14}" text-anchor="middle">Offline</text>`
+  }
   const line = pts.map((p, i) => `${i ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join('')
   const st = cfg.stack
   if (st && st.series.length) {
@@ -537,92 +547,190 @@ function drawChart (el, cfg) {
 // to be counted together, so they sum into one band.
 const rigName = (user) => user.includes('.') ? user.slice(user.indexOf('.') + 1) : user
 
-// Hashrate from 30 s buckets. The cumulative work series is cut into
-// wall-clock buckets of BUCKET_MS; each bucket holds the work of the
-// samples that end in it, so the buckets add up to exactly the work in
-// the series (a share is never counted twice or lost at an edge). Then
-// each bucket's work is spread over its neighbours with a triangular
-// window `smoothS` seconds wide at half height (30 s = no smoothing).
-// The weights a bucket hands out sum to 1, so smoothing moves work in
-// time but never adds or removes any: the chart's area (rate × time)
-// still equals the hashes the shares stand for. The window is centred,
-// so a share's jump is shared before and after it (no sawtooth, no
-// lag); the newest buckets settle as the next ones arrive. The bucket
-// still filling is left out until it closes. Each rig (by name, `rigs`
-// in the samples) goes through the same steps with the same weights, so
-// the rigs sum exactly to the total. Returns `pts` ([t, H/s], t at the
-// bucket's middle) and `rigs` ({ t, rigs: {name: H/s} }), per bucket.
+// Hashrate from cumulative work at a fixed 30 s cadence. Each rig's work
+// W(t) (hashes since it was first seen) is known exactly at each share
+// arrival, and the rig works at a steady rate between arrivals, so W is
+// linear from one arrival to the next. Where the rig is known to have
+// done nothing, W is flat: from its last share to a disconnect, while it
+// is disconnected, and while the daemon was down (a gap in the samples);
+// work picks up again from the next connect (or restart), so the first
+// share after one counts over (connect, share], not over the outage.
+// W is interpolated at every slot edge k·30 s and a slot's rate is
+// ΔW / 30 s: an interval crossing a slot edge is split in proportion, and
+// the slots add up to exactly the shares' work. Then each slot's work is
+// spread over its neighbours with a triangular window `smoothS` seconds
+// wide at half height (30 s = none), only onto time the rig was online,
+// weights summing to 1: smoothing moves work but never adds or removes
+// any, and never fills an outage. The chart stops at the newest share of
+// the slowest connected rig (at most LAG_MS back), since work after a
+// rig's last share isn't known yet. Rigs are worked out by Stratum user
+// (`rigs` in the samples) and summed by name. `sessions` are
+// {rig, start_ms, end_ms} (end null while connected), complete from
+// `since` on; before it a rig counts as connected.
+// Returns `pts` ([t, H/s], t at the slot's middle), `rigs`
+// ({ t, rigs: {name: H/s}, off: {name: true} } per slot), `bands`
+// ({from, to, cls}: no rig connected, or no data) and `live` (rig names
+// with an open session now).
 const BUCKET_MS = 30000
-function bucketSeries (samples, smoothS) {
-  // 1. Work per bucket. Bucket k covers (k·B, (k+1)·B]; a sample's work
-  // since the one before goes to the bucket its time falls in.
+const GAP_MS = 5000
+const LAG_MS = 120000
+function workSeries (samples, sessions, since, smoothS) {
   const B = BUCKET_MS
-  const idx = (t) => Math.ceil(t / B) - 1
-  const byK = new Map()
-  const last = Object.assign({}, samples.length ? samples[0].rigs : {})
+  const empty = { pts: [], rigs: [], bands: [], live: new Set() }
+  if (samples.length < 2) return empty
+  sessions = sessions || []
+  since = since || 0
+  const t0 = samples[0].t_ms, tN = samples[samples.length - 1].t_ms
+  // 1. Known points of W per Stratum user: [t, W] at arrivals, and flat
+  // anchors (W unchanged up to there) at connects, disconnects and the
+  // end of each gap in the samples.
+  const gaps = []
+  const pts = {} // user -> [[t, W]]
+  const raw = {} // user -> last reported value (resets when it drops)
+  const cum = {}
+  const lastArr = {}
+  const fresh = {}
+  for (const r in samples[0].rigs || {}) { raw[r] = samples[0].rigs[r]; cum[r] = raw[r]; pts[r] = [[t0, cum[r]]]; lastArr[r] = t0 }
   for (let i = 1; i < samples.length; i++) {
     const s = samples[i], p = samples[i - 1]
     if (!(s.t_ms > p.t_ms)) continue
-    const k = idx(s.t_ms)
-    let b = byK.get(k)
-    if (!b) { b = { k, h: 0, rigs: {} }; byK.set(k, b) }
-    b.h += Math.max(0, s.total_hashes - p.total_hashes)
+    if (s.t_ms - p.t_ms > GAP_MS) gaps.push([p.t_ms, s.t_ms])
     const cur = s.rigs || {}
     for (const r in cur) {
-      // A rig new to the series starts from 0 (its work is counted from
-      // its first share); one that dropped out and came back never goes
-      // negative.
-      const dw = Math.max(0, cur[r] - (last[r] || 0))
-      last[r] = cur[r]
-      if (dw > 0) b.rigs[rigName(r)] = (b.rigs[rigName(r)] || 0) + dw
+      const v = cur[r]
+      const prev = raw[r]
+      raw[r] = v
+      const dw = prev == null ? v : v >= prev ? v - prev : v
+      if (!(dw > 0)) continue
+      if (cum[r] == null) {
+        cum[r] = 0
+        // A rig new to the series starts from 0: at its connect (set
+        // below), else at the sample before.
+        pts[r] = [[p.t_ms, 0]]
+        fresh[r] = true
+      }
+      cum[r] += dw
+      pts[r].push([s.t_ms, cum[r]])
+      lastArr[r] = s.t_ms
     }
   }
-  if (samples.length < 2 || !byK.size) return { pts: [], rigs: [] }
-  const t0 = samples[0].t_ms, tN = samples[samples.length - 1].t_ms
-  let k0 = idx(t0 + 1), kN = idx(tN)
-  // The bucket still filling waits until it closes; the first one is
-  // kept only if the series covers at least half of it.
-  if ((kN + 1) * B > tN) kN--
-  if ((k0 + 1) * B - t0 < B / 2) k0++
-  // Buckets with no samples (daemon down) did no work: zero, not a gap.
-  const bk = []
-  for (let k = k0; k <= kN; k++) {
-    const b = byK.get(k) || { k, h: 0, rigs: {} }
-    // Seconds of the bucket the series covers (all of it but the first).
-    b.dur = (Math.min((k + 1) * B, tN) - Math.max(k * B, t0)) / 1000
-    bk.push(b)
+  const users = Object.keys(pts)
+  const sesBy = {}
+  for (const x of sessions) (sesBy[x.rig] = sesBy[x.rig] || []).push(x)
+  const anchorsOf = (u) => {
+    const a = gaps.map((g) => g[1])
+    for (const x of sesBy[u] || []) { a.push(x.start_ms); if (x.end_ms != null) a.push(x.end_ms) }
+    return a
   }
-  const n = bk.length
-  // 2. Smooth: bucket i hands its work to buckets j within the window,
-  // in proportion to (half-width − |i − j|) × the time j covers. The
-  // weights are normalised over the buckets that exist, so at the ends of
-  // the series none of the work falls off.
+  // A new rig's work starts at its latest connect (or restart) before
+  // its first share.
+  for (const u of users) {
+    if (!fresh[u]) continue
+    const first = pts[u][1][0]
+    const a = anchorsOf(u).filter((t) => t < first)
+    if (a.length) pts[u][0][0] = Math.max(...a)
+  }
+  // Merge anchors into a user's points: each holds W at its value just
+  // before. Points are [t, W]; an anchor before the first point keeps W
+  // at the first value's base (0 for a new rig).
+  const series = {}
+  for (const u of users) {
+    const p = pts[u]
+    const all = p.map((x) => [x[0], x[1], false])
+    for (const t of anchorsOf(u)) if (t > p[0][0] && t < p[p.length - 1][0]) all.push([t, null, true])
+    all.sort((a, b) => a[0] - b[0] || (a[2] ? -1 : 1))
+    let w = all[0][1]
+    for (const x of all) { if (x[2]) x[1] = w; else w = x[1] }
+    series[u] = all.map((x) => [x[0], x[1]])
+  }
+  // W at time t: linear between known points, flat outside them.
+  const W = (s, t) => {
+    if (t <= s[0][0]) return s[0][1]
+    if (t >= s[s.length - 1][0]) return s[s.length - 1][1]
+    let lo = 0, hi = s.length - 1
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (s[m][0] <= t) lo = m; else hi = m }
+    const a = s[lo], b = s[hi]
+    return b[0] > a[0] ? a[1] + (b[1] - a[1]) * (t - a[0]) / (b[0] - a[0]) : b[1]
+  }
+  // Seconds of [a, b) a user was connected (and the daemon up).
+  const known = (u) => (sesBy[u] || []).length > 0
+  const overlap = (a, b, x, y) => Math.max(0, Math.min(b, y) - Math.max(a, x))
+  const onlineMs = (u, a, b) => {
+    // Connected intervals; before records began a rig counts as connected.
+    const iv = known(u)
+      ? [[-Infinity, since], ...sesBy[u].map((x) => [Math.max(x.start_ms, since), x.end_ms == null ? Infinity : x.end_ms])]
+      : [[-Infinity, Infinity]]
+    let on = 0
+    for (const [x, y] of iv) {
+      const lo = Math.max(a, x), hi = Math.min(b, y)
+      if (!(hi > lo)) continue
+      on += hi - lo
+      for (const g of gaps) on -= overlap(lo, hi, g[0], g[1])
+    }
+    return Math.min(b - a, Math.max(0, on))
+  }
+  // 2. Where the chart can stop: the newest share of every connected rig.
+  const open = (u) => !known(u) || sesBy[u].some((x) => x.end_ms == null)
+  let end = tN
+  for (const u of users) if (open(u) && lastArr[u] >= tN - LAG_MS) end = Math.min(end, lastArr[u])
+  // 3. Slots (k·B, (k+1)·B] fully inside [t0, end].
+  const k0 = Math.ceil(t0 / B), kN = Math.floor(end / B) - 1
+  if (kN < k0) return empty
+  const n = kN - k0 + 1
   const hw = Math.max(1, Math.round(smoothS * 1000 / B))
-  const out = bk.map(() => ({ h: 0, rigs: {} }))
-  for (let i = 0; i < n; i++) {
-    const lo = Math.max(0, i - hw + 1), hi = Math.min(n - 1, i + hw - 1)
-    let wsum = 0
-    for (let j = lo; j <= hi; j++) wsum += (hw - Math.abs(i - j)) * bk[j].dur
-    if (!(wsum > 0)) continue
-    for (let j = lo; j <= hi; j++) {
-      const w = (hw - Math.abs(i - j)) * bk[j].dur / wsum
-      if (!w) continue
-      out[j].h += bk[i].h * w
-      for (const r in bk[i].rigs) out[j].rigs[r] = (out[j].rigs[r] || 0) + bk[i].rigs[r] * w
+  const byName = {}
+  const offBy = []
+  for (let j = 0; j < n; j++) offBy.push({})
+  for (const u of users) {
+    const s = series[u], nm = rigName(u)
+    const work = [], on = []
+    for (let j = 0; j < n; j++) {
+      const a = (k0 + j) * B, b = a + B
+      work.push(Math.max(0, W(s, b) - W(s, a)))
+      on.push(onlineMs(u, a, b))
     }
+    // Smooth onto online time only.
+    const out = new Array(n).fill(0)
+    for (let i = 0; i < n; i++) {
+      if (!work[i]) continue
+      const lo = Math.max(0, i - hw + 1), hi = Math.min(n - 1, i + hw - 1)
+      let wsum = 0
+      for (let j = lo; j <= hi; j++) wsum += (hw - Math.abs(i - j)) * on[j]
+      if (!(wsum > 0)) { out[i] += work[i]; continue }
+      for (let j = lo; j <= hi; j++) out[j] += work[i] * (hw - Math.abs(i - j)) * on[j] / wsum
+    }
+    const acc = byName[nm] = byName[nm] || { w: new Array(n).fill(0), on: new Array(n).fill(0) }
+    for (let j = 0; j < n; j++) { acc.w[j] += out[j]; acc.on[j] = Math.max(acc.on[j], on[j]) }
   }
-  // 3. Work per bucket ÷ its seconds = hashes per second.
-  const pts = [], rigs = []
+  const outPts = [], outRigs = []
   for (let j = 0; j < n; j++) {
-    const b = bk[j]
-    if (!(b.dur > 0)) continue
-    const t = (Math.max(b.k * B, t0) + Math.min((b.k + 1) * B, tN)) / 2
-    const r = {}
-    for (const nm in out[j].rigs) if (out[j].rigs[nm] > 0) r[nm] = out[j].rigs[nm] / b.dur
-    pts.push([t, out[j].h / b.dur])
-    rigs.push({ t, rigs: r })
+    const t = (k0 + j) * B + B / 2
+    const r = {}, off = {}
+    let tot = 0
+    for (const nm in byName) {
+      const v = byName[nm].w[j] / (B / 1000)
+      if (v > 0) r[nm] = v
+      if (byName[nm].on[j] === 0) off[nm] = true
+      tot += v
+    }
+    outPts.push([t, tot])
+    outRigs.push({ t, rigs: r, off })
   }
-  return { pts, rigs }
+  // 4. Shading: no data (daemon down), and no rig connected.
+  const bands = gaps.map((g) => ({ from: g[0], to: g[1], cls: 'nodata' }))
+  if (sessions.length) {
+    const iv = sessions.map((x) => [x.start_ms, x.end_ms == null ? Infinity : x.end_ms]).sort((a, b) => a[0] - b[0])
+    let cur = Math.max(t0, since)
+    for (const [a, b] of iv) {
+      if (a > cur) bands.push({ from: cur, to: Math.min(a, tN), cls: 'offline' })
+      cur = Math.max(cur, b)
+      if (cur >= tN) break
+    }
+    if (cur < tN) bands.push({ from: cur, to: tN, cls: 'offline' })
+  }
+  const live = new Set()
+  for (const x of sessions) if (x.end_ms == null) live.add(rigName(x.rig))
+  return { pts: outPts, rigs: outRigs, bands: bands.filter((b) => b.to > b.from), live, end }
 }
 
 // Rigs keep the colour slot they first got while the page is open, so a
@@ -638,12 +746,16 @@ function rigSlot (name) {
   return -1
 }
 
+function rateSeries () {
+  return workSeries(state.samples, state.sessions, state.sessionsSince, state.avg)
+}
+
 function drawRate () {
   const now = state.samples.length ? state.samples[state.samples.length - 1].t_ms : Date.now()
   // Start the axis at the first sample when there is less data than the span.
   const first = state.samples.length ? state.samples[0].t_ms : now
   const from = Math.max(now - state.span * 1000, Math.min(first, now - 60000))
-  const ew = bucketSeries(state.samples, state.avg)
+  const ew = rateSeries()
   const pts = ew.pts.filter((p) => p[0] >= from)
   const rr = ew.rigs.filter((p) => p.t >= from)
   // Rigs that did work in the span, in slot order (stable bottom-to-top).
@@ -652,12 +764,15 @@ function drawRate () {
   const bySlot = [...names].sort((a, b) => a.localeCompare(b)).map((n) => ({ n, k: rigSlot(n) }))
   const own = bySlot.filter((x) => x.k >= 0).sort((a, b) => a.k - b.k)
   const other = bySlot.filter((x) => x.k < 0).map((x) => x.n)
-  const series = own.map((x) => ({ name: x.n, color: `var(--s${x.k + 1})`, vals: rr.map((p) => p.rigs[x.n] || 0) }))
+  // Offline: the rig has session records and none is open now.
+  const hasSes = new Set((state.sessions || []).map((x) => rigName(x.rig)))
+  const series = own.map((x) => ({ name: x.n, color: `var(--s${x.k + 1})`, vals: rr.map((p) => p.rigs[x.n] || 0), off: rr.map((p) => !!p.off[x.n]), offline: hasSes.has(x.n) && !ew.live.has(x.n) }))
   if (other.length) series.push({ name: `Other (${other.length} rigs)`, color: 'var(--s-other)', vals: rr.map((p) => other.reduce((a, n) => a + (p.rigs[n] || 0), 0)) })
   // Rates line up with the total only when both series have the same points.
   const stack = rr.length === pts.length ? { series } : null
+  const bands = ew.bands.filter((b) => b.to > from)
   drawChart($('c-rate'), {
-    points: pts, xMin: from, xMax: now, yFloor: 1e12, stack,
+    points: pts, xMin: from, xMax: now, yFloor: 1e12, stack, bands,
     empty: 'Waiting for samples…',
     yFmt: fmtRate, xFmt: (t) => fmtTime(t).replace(/:\d\d$/, (x) => state.span <= 900 ? x : ''),
     tip: (p, i) => {
@@ -665,15 +780,18 @@ function drawRate () {
       if (stack) {
         for (const ser of series.slice().reverse()) {
           const v = ser.vals[i] || 0
-          if (v > 0) h += `<div class="row-r"><span class="sw" style="background:${ser.color}"></span>${esc(ser.name)} · ${fmtRate(v)}</div>`
+          const off = ser.off && ser.off[i]
+          if (v > 0 || off) h += `<div class="row-r"><span class="sw" style="background:${ser.color}"></span>${esc(ser.name)} · ${off && !(v > 0) ? 'offline' : fmtRate(v)}</div>`
         }
       }
+      const b = bands.find((x) => p[0] >= x.from && p[0] <= x.to)
+      if (b) h += `<div class="row-r">${b.cls === 'nodata' ? 'Daemon down: no shares recorded' : 'No rig connected'}</div>`
       return h
     }
   })
-  // Legend: every rig in the span with its latest rate.
+  // Legend: every rig in the span with its latest rate, or offline.
   $('rate-legend').innerHTML = stack && series.length
-    ? series.map((ser) => `<li><span class="sw" style="background:${ser.color}"></span><span class="nm" title="${esc(ser.name)}">${esc(ser.name)}</span><b>${fmtRate(ser.vals[ser.vals.length - 1] || 0)}</b></li>`).join('')
+    ? series.map((ser) => `<li><span class="sw" style="background:${ser.color}"></span><span class="nm" title="${esc(ser.name)}">${esc(ser.name)}</span><b>${ser.offline ? 'offline' : fmtRate(ser.vals[ser.vals.length - 1] || 0)}</b></li>`).join('')
     : ''
 }
 
@@ -731,9 +849,9 @@ function render () {
     (mint.rails.length ? mint.rails : ['no payment rail']).map((r) => `<span class="pill rail">${esc(r)}</span>`).join('')+
     (op.waitlist != null ? `<a class="pill rail" style="text-decoration:none" href="waitlist">Waitlist: ${op.waitlist}</a>` : '')
 
-  const rate = bucketSeries(state.samples, state.avg).pts
+  const rate = rateSeries().pts
   $('t-rate').textContent = fmtRate(rate.length ? rate[rate.length - 1][1] : px.hashrate_hs)
-  $('t-rate-sub').textContent = `${state.avg < 60 ? '30 s buckets' : `${state.avg / 60}-min average`} · ${px.metrics.shares_accepted} shares`
+  $('t-rate-sub').textContent = `${state.avg < 60 ? '30 s slots' : `${state.avg / 60}-min average`} · ${px.metrics.shares_accepted} shares`
   $('t-owed').textContent = fmtTih(o.total_tih_owed)
   $('t-open').textContent = fmtTih(o.open_redemption_remaining_tih)
   $('t-open-sub').textContent = o.open_redemptions ? `TiH across ${o.open_redemptions} open redemption${o.open_redemptions > 1 ? 's' : ''}` : 'no open redemption'
@@ -922,6 +1040,8 @@ async function poll () {
     if (state.op && op.started_ms !== state.op.started_ms) { state.samples = []; state.lastT = 0; state.rigSlots = {} }
     state.op = op
     mergeSamples(hr.samples)
+    state.sessions = hr.sessions || []
+    state.sessionsSince = hr.sessions_since_ms || 0
     // Follow the current redemption unless the operator picked another.
     if (!state.pinned && op.current) state.selected = op.current.id
     if (state.selected) state.track = await api(`api/track?id=${encodeURIComponent(state.selected)}`).catch(() => null)

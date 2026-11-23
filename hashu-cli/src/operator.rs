@@ -8,7 +8,8 @@
 //! - `GET /`: the operator page (`operator.html`, no external assets).
 //! - `GET /api/operator`: mint state, price, obligations, redemptions with
 //!   progress, proxy counters and the current hashrate.
-//! - `GET /api/hashrate?since=<unix ms>`: the hashrate series.
+//! - `GET /api/hashrate?since=<unix ms>`: the hashrate series, and when
+//!   each rig was connected (`sessions`, recorded since `sessions_since_ms`).
 //! - `GET /api/track?id=<redemption id>`: one redemption's delivered work
 //!   over time (the current redemption without `id`).
 //! - `POST /api/controls`: `{ "issuance_paused": bool, "markup_bps": int,
@@ -427,13 +428,32 @@ async fn track(State(s): State<Arc<OperatorState>>, uri: Uri) -> Response {
     }
 }
 
+/// How far back `/api/hashrate` lists rig sessions.
+const SESSIONS_SPAN_MS: u64 = 3_900_000;
+
 async fn hashrate(State(s): State<Arc<OperatorState>>, uri: Uri) -> Json<Value> {
     let since = query_param(&uri, "since")
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
+    // Rig sessions over the chart's longest span (an hour) and a bit, so
+    // the page can tell a rig that was down from one that was slow.
+    let (sessions, sessions_since) = match &s.control.router {
+        Some(r) => {
+            let from = (SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or_default())
+            .saturating_sub(SESSIONS_SPAN_MS);
+            let (v, since) = r.rig_sessions(from);
+            (v, Some(since))
+        }
+        None => (Vec::new(), None),
+    };
     Json(json!({
         "window_s": s.meter.window().as_secs_f64(),
         "samples": s.meter.samples_since(since),
+        "sessions": sessions,
+        "sessions_since_ms": sessions_since,
     }))
 }
 

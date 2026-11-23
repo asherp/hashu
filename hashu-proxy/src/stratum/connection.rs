@@ -325,11 +325,18 @@ struct MinerFacts {
 /// Sent by a Stratum relay (`hashu-relay`) before it replays a miner's
 /// handshake on a new connection, e.g. after this daemon restarted:
 /// `{"id":null,"method":"hashu.resume","params":["<extranonce1 hex>",
-/// <extranonce2 size>]}`. The proxy hands the miner that extranonce
+/// <extranonce2 size>, <unix ms the miner connected>]}` (the time is
+/// optional; older relays leave it out). The proxy hands the miner that extranonce
 /// again when the pool's extranonce2 can hold it, so the miner keeps
 /// working without reconnecting. Never forwarded to a pool. Honouring it
 /// is harmless: each miner connection has its own pool session.
 pub const RESUME_METHOD: &str = "hashu.resume";
+
+/// When the miner first connected to the relay (Unix ms), the optional
+/// third param of a [`RESUME_METHOD`] line.
+fn resume_since(params: Option<&Value>) -> Option<u64> {
+    params?.as_array()?.get(2)?.as_u64().filter(|&ms| ms > 0)
+}
 
 /// The extranonce a [`RESUME_METHOD`] line asks for.
 fn resume_request(params: Option<&Value>) -> Option<Extranonce> {
@@ -784,6 +791,10 @@ impl Conn {
         match method {
             Some(RESUME_METHOD) => {
                 m.resume = resume_request(params.as_ref());
+                // The miner's own connection carries on: its session too.
+                if let Some(router) = &self.ctx.router {
+                    router.resumed(self.ctx.conn, resume_since(params.as_ref()));
+                }
                 tracing::info!(conn = %self.ctx.conn, extranonce = ?m.resume.as_ref().map(|e| hex::encode(&e.en1)), "relay resuming a miner's session");
                 return Ok(()); // for this proxy only
             }

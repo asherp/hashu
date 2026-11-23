@@ -11,6 +11,7 @@ pub mod home;
 pub mod meter;
 pub mod reliability;
 pub mod router;
+pub mod sessions;
 pub mod stratum;
 pub mod suppliers;
 pub mod sv2;

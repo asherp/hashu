@@ -1301,7 +1301,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     tracing::info!(bind = %args.stratum_bind, %upstream, "stratum proxy listening");
     let proxy = run_routed_listener_on(
         stratum_listener,
-        router,
+        router.clone(),
         metrics,
         Some(credit),
         // Reconcile tick: how soon a new redemption starts moving miners.
@@ -1317,9 +1317,13 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         },
         _ = shutdown_signal() => {
             tracing::info!("shutting down");
+            router.begin_shutdown();
             Ok(())
         }
     };
+    // Connections dropped from here on are this daemon stopping, not rigs
+    // disconnecting: behind the relay their miners stay connected.
+    router.begin_shutdown();
     // Save what is otherwise written on a timer, so a deploy loses nothing.
     if let Some(t) = &telemetry {
         match tokio::time::timeout(Duration::from_secs(5), t.flush()).await {
