@@ -768,7 +768,9 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         )
         .context("configure TiH unit")?;
 
-    // Redemption: the only way out of the mint.
+    // Redemption: the only way out of the mint. Paused while the rigs
+    // are down (the router fills `rigs` in once it exists).
+    let rigs = hashu_core::availability::RigsDown::new();
     builder
         .add_payment_processor(
             tih_unit(),
@@ -777,7 +779,8 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             Arc::new(
                 HashrateMelter::new(ledger.clone())
                     .with_min_tih(args.min_redeem_tih)
-                    .with_max_tih(args.max_tih),
+                    .with_max_tih(args.max_tih)
+                    .with_rigs(rigs.clone()),
             ),
         )
         .await
@@ -974,7 +977,8 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             ),
         )
         .with_app_url(app_url(args.app_url.as_deref())?)
-        .with_stratum(stratum.clone()),
+        .with_stratum(stratum.clone())
+        .with_rigs(rigs.clone()),
     );
 
     let waitlist = if args.waitlist {
@@ -1006,6 +1010,11 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     {
         let r = router.clone();
         capacity.set_live_source(Arc::new(move || r.operator_hashrate() / 1e12));
+    }
+    // Whether each mint's rigs are down, for pausing its redemptions.
+    {
+        let r = router.clone();
+        rigs.set(Arc::new(move |mint: Option<&str>| r.down_since(mint)));
     }
     // Each rig's work in the hashrate samples, for the dashboard's
     // stacked per-rig chart.
@@ -1411,6 +1420,12 @@ fn supplier_mints(
             probe: tenants::lnurl_probe(),
             reliability: Some(reliability.clone()),
             epochs,
+            rigs: Some({
+                let d = hashu_core::availability::RigsDown::new();
+                let r = router.clone();
+                d.set(Arc::new(move |mint: Option<&str>| r.down_since(mint)));
+                d
+            }),
         },
         registry.clone(),
     ))
