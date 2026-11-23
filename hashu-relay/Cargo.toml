@@ -1,0 +1,28 @@
+[package]
+name = "hashu-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Stratum relay that keeps miners connected while the Hashu daemon behind it restarts"
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories = ["network-programming"]
+publish = false
+
+# Kept small and free of the other Hashu crates on purpose: its image is
+# rebuilt only when this directory changes, so deploys of the daemon never
+# restart it (and never drop the miners it holds).
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+hex = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["signal"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+hashu-core = { workspace = true }
+hashu-proxy = { workspace = true }

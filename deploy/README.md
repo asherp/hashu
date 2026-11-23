@@ -16,7 +16,10 @@ mint and phoenixd state): see [DIGITALOCEAN.md](DIGITALOCEAN.md).
 ```
                 internet
    wallets ──https──┐        miners ──stratum+tcp:3335──┐
-                    ▼                                   ▼
+                    │                            ┌──────▼───────┐
+                    │                            │    relay     │ holds miners
+                    │                            └──────┬───────┘ across deploys
+                    ▼                                   ▼ :3333
              ┌────────────┐  :8085 mint API     ┌──────────────┐  ──► redeemer's pool
              │   Caddy    │ ──────────────────► │    hashu     │  ──► default pool
              │  80 / 443  │  :3334 /operator/   │  mint run    │
@@ -30,7 +33,7 @@ mint and phoenixd state): see [DIGITALOCEAN.md](DIGITALOCEAN.md).
 | Port | Exposed? | What |
 |---|---|---|
 | 80, 443 (tcp+udp) | public | Caddy: landing page at `/`, mint API at `/v1/`, buyer checkout at `/checkout/`, operator GUI at `/operator/`, `GET /control/status` |
-| 3335 (`HASHU_STRATUM_PORT`) | public | Stratum proxy, raw TCP (host 3335 → container 3333) |
+| 3335 (`HASHU_STRATUM_PORT`) | public | Stratum, raw TCP: the `relay` container (host 3335 → relay 3333 → hashu 3333) |
 | 8085 | compose network only | Cashu mint API (behind Caddy) |
 | 3334 | compose network only | control API + operator GUI (behind Caddy) |
 | 9740 | compose network only | phoenixd HTTP API |
@@ -72,6 +75,7 @@ again at startup, so running them without compose fails the same way.
 | `HASHU_OTS_CALENDARS` | no | OpenTimestamps calendars that timestamp each hour (comma separated). Default: the two opentimestamps.org pools and eternitywall. Empty: no timestamps. |
 | `HASHU_EPOCHS`, `HASHU_EPOCH_ESPLORA` | no | `true` dates vouchers to Bitcoin difficulty epochs (#126): one TiH keyset per 2,016-block epoch, live sales only for the current epoch (the stock covers what is left of it), and melt method `epoch` converts expired vouchers to the current epoch or the next one with room. State in `epochs.json` in the data volume; see `/v1/hashu/epochs`. Vouchers sold before it was turned on stay perpetual. The chain tip comes from `HASHU_EPOCH_ESPLORA` (default Blockstream mainnet). Default `false`. |
 | `HASHU_STRATUM_PORT` | no | Host port for miners, default `3335`. |
+| `HASHU_RELAY_HOLD_SECS` | no | How long the Stratum relay holds a miner while `hashu` is down (deploy, crash) before closing its connection, default `300`. |
 | `HASHU_STRATUM_URL` | no | The Stratum address miners are told to use: `/checkout/api/info` (`stratum`), the operator dashboard's Stratum tile, the waitlist page and supplier sign-up. Default `stratum+tcp://$HASHU_DOMAIN:$HASHU_STRATUM_PORT`; set it only if miners reach the proxy under another host or port (a load balancer, a different DNS name). |
 | `HASHU_PRICE`, `HASHU_MSAT_PER_PIH`, `HASHU_NETWORK` | no | Pricing: `mrr` (default), `esplora` or `fixed`; fallback 12,500 msat per PiH (≈ 40 sats per TH-hour). |
 | `HASHU_LIGHTNING`, `PHOENIXD_CHAIN` | no | `phoenixd` (default), `fake`, `off`; `mainnet`. |
@@ -526,6 +530,7 @@ card → Off) only to sell without a cap, for example in local testing.
 ```bash
 docker compose ps
 docker compose logs -f hashu            # mint + proxy
+docker compose logs -f relay            # miners' connections (resumes across deploys)
 docker compose logs -f phoenixd
 docker compose restart hashu            # open redemptions resume after the restart
 # deploy a new version: CI-published images (after the `images` workflow is green)
@@ -538,10 +543,33 @@ Caveats for the demo:
 
 - Open redemptions are journaled in the `hashu_data` volume
   (`/data/redemptions.jsonl`, share trees in `/data/share-audit.jsonl`), so a
-  restart or redeploy resumes them: miners reconnect, get routed to the
-  redeemer's pool again and keep crediting. Shares submitted while `hashu`
-  is down are lost (miners are disconnected), so the redemption just takes
-  that much longer.
+  restart or redeploy resumes them: miners are resumed by the relay (or
+  reconnect), get routed to the redeemer's pool again and keep crediting. Shares submitted while `hashu`
+  is down are lost (the relay answers them as stale), so the redemption
+  just takes that much longer.
+- What miners see on a deploy: nothing, usually. Miners connect to the
+  `relay` container, not to `hashu`. When `docker compose up -d` replaces
+  `hashu` (it saves its state on SIGTERM first), the relay keeps every
+  miner's connection open, reconnects to the new build and replays each
+  miner's handshake, asking for the same extranonce. The miner just gets a
+  new difficulty and job. Shares sent in the few seconds `hashu` is down
+  are answered as stale. The relay lets a miner go (it reconnects, as
+  before) if `hashu` is down longer than `HASHU_RELAY_HOLD_SECS` (default
+  300), refuses its worker, or can't give it the same extranonce. Its
+  image is rebuilt only when `hashu-relay/` changes, so ordinary deploys
+  don't restart it; when it does change, miners reconnect once. `docker
+  compose logs relay` shows each resume ("miner resumed on the daemon
+  without reconnecting"). phoenixd is likewise only recreated when its
+  image actually changes; when it is, `hashu` waits for it to be healthy,
+  which can take minutes (the relay holds miners meanwhile). To redeploy
+  just the mint and leave everything else running:
+  `docker compose pull hashu && docker compose up -d --no-deps hashu`.
+- Backup pools on rigs: a rig with a backup ("fallback") pool may switch to
+  it during the few seconds `hashu` is down and never come back. Bitaxe
+  firmware is reported not to return to the primary (ESP-Miner issue
+  #1618), and stock Antminer firmware usually stays on the backup until
+  it is restarted. Leave the backup pool empty on rigs that mine through
+  Hashu, or point it at this mint's Stratum address too.
 - Stratum on 3335 is plaintext TCP, like most pools.
 - The mint API has no rate limiting; fine for a hackathon, not production.
 - The limited-access phoenixd password was not tested end to end before
