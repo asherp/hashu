@@ -421,3 +421,60 @@ impl Telemetry {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hashu_core::redemption::RedemptionLedger;
+    use hashu_proxy::credit::ConnectionId;
+
+    fn parts() -> (Arc<HashrateMeter>, Arc<ProxyMetrics>, Arc<Router>) {
+        let metrics = Arc::new(ProxyMetrics::default());
+        let ledger = Arc::new(RedemptionLedger::new());
+        let meter = Arc::new(HashrateMeter::new(
+            metrics.clone(),
+            ledger.clone(),
+            Duration::from_secs(60),
+        ));
+        let router = Arc::new(Router::new("127.0.0.1:1", ledger));
+        (meter, metrics, router)
+    }
+
+    /// Needs a Postgres: `HASHU_TEST_OPS_DB=postgres://...`; skipped
+    /// without one.
+    #[tokio::test]
+    async fn rig_sessions_survive_a_restart() {
+        let Ok(url) = std::env::var("HASHU_TEST_OPS_DB") else {
+            return;
+        };
+        {
+            let c = connect(&url).await.unwrap();
+            c.batch_execute("DELETE FROM hashu_rig_sessions; DELETE FROM hashu_state")
+                .await
+                .unwrap();
+        }
+        let (meter, metrics, router) = parts();
+        let t = Telemetry::open(&url, meter, metrics, router.clone(), Duration::from_secs(5)).await;
+        let conn = ConnectionId(1);
+        router.assign_with(conn, Some(&serde_json::json!(["alice.rig1", "x"])));
+        router.begin_shutdown();
+        router.release(conn);
+        t.flush().await.unwrap();
+        let (before, since) = router.rig_sessions(0);
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].end_ms, None, "saved open across the restart");
+
+        let (meter, metrics, router2) = parts();
+        let _t2 = Telemetry::open(
+            &url,
+            meter,
+            metrics,
+            router2.clone(),
+            Duration::from_secs(5),
+        )
+        .await;
+        let (after, since2) = router2.rig_sessions(0);
+        assert_eq!(after, before);
+        assert_eq!(since2, since, "recording start carried over");
+    }
+}
