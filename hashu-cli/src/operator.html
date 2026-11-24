@@ -91,6 +91,10 @@ details.how p { margin: 6px 0 0; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .seg button { border: 0; background: transparent; color: var(--ink-2); padding: 4px 10px; cursor: pointer; font: inherit; font-size: 12px; }
 .seg button.on { background: var(--brand); color: var(--brand-ink); }
+.chips button { border: 1px solid var(--line); background: transparent; color: var(--ink-2); border-radius: 999px; padding: 3px 11px; cursor: pointer; font: inherit; font-size: 12px; }
+.chips button:hover { border-color: var(--brand); color: var(--ink); }
+.chips button:disabled { opacity: 0.4; cursor: not-allowed; }
+.chips:empty { display: none; }
 button.act { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 6px; padding: 6px 14px; cursor: pointer; font: inherit; }
 button.act.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
 button.act.danger { border-color: var(--bad); color: var(--bad); }
@@ -361,10 +365,13 @@ td.num, th.num { text-align: right; }
     <section class="card" aria-labelledby="h-test">
       <h2 id="h-test">Test redemption</h2>
       <p class="note">Mint TiH without a payment to rehearse a redemption. They are real vouchers: they count as owed until redeemed.</p>
+      <div class="row"><span class="ctl"><span class="note">Count in</span><span class="seg" id="test-units"><button type="button" data-u="hash" class="on" title="Hashes: TiH (2^40), PiH or EiH">PiH</button><button type="button" data-u="rate" title="Hashrate held for a day: 1 TH/s × 24 h">TH/s/Day</button></span></span></div>
       <div class="row">
-        <input type="number" id="test-amt" min="1" max="4194304" step="1" value="4096"> <span>TiH</span>
+        <input type="number" id="test-amt" min="0" step="any" inputmode="decimal" value="4" aria-labelledby="test-amt-label"> <span id="test-amt-label">Pebihashes (PiH)</span>
         <button class="act" id="btn-test-mint">Mint test TiH</button>
       </div>
+      <div class="row chips" id="test-chips"></div>
+      <p class="note" id="test-avail"></p>
       <div id="test-qr" hidden style="align-self:center;background:#fff;padding:8px;border-radius:10px;line-height:0;width:max-content;margin:0 auto"></div>
       <p class="note" id="test-qr-note" style="text-align:center;margin:0"></p>
       <textarea id="test-token" class="mono" rows="3" placeholder="token appears here" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:transparent;color:inherit;resize:vertical"></textarea>
@@ -387,6 +394,7 @@ td.num, th.num { text-align: right; }
   </div>
 </main>
 
+<script>/*HASHU_AMOUNT_JS*/</script>
 <script>
 'use strict'
 // All URLs are relative, so the page also works behind a path prefix.
@@ -891,6 +899,7 @@ function render () {
     ['Unpaid mint quotes', o.unpaid_quotes],
     ['Test TiH minted without payment (all time)', fmtTih(o.test_minted_tih || 0, 0)]
   ])
+  renderTestMint()
   const cap = op.capacity
   const lv = cap && cap.live
   if (cap) {
@@ -1127,13 +1136,47 @@ function scanToken (into) {
 }
 $('btn-test-scan').addEventListener('click', () => scanToken($('test-token')))
 try { $('test-pool').value = localStorage.getItem('hashu.testPool') || ''; $('test-worker').value = localStorage.getItem('hashu.testWorker') || '' } catch {}
+// The test mint picks its amount like the checkout does (assets/amount.js):
+// hashes or hashrate-days, scaled to the stock left to sell, with chips
+// sized to it. Test vouchers draw on the same stock as a sale.
+const MAX_TEST_MINT_TIH = 4194304
+const testAmt = HashuAmount.create({
+  box: $('test-amt'), label: $('test-amt-label'), chips: $('test-chips'), units: $('test-units'),
+  tih: 4096, storageKey: 'hashu.operator.testUnit',
+  limits: () => {
+    const op = state.op; if (!op) return null
+    const cap = op.capacity || {}
+    const max = Math.min(MAX_TEST_MINT_TIH, op.mint.max_tih || Infinity)
+    return { min: op.mint.min_redeem_tih || TIH_PER_PIH, available: cap.available_tih != null ? cap.available_tih : null, max }
+  },
+  onChange: () => updateTestMint()
+})
+function renderTestMint () {
+  if (!testAmt.loaded) { testAmt.loaded = true; testAmt.clamp() }
+  testAmt.renderUnit()
+  testAmt.renderChips()
+  updateTestMint()
+}
+function updateTestMint () {
+  const l = testAmt.sellCap(); const op = state.op
+  const cap = op && op.capacity || {}
+  const av = cap.available_tih != null ? cap.available_tih : null
+  const n = testAmt.tih
+  const soldOut = av === 0
+  testAmt.disableChips(soldOut)
+  $('btn-test-mint').disabled = soldOut || n < 1 || n > (l || Infinity)
+  $('test-avail').textContent = av == null ? `Capacity is not enforced: up to ${testAmt.fmt(l || MAX_TEST_MINT_TIH)} per test mint.`
+    : soldOut ? 'Nothing left to sell, so nothing to mint against. Restock or add capacity first.'
+    : n > l ? `Only ${testAmt.fmt(l)} (${l.toLocaleString()} TiH) left to sell. Lower the amount.`
+    : `${testAmt.fmt(av)} left to sell · ${n.toLocaleString()} TiH`
+}
 $('btn-test-mint').addEventListener('click', async () => {
   const b = $('btn-test-mint'); b.disabled = true
   try {
-    const r = await postJson('api/test-mint', { amount_tih: Math.floor(Number($('test-amt').value)) })
+    const r = await postJson('api/test-mint', { amount_tih: Math.floor(testAmt.tih) })
     $('test-token').value = r.token
     playQr($('test-qr'), $('test-qr-note'), r.token_qr)
-    $('test-note').textContent = `Minted ${r.amount_tih} test TiH.`
+    $('test-note').textContent = `Minted ${HashuAmount.fmtHashes(r.amount_tih)} (${r.amount_tih.toLocaleString()} TiH) of test vouchers.`
     alertMsg('')
   } catch (e) { alertMsg(e.message) } finally { b.disabled = false; poll() }
 })

@@ -68,6 +68,20 @@ use crate::orders::{is_order_id, new_order_id, Order, OrderBook};
 use crate::paid::{self, CashuScheme, Credential, Price, Rejection, Scheme};
 
 const PAGE: &str = include_str!("checkout.html");
+
+/// The amount picker (unit toggle + stock-sized chips) shared by the
+/// checkout and the operator's test mint form. Pages hold a
+/// `<script>/*HASHU_AMOUNT_JS*/</script>` slot it is inlined into.
+pub(crate) const AMOUNT_JS: &str = include_str!("assets/amount.js");
+const AMOUNT_SLOT: &str = "/*HASHU_AMOUNT_JS*/";
+
+/// `page` with the shared amount picker inlined.
+pub(crate) fn with_amount_js(page: &str) -> String {
+    debug_assert!(page.contains(AMOUNT_SLOT), "page has no amount.js slot");
+    page.replacen(AMOUNT_SLOT, AMOUNT_JS, 1)
+}
+
+static PAGE_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| with_amount_js(PAGE));
 /// QR reader plus UR decoder, bundled so pages load nothing from a CDN.
 /// Built from `assets/scan.src.js`; the pages load it only when someone
 /// presses "Scan token".
@@ -370,7 +384,7 @@ async fn allow_any_origin(req: axum::extract::Request, next: Next) -> Response {
 }
 
 async fn page() -> Html<&'static str> {
-    Html(PAGE)
+    Html(PAGE_HTML.as_str())
 }
 
 fn err(code: StatusCode, msg: impl ToString) -> Response {
