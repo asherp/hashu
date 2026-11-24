@@ -26,6 +26,9 @@ window.HashuAmount = (() => {
   // Wire a picker to its elements.
   //   box, label, chips, units: the amount input, its label, the chip row
   //     and the unit toggle (buttons with data-u = hash | rate | money)
+  //   slider, ends (optional): an <input type=range> that drags the amount
+  //     from the minimum to what can be sold, and an element holding two
+  //     spans for its end labels
   //   tih: the starting amount
   //   storageKey: localStorage key remembering the chosen unit
   //   limits(): { min, available, max } in TiH, or null before the first
@@ -82,6 +85,56 @@ window.HashuAmount = (() => {
         w.tih = Math.floor((Number(o.box.value) || 0) * sc.f)
       }
       w.scaleKey = sc.key
+      w.renderSlider()
+    }
+    // The slider runs from the minimum purchase to what can be sold in one
+    // order, on a log scale so small amounts stay easy to pick when the
+    // stock is large. Dragging snaps to three significant figures in the
+    // chosen unit (whole TiH); the ends are exact.
+    const STEPS = 1000
+    const span = () => {
+      const l = lim(); const cap = w.sellCap()
+      if (!l || cap == null || !Number.isFinite(cap)) return null
+      const min = Math.max(1, l.min); const hi = Math.floor(cap)
+      return hi > min ? { min, hi } : null
+    }
+    const posOf = (tih, s) => Math.round(STEPS * Math.log(Math.min(s.hi, Math.max(s.min, tih)) / s.min) / Math.log(s.hi / s.min))
+    const tihAt = (pos, s) => {
+      if (pos <= 0) return s.min
+      if (pos >= STEPS) return s.hi
+      const t = s.min * (s.hi / s.min) ** (pos / STEPS)
+      const sc = w.scale()
+      const v = sc.unit === 'money' ? Math.floor(sig(sc.price(t) || 0, 3) * sc.f) : Math.round(sig(t / sc.f, 3) * sc.f)
+      return Math.min(s.hi, Math.max(s.min, v || Math.round(t)))
+    }
+    w.renderSlider = () => {
+      if (!o.slider) return
+      const s = span()
+      const wrap = o.slider.closest('.slider') || o.slider
+      wrap.hidden = !s
+      if (!s) return
+      o.slider.min = 0; o.slider.max = STEPS; o.slider.step = 1
+      const p = posOf(w.tih, s)
+      if (Number(o.slider.value) !== p) o.slider.value = p
+      o.slider.style.setProperty('--fill', `${p / STEPS * 100}%`)
+      o.slider.setAttribute('aria-valuetext', `${w.fmt(w.tih)} (${w.tih.toLocaleString()} TiH)`)
+      if (o.ends) {
+        const [a, b] = o.ends.querySelectorAll('span')
+        if (a) a.textContent = w.fmt(s.min)
+        if (b) b.textContent = `${w.fmt(s.hi)} (max)`
+      }
+    }
+    if (o.slider) {
+      o.slider.addEventListener('input', () => {
+        const s = span(); if (!s) return
+        w.tih = tihAt(Number(o.slider.value), s)
+        w.renderUnit(true)
+        // Show the snapped figure (35.4 PiH, not 35.4004): the TiH behind it
+        // are whole, so they sit a fraction of a TiH off the round number.
+        const sc = w.scale()
+        if (sc.unit !== 'money' && w.tih !== s.min && w.tih !== s.hi) o.box.value = sig(w.tih / sc.f, 3)
+        o.onChange && o.onChange()
+      })
     }
     // Chips follow the stock: powers of two from the minimum up to the
     // largest that fits in what is left (or the per-order cap when
@@ -144,7 +197,7 @@ window.HashuAmount = (() => {
       if (b.dataset.u != null && w.unit === 'money') o.box.value = b.dataset.u
       o.onChange && o.onChange()
     })
-    o.box.addEventListener('input', () => { w.tih = Math.floor((Number(o.box.value) || 0) * w.scale().f); o.onChange && o.onChange() })
+    o.box.addEventListener('input', () => { w.tih = Math.floor((Number(o.box.value) || 0) * w.scale().f); w.renderSlider(); o.onChange && o.onChange() })
     o.units.addEventListener('click', (ev) => {
       const b = ev.target.closest('button'); if (!b || b.dataset.u === w.unit) return
       w.unit = b.dataset.u
