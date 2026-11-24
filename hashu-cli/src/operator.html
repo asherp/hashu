@@ -366,11 +366,11 @@ td.num, th.num { text-align: right; }
       <h2 id="h-test">Test redemption</h2>
       <p class="note">Mint TiH without a payment to rehearse a redemption. They are real vouchers: they count as owed until redeemed.</p>
       <div class="row"><span class="ctl"><span class="note">Count in</span><span class="seg" id="test-units"><button type="button" data-u="hash" class="on" title="Hashes: TiH (2^40), PiH or EiH">PiH</button><button type="button" data-u="rate" title="Hashrate held for a day: 1 TH/s × 24 h">TH/s/Day</button></span></span></div>
+      <div class="row chips" id="test-chips"></div>
       <div class="row">
         <input type="number" id="test-amt" min="0" step="any" inputmode="decimal" value="4" aria-labelledby="test-amt-label"> <span id="test-amt-label">Pebihashes (PiH)</span>
         <button class="act" id="btn-test-mint">Mint test TiH</button>
       </div>
-      <div class="row chips" id="test-chips"></div>
       <p class="note" id="test-avail"></p>
       <div id="test-qr" hidden style="align-self:center;background:#fff;padding:8px;border-radius:10px;line-height:0;width:max-content;margin:0 auto"></div>
       <p class="note" id="test-qr-note" style="text-align:center;margin:0"></p>

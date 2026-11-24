@@ -119,10 +119,10 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
   <section class="card" id="s-buy">
     <h2>How much hashrate?</h2>
     <div class="row" id="units-row"><span class="note">Count in</span><div class="seg" id="units"><button data-u="hash" class="on" title="Hashes: TiH (2^40), PiH or EiH">PiH</button><button data-u="rate" title="Hashrate held for a day: 1 TH/s × 24 h">TH/s/Day</button><button data-u="money" title="How much to spend">sats</button></div></div>
+    <div class="row chips" id="chips"><button data-v="1024">1 PiH</button><button data-v="32768">32 PiH</button><button data-v="262144">256 PiH</button><button data-v="2097152">2 EiH</button></div>
     <label class="f"><span id="amount-label">Pebihashes (PiH)</span>
       <input type="number" id="amount" min="0" step="any" inputmode="decimal" value="32">
     </label>
-    <div class="row chips" id="chips"><button data-v="1024">1 PiH</button><button data-v="32768">32 PiH</button><button data-v="262144">256 PiH</button><button data-v="2097152">2 EiH</button></div>
     <div class="row" id="methods-row"><span class="note">Pay with</span><div class="seg" id="methods"></div></div>
     <p class="note" id="equiv"></p>
     <p class="note" id="eta"></p>
