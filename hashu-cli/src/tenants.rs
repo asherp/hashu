@@ -314,6 +314,11 @@ impl Tenants {
                 "TiH backed by {name}'s own rigs, redeemed as hashrate through Hashu"
             ))
             .with_urls(vec![url.clone()]);
+        // Logo (NUT-06): Hashu's mark, which the supplier's host serves
+        // with its reliability routes.
+        if self.cfg.reliability.is_some() {
+            builder = builder.with_icon_url(format!("{url}{}", hashu_mint::discovery::AVATAR_PATH));
+        }
         // Contact (NUT-06): the supplier's own npub first, where wallets
         // send direct messages; then the mint's Nostr identity (#116), its
         // receipt key, which signs its profile and record.
