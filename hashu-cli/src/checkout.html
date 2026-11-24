@@ -132,7 +132,6 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
     </label>
     <div class="slider" id="amount-slider-wrap" hidden><input type="range" id="amount-slider" min="0" max="1000" step="1" aria-label="Amount"><div class="ends" id="amount-ends"><span></span><span></span></div></div>
     <div class="row" id="methods-row"><span class="note">Pay with</span><div class="seg" id="methods"></div></div>
-    <p class="note" id="equiv"></p>
     <div class="price"><b id="price">—</b><span class="note" id="price-label"></span></div>
     <button class="act primary" id="btn-buy">Get invoice</button>
     <p class="note" id="paused" hidden>Sales are paused by the mint operator.</p>
@@ -276,7 +275,6 @@ async function mintApi (path, body) {
 }
 // Vouchers count TiH (2^40 hashes); prices are per PiH (1,024 TiH). #90.
 const { HASHES_PER_TIH, TIH_PER_PIH, hashUnit, fmtHashes, fmtUnits } = HashuAmount
-const TIH_PER_THH = 3.6e15 / HASHES_PER_TIH
 const st = { info: null, method: null, checkout: null, redemption: null, pollT: null }
 
 // The operator's Hashu wallet (app_url in api/info), if it runs one.
@@ -349,9 +347,6 @@ async function copy (text, btn) {
 function renderPrice () {
   const i = st.info; if (!i) return
   const n = Math.max(1, amt.tih)
-  const thh = n / TIH_PER_THH
-  const hours = Math.round(thh * 10) / 10
-  $('equiv').textContent = `${n.toLocaleString()} TiH ≈ ${hours < 48 ? `1 TH/s for ${hours} h` : `${(thh / 24).toFixed(1)} TH/s for a day`}`
   const coin = STABLES[st.method]
   if (coin && i.usdt_per_pih != null) {
     const sc = amountScale()
