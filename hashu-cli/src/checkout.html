@@ -124,7 +124,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
 
   <!-- 1. choose -->
   <section class="card" id="s-buy">
-    <h2>How much hashrate?</h2>
+    <h2>How many hashes?</h2>
     <div class="row" id="units-row"><span class="note">Count in</span><div class="seg" id="units"><button data-u="hash" class="on" title="Hashes: TiH (2^40), PiH or EiH">PiH</button><button data-u="rate" title="Hashrate held for a day: 1 TH/s × 24 h">TH/s/Day</button><button data-u="money" title="How much to spend">sats</button></div></div>
     <div class="row chips" id="chips"><button data-v="1024">1 PiH</button><button data-v="32768">32 PiH</button><button data-v="262144">256 PiH</button><button data-v="2097152">2 EiH</button></div>
     <label class="f"><span id="amount-label">Pebihashes (PiH)</span>
@@ -133,7 +133,6 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
     <div class="slider" id="amount-slider-wrap" hidden><input type="range" id="amount-slider" min="0" max="1000" step="1" aria-label="Amount"><div class="ends" id="amount-ends"><span></span><span></span></div></div>
     <div class="row" id="methods-row"><span class="note">Pay with</span><div class="seg" id="methods"></div></div>
     <p class="note" id="equiv"></p>
-    <p class="note" id="eta"></p>
     <div class="price"><b id="price">—</b><span class="note" id="price-label"></span></div>
     <button class="act primary" id="btn-buy">Get invoice</button>
     <p class="note" id="paused" hidden>Sales are paused by the mint operator.</p>
@@ -353,7 +352,6 @@ function renderPrice () {
   const thh = n / TIH_PER_THH
   const hours = Math.round(thh * 10) / 10
   $('equiv').textContent = `${n.toLocaleString()} TiH ≈ ${hours < 48 ? `1 TH/s for ${hours} h` : `${(thh / 24).toFixed(1)} TH/s for a day`}`
-  $('eta').textContent = etaText(n)
   const coin = STABLES[st.method]
   if (coin && i.usdt_per_pih != null) {
     const sc = amountScale()
@@ -925,8 +923,6 @@ if (ORDER) {
   else step('buy')
 })
 if (!ORDER) setInterval(() => { if (!st.checkout) loadInfo() }, 10000)
-// Between loads the "done by" clock moves on with the minute.
-if (!ORDER) setInterval(() => { if (!st.checkout && st.info) $('eta').textContent = etaText(Math.max(1, amt.tih)) }, 15000)
 window.addEventListener('resize', () => { if (st.redemption || ORDER) pollRedemption() })
 </script>
 </body>
