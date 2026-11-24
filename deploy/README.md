@@ -62,6 +62,7 @@ again at startup, so running them without compose fails the same way.
 | `OPERATOR_USER` | no | Operator GUI user, default `operator`. |
 | `HASHU_EXTRA_DOMAINS` | no | More host names for the same site, with the splash page (`site/`) at `/`. Default none. |
 | `HASHU_MINT_NAME`, `HASHU_MINT_DESCRIPTION` | no | NUT-06 name and description (defaults: `Hashu` and a generic description). |
+| `HASHU_MINT_ICON_URL` | no | NUT-06 logo wallets show beside the mint (default: Hashu's mark at `<mint url>/nostr/avatar.png`; empty: none). |
 | `HASHU_MINT_CONTACT` | no | Operator contact, `method:info` pairs, comma separated (`email:ops@example.com,nostr:npub1...`). Shown in wallets and on the landing page; default none. |
 | `HASHU_OPERATOR_SECRET_SHA256` | no | SHA-256 hex of your rigs' secret (`printf %s "$SECRET" \| sha256sum`). Rigs with `pw=$SECRET` in their password are yours whatever their user: only they fill this mint's orders, other miners stay where they idle. Unset: any connected rig may be borrowed. |
 | `HASHU_OPERATOR_WORKER` | no | **Deprecated** (one release): pool-user prefix (`<user>.<rig>`) that also marks your rigs. Move them to `pw=`. |
