@@ -39,7 +39,8 @@ nav .links a:hover { color: var(--ink); }
 .btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
 .btn:hover { filter: brightness(1.05); }
 .btn.soldout { background: transparent; border-color: var(--line); color: var(--ink-3, #888); cursor: not-allowed; pointer-events: none; }
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 40px 0 8px; }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 40px 0 8px; }
+@media (max-width: 640px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
 .stat .k { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); }
 .stat .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; overflow-wrap: anywhere; }
@@ -105,11 +106,12 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     </div>
 
     <div class="stats" aria-live="polite">
-      <div class="stat"><div class="k">Price</div><div class="v" id="s-price">—</div></div>
-      <div class="stat"><div class="k">Price in USDT</div><div class="v" id="s-usdt">—</div></div>
-      <div class="stat"><div class="k">Pay with</div><div class="v" id="s-rails">—</div></div>
-      <div class="stat"><div class="k">Sales</div><div class="v" id="s-sales">—</div></div>
       <div class="stat"><div class="k">Hashes available</div><div class="v" id="s-avail">—</div></div>
+      <div class="stat"><div class="k">Hashrate</div><div class="v" id="s-rate">—</div></div>
+      <div class="stat" data-rail="bolt11" hidden><div class="k">Pay with Lightning</div><div class="v" id="s-price">—</div></div>
+      <div class="stat" data-rail="usdt" hidden><div class="k">Pay with USDT</div><div class="v" data-usd-price>—</div></div>
+      <div class="stat" data-rail="usdc" hidden><div class="k">Pay with USDC</div><div class="v" data-usd-price>—</div></div>
+      <div class="stat"><div class="k">Sales</div><div class="v" id="s-sales">—</div></div>
     </div>
   </header>
 
@@ -184,7 +186,16 @@ const HASH_UNITS = ['TiH', 'PiH', 'EiH'];
 const hashUnit = (tih) => { let k = 0; while (k < HASH_UNITS.length - 1 && Math.abs(tih) >= 1024 ** (k + 1)) k++; return k; };
 const inUnit = (tih, k) => { const v = tih / 1024 ** k; return fmt(v, k === 0 || Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 10 ? 1 : 2); };
 const fmtHashes = (tih, k = hashUnit(tih)) => inUnit(tih, k) + ' ' + HASH_UNITS[k];
-const RAILS = { bolt11: 'Lightning', usdt: 'USDT' };
+// Hashrate in SI steps (TH/s, PH/s, EH/s), the way rigs and pools quote it.
+const RATE_UNITS = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s', 'EH/s', 'ZH/s'];
+function fmtRate(hs) {
+  if (!(hs > 0)) return { v: '0', u: 'TH/s' };
+  let k = 4;
+  while (k < RATE_UNITS.length - 1 && hs >= 1000 ** (k + 1)) k++;
+  while (k > 0 && hs < 1000 ** k) k--;
+  const v = hs / 1000 ** k;
+  return { v: fmt(v, v >= 100 ? 0 : v >= 10 ? 1 : 2), u: RATE_UNITS[k] };
+}
 
 let mintUrl = location.origin;
 function showUrl() {
@@ -223,20 +234,50 @@ document.addEventListener('click', (ev) => {
   if (a) ev.preventDefault();
 });
 
+// Live hashrate of the rigs that fill this mint's orders (the same figure
+// the stock and redemption ETAs use), plus what is waiting on it.
+function showRate(i) {
+  const d = i.delivery || {};
+  if (d.hashrate_hs == null) { $('s-rate').innerHTML = '<small>not reported</small>'; return; }
+  const r = fmtRate(d.hashrate_hs);
+  const avg = d.hashrate_source === 'operator_rigs' ? `live, ${Math.round((d.window_s || 120) / 60)} min average` : `accepted work, last ${Math.round((d.window_s || 300) / 60)} min`;
+  const rented = i.rented_ths > 0 ? `<div class="sub">${fmt(i.rented_ths, 1)} TH/s of it rented</div>` : '';
+  const n = d.open_redemptions || 0;
+  const queue = d.hashrate_hs > 0
+    ? (n ? `redeeming: ${fmtHashes(d.queue_tih || 0)} to go` : 'idle, ready to redeem')
+    : 'no rigs connected';
+  $('s-rate').innerHTML = `${r.v} <small>${r.u}</small><div class="sub">${avg}</div>${rented}<div class="sub">${queue}</div>`;
+  $('s-rate').title = `${fmt(d.hashrate_hs / 1e12, 3)} TH/s`;
+}
+
 async function load() {
   try {
     const r = await fetch('/checkout/api/info', { cache: 'no-store' });
     if (!r.ok) throw new Error(r.status);
     const i = await r.json();
-    $('s-price').innerHTML = i.msat_per_pih != null ? fmt(i.msat_per_pih) + ' <small>msat / PiH</small>' + (i.sats_per_th_day != null ? `<div class="sub">${fmt(i.sats_per_th_day, 1)} sats / TH/s / day</div>` : '') : '—';
-    $('s-usdt').innerHTML = i.usdt_per_pih != null ? fmt(i.usdt_per_pih, 6) + ' <small>USDT / PiH</small>' : '<small>not offered</small>';
-    const rails = (i.methods || []).map((m) => RAILS[m] || m);
-    $('s-rails').textContent = rails.length ? rails.join(' · ') : 'none';
+    // Order size: the smallest purchase up to the per-order cap, or what is
+    // left in stock when that is less. Same limits on every rail.
+    const minTih = i.min_buy_tih || 1024;
+    const maxTih = i.available_tih == null ? i.max_tih : Math.min(i.max_tih || i.available_tih, i.available_tih);
+    const orders = maxTih >= minTih ? `<div class="sub">Min order ${fmtHashes(minTih)}</div><div class="sub">Max order ${fmtHashes(maxTih)}</div>`
+      : `<div class="sub">Min order ${fmtHashes(minTih)}</div>`;
+    $('s-price').innerHTML = i.msat_per_pih != null ? fmt(i.msat_per_pih) + ' <small>msat / PiH</small>' + orders : '—';
+    // One "Pay with" card per rail the mint sells over, holding its price
+    // (stablecoins share one dollar price); rails it does not offer stay hidden.
+    const methods = i.methods || [];
+    document.querySelectorAll('.stats [data-rail]').forEach((el) => {
+      const rail = el.dataset.rail;
+      const usd = rail !== 'bolt11';
+      el.hidden = !methods.includes(rail) || (usd && i.usdt_per_pih == null);
+      const v = el.querySelector('[data-usd-price]');
+      if (v && i.usdt_per_pih != null) v.innerHTML = fmt(i.usdt_per_pih, 6) + ` <small>${rail.toUpperCase()} / PiH</small>` + orders;
+    });
     // One unit for the whole card, picked from the larger of available and total.
     const k = hashUnit(Math.max(i.available_tih || 0, i.capacity_tih || 0));
     $('s-avail').innerHTML = i.available_tih == null ? '<small>uncapped</small>'
-      : inUnit(i.available_tih, k) + ` <small>${HASH_UNITS[k]}</small><div class="sub">of ${fmtHashes(i.capacity_tih || 0, k)} · ${inUnit(i.allocated_tih || 0, k)} allocated</div><div class="sub">${fmt(i.rented_ths || 0, 1)} TH/s rented</div>`;
+      : inUnit(i.available_tih, k) + ` <small>${HASH_UNITS[k]}</small><div class="sub">of ${fmtHashes(i.capacity_tih || 0, k)} · ${inUnit(i.allocated_tih || 0, k)} allocated</div>`;
     $('s-avail').title = i.available_tih == null ? '' : `${fmt(i.available_tih)} TiH available of ${fmt(i.capacity_tih || 0)} TiH`;
+    showRate(i);
     const soldOut = i.available_tih === 0;
     $('s-sales').innerHTML = i.issuance_paused ? '<span class="pill no">paused</span>'
       : soldOut ? '<span class="pill no">sold out</span>' : '<span class="pill ok">open</span>';
