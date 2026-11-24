@@ -40,6 +40,13 @@ textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-siz
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { border: 0; background: transparent; color: var(--ink-2); padding: 8px 14px; cursor: pointer; font: inherit; font-size: 14px; }
 .seg button.on { background: var(--brand); color: var(--brand-ink); font-weight: 600; }
+.slider { display: flex; flex-direction: column; gap: 2px; }
+.slider[hidden] { display: none; }
+.slider input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; margin: 12px 0 6px; padding: 0; border-radius: 999px; cursor: pointer; background: linear-gradient(to right, var(--brand) var(--fill, 0%), var(--line) var(--fill, 0%)); }
+.slider input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; border-radius: 50%; background: var(--brand); border: 3px solid var(--surface); box-shadow: 0 0 0 1px var(--brand); }
+.slider input[type=range]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--brand); border: 3px solid var(--surface); box-shadow: 0 0 0 1px var(--brand); }
+.slider input[type=range]:focus-visible { outline: 2px solid var(--brand); outline-offset: 6px; }
+.slider .ends { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--ink-3); }
 .chips button { border: 1px solid var(--line); background: transparent; color: var(--ink-2); border-radius: 999px; padding: 4px 12px; cursor: pointer; font: inherit; font-size: 13px; }
 button.act, a.act { text-decoration: none; display: inline-block; border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 8px; padding: 10px 18px; cursor: pointer; font: inherit; }
 button.act.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
@@ -123,6 +130,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
     <label class="f"><span id="amount-label">Pebihashes (PiH)</span>
       <input type="number" id="amount" min="0" step="any" inputmode="decimal" value="32">
     </label>
+    <div class="slider" id="amount-slider-wrap" hidden><input type="range" id="amount-slider" min="0" max="1000" step="1" aria-label="Amount"><div class="ends" id="amount-ends"><span></span><span></span></div></div>
     <div class="row" id="methods-row"><span class="note">Pay with</span><div class="seg" id="methods"></div></div>
     <p class="note" id="equiv"></p>
     <p class="note" id="eta"></p>
@@ -296,6 +304,7 @@ function priceOf (tih) {
 // shared with the operator's test mint form).
 const amt = HashuAmount.create({
   box: $('amount'), label: $('amount-label'), chips: $('chips'), units: $('units'),
+  slider: $('amount-slider'), ends: $('amount-ends'),
   tih: 32768, storageKey: 'hashu.checkout.unit',
   limits: () => st.info && { min: st.info.min_buy_tih || TIH_PER_PIH, available: st.info.available_tih, max: st.info.max_tih },
   money: () => {

@@ -91,6 +91,13 @@ details.how p { margin: 6px 0 0; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .seg button { border: 0; background: transparent; color: var(--ink-2); padding: 4px 10px; cursor: pointer; font: inherit; font-size: 12px; }
 .seg button.on { background: var(--brand); color: var(--brand-ink); }
+.slider { display: flex; flex-direction: column; gap: 2px; }
+.slider[hidden] { display: none; }
+.slider input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; margin: 12px 0 6px; padding: 0; border-radius: 999px; cursor: pointer; background: linear-gradient(to right, var(--brand) var(--fill, 0%), var(--line) var(--fill, 0%)); }
+.slider input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; border-radius: 50%; background: var(--brand); border: 3px solid var(--surface); box-shadow: 0 0 0 1px var(--brand); }
+.slider input[type=range]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--brand); border: 3px solid var(--surface); box-shadow: 0 0 0 1px var(--brand); }
+.slider input[type=range]:focus-visible { outline: 2px solid var(--brand); outline-offset: 6px; }
+.slider .ends { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--ink-3); }
 .chips button { border: 1px solid var(--line); background: transparent; color: var(--ink-2); border-radius: 999px; padding: 3px 11px; cursor: pointer; font: inherit; font-size: 12px; }
 .chips button:hover { border-color: var(--brand); color: var(--ink); }
 .chips button:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -371,6 +378,7 @@ td.num, th.num { text-align: right; }
         <input type="number" id="test-amt" min="0" step="any" inputmode="decimal" value="4" aria-labelledby="test-amt-label"> <span id="test-amt-label">Pebihashes (PiH)</span>
         <button class="act" id="btn-test-mint">Mint test TiH</button>
       </div>
+      <div class="slider" hidden><input type="range" id="test-slider" min="0" max="1000" step="1" aria-label="Test amount"><div class="ends" id="test-ends"><span></span><span></span></div></div>
       <p class="note" id="test-avail"></p>
       <div id="test-qr" hidden style="align-self:center;background:#fff;padding:8px;border-radius:10px;line-height:0;width:max-content;margin:0 auto"></div>
       <p class="note" id="test-qr-note" style="text-align:center;margin:0"></p>
@@ -1142,6 +1150,7 @@ try { $('test-pool').value = localStorage.getItem('hashu.testPool') || ''; $('te
 const MAX_TEST_MINT_TIH = 4194304
 const testAmt = HashuAmount.create({
   box: $('test-amt'), label: $('test-amt-label'), chips: $('test-chips'), units: $('test-units'),
+  slider: $('test-slider'), ends: $('test-ends'),
   tih: 4096, storageKey: 'hashu.operator.testUnit',
   limits: () => {
     const op = state.op; if (!op) return null
