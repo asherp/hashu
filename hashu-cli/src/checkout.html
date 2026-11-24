@@ -400,6 +400,17 @@ function updateBuy () {
 // Delivery estimate: redemptions are served oldest first, so this order
 // waits for the TiH still owed to open ones, then fills at the proxy's
 // current hashrate (5-minute average).
+// A wait rounded to the nearest minute: "under a minute", "14 min",
+// "2 h 5 min", "3 d 4 h".
+function fmtMinutes (secs) {
+  const m = Math.round(secs / 60)
+  if (m < 1) return 'under a minute'
+  if (m < 60) return `${m} min`
+  const h = Math.floor(m / 60), r = m % 60
+  if (h < 48) return r ? `${h} h ${r} min` : `${h} h`
+  const d = Math.floor(h / 24), rh = h % 24
+  return rh ? `${d} d ${rh} h` : `${d} d`
+}
 function etaText (n) {
   const d = st.info && st.info.delivery
   if (!d) return ''
@@ -407,7 +418,9 @@ function etaText (n) {
   if (!(hs > 0)) return 'No hashrate on the mint right now; delivery starts when its miners are back.'
   const total = (d.queue_tih + n) * HASHES_PER_TIH / hs
   const ahead = d.queue_tih > 0.0005 ? `, after ${d.open_redemptions} earlier redemption${d.open_redemptions === 1 ? '' : 's'}` : ''
-  let t = `Delivers in about ${fmtDur(total)} at ${fmtRate(hs)}${ahead}.`
+  const done = new Date(Date.now() + Math.round(total / 60) * 60000)
+  const clock = done.toLocaleTimeString([], total > 86400 ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' } : { hour: '2-digit', minute: '2-digit' })
+  let t = `Delivers in about ${fmtMinutes(total)} (done by ${clock}) at ${fmtRate(hs)}${ahead}.`
   const i = st.info
   if (i.capacity_ends_ms && Date.now() + total * 1000 > i.capacity_ends_ms) t += ' Runs past the current rental.'
   return t
@@ -912,6 +925,8 @@ if (ORDER) {
   else step('buy')
 })
 if (!ORDER) setInterval(() => { if (!st.checkout) loadInfo() }, 10000)
+// Between loads the "done by" clock moves on with the minute.
+if (!ORDER) setInterval(() => { if (!st.checkout && st.info) $('eta').textContent = etaText(Math.max(1, amt.tih)) }, 15000)
 window.addEventListener('resize', () => { if (st.redemption || ORDER) pollRedemption() })
 </script>
 </body>
