@@ -119,10 +119,10 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
   <section class="card" id="s-buy">
     <h2>How much hashrate?</h2>
     <div class="row" id="units-row"><span class="note">Count in</span><div class="seg" id="units"><button data-u="hash" class="on" title="Hashes: TiH (2^40), PiH or EiH">PiH</button><button data-u="rate" title="Hashrate held for a day: 1 TH/s × 24 h">TH/s/Day</button><button data-u="money" title="How much to spend">sats</button></div></div>
+    <div class="row chips" id="chips"><button data-v="1024">1 PiH</button><button data-v="32768">32 PiH</button><button data-v="262144">256 PiH</button><button data-v="2097152">2 EiH</button></div>
     <label class="f"><span id="amount-label">Pebihashes (PiH)</span>
       <input type="number" id="amount" min="0" step="any" inputmode="decimal" value="32">
     </label>
-    <div class="row chips" id="chips"><button data-v="1024">1 PiH</button><button data-v="32768">32 PiH</button><button data-v="262144">256 PiH</button><button data-v="2097152">2 EiH</button></div>
     <div class="row" id="methods-row"><span class="note">Pay with</span><div class="seg" id="methods"></div></div>
     <p class="note" id="equiv"></p>
     <p class="note" id="eta"></p>
@@ -236,6 +236,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
   </section>
 </main>
 
+<script>/*HASHU_AMOUNT_JS*/</script>
 <script>
 'use strict'
 // Relative URLs: the page lives at …/checkout/, or at
@@ -267,13 +268,9 @@ async function mintApi (path, body) {
   return j
 }
 // Vouchers count TiH (2^40 hashes); prices are per PiH (1,024 TiH). #90.
-const HASHES_PER_TIH = 2 ** 40
-const TIH_PER_PIH = 1024
+const { HASHES_PER_TIH, TIH_PER_PIH, hashUnit, fmtHashes, fmtUnits } = HashuAmount
 const TIH_PER_THH = 3.6e15 / HASHES_PER_TIH
-// 1 TH/s held for a day (86,400 s) is about 78,580 TiH.
-const TIH_PER_THSD = 86400e12 / HASHES_PER_TIH
-const st = { info: null, method: null, checkout: null, redemption: null, pollT: null, tih: 32768, unit: 'hash', scaleKey: '' }
-try { const u = localStorage.getItem('hashu.checkout.unit'); if (u === 'rate' || u === 'money') st.unit = u } catch {}
+const st = { info: null, method: null, checkout: null, redemption: null, pollT: null }
 
 // The operator's Hashu wallet (app_url in api/info), if it runs one.
 const appUrl = () => { const u = st.info && st.info.app_url; return u && /^https?:\/\//.test(u) ? u.replace(/\/+$/, '') : '' }
@@ -288,19 +285,6 @@ function walletLink (a, token) {
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const fmtTih = (x, d) => { if (!Number.isFinite(x)) return '—'; d = d ?? (Math.abs(x) < 10 ? 2 : Math.abs(x) < 100 ? 1 : 0); return x.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) }
-// Hash amounts scale with their size: TiH, then PiH (1,024 TiH), then EiH
-// (1,024 PiH). Vouchers stay in the tih unit; this is display only.
-const HASH_UNITS = ['TiH', 'PiH', 'EiH']
-const hashUnit = (tih) => { let k = 0; while (k < HASH_UNITS.length - 1 && Math.abs(tih) >= 1024 ** (k + 1)) k++; return k }
-const inUnit = (tih, k) => { const v = tih / 1024 ** k; return v.toLocaleString(undefined, { maximumFractionDigits: k === 0 || Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 10 ? 1 : 2 }) }
-const fmtHashes = (tih, k = hashUnit(tih)) => `${inUnit(tih, k)} ${HASH_UNITS[k]}`
-// The buyer picks what the amount box counts: hashes (TiH, PiH or EiH)
-// or hashrate held for a day (TH/s/Day, PH/s/Day, EH/s/Day). The
-// magnitude follows what the mint can sell. The order and the vouchers
-// stay in TiH; this only changes the box, the chips and the price label.
-const HASH_NAMES = ['Tebihashes', 'Pebihashes', 'Exbihashes']
-const RATE_UNITS = ['TH/s/Day', 'PH/s/Day', 'EH/s/Day']
-const sellCap = () => { const i = st.info; if (!i) return null; const av = i.available_tih; return av > 0 ? Math.min(i.max_tih || av, av) : i.max_tih }
 // What the order costs, in sats (Lightning) or the stablecoin, rounded up
 // the way the mint quotes it. null without a price.
 function priceOf (tih) {
@@ -308,59 +292,24 @@ function priceOf (tih) {
   if (STABLES[st.method]) return i.usdt_per_pih != null ? Number((tih * i.usdt_per_pih / TIH_PER_PIH).toFixed(2)) : null
   return i.msat_per_pih != null ? Math.ceil(tih * i.msat_per_pih / TIH_PER_PIH / 1000) : null
 }
-function amountScale (unit = st.unit) {
-  const ref = sellCap() || st.tih
-  const i = st.info
-  if (unit === 'money' && i) {
+// The amount box, its unit toggle and the stock-sized chips (assets/amount.js,
+// shared with the operator's test mint form).
+const amt = HashuAmount.create({
+  box: $('amount'), label: $('amount-label'), chips: $('chips'), units: $('units'),
+  tih: 32768, storageKey: 'hashu.checkout.unit',
+  limits: () => st.info && { min: st.info.min_buy_tih || TIH_PER_PIH, available: st.info.available_tih, max: st.info.max_tih },
+  money: () => {
     // Spend a sum: TiH per sat (or per USDT/USDC) at the current price.
+    const i = st.info; if (!i) return null
     const coin = STABLES[st.method]
     const per = coin ? i.usdt_per_pih : i.msat_per_pih
-    if (per > 0) {
-      const label = coin || 'sats'
-      return { unit, key: `money-${st.method}`, f: coin ? TIH_PER_PIH / per : TIH_PER_PIH * 1000 / per, label, name: `Spend (${label})`, minStep: coin ? 0.01 : 1 }
-    }
-  }
-  if (unit === 'money') unit = 'hash'
-  if (unit === 'rate') {
-    let k = 0; while (k < RATE_UNITS.length - 1 && ref >= TIH_PER_THSD * 1000 ** (k + 1)) k++
-    return { unit, key: `rate${k}`, f: TIH_PER_THSD * 1000 ** k, label: RATE_UNITS[k], name: `Hashrate-days (${RATE_UNITS[k]})` }
-  }
-  const k = hashUnit(ref)
-  return { unit, key: `hash${k}`, f: 1024 ** k, label: HASH_UNITS[k], name: `${HASH_NAMES[k]} (${HASH_UNITS[k]})` }
-}
-const sig = (x, p = 4) => Number(x.toPrecision(p))
-const fmtUnits = (x, p = 4) => sig(x, p).toLocaleString(undefined, { maximumFractionDigits: 8 })
-// An amount in TiH, in the buyer's chosen unit family.
-const fmtMoney = (x, label) => `${x.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${label === 'sats' && x === 1 ? 'sat' : label}`
-const fmtAmount = (tih) => {
-  const sc = amountScale()
-  if (sc.unit === 'money') return fmtMoney(priceOf(tih), sc.label)
-  return sc.unit === 'rate' ? `${fmtUnits(tih / sc.f, 3)} ${sc.label}` : fmtHashes(tih)
-}
-// Point the toggle, label and box at the chosen unit. The box is only
-// rewritten when its scale changes, so typing is never interrupted.
-function renderUnit (force) {
-  const sc = amountScale()
-  for (const b of $('units').querySelectorAll('button')) {
-    b.textContent = amountScale(b.dataset.u).label
-    b.classList.toggle('on', b.dataset.u === sc.unit)
-  }
-  $('amount-label').textContent = sc.name
-  const i = st.info
-  if (i) {
-    const min = Math.max(1, i.min_buy_tih || TIH_PER_PIH)
-    $('amount').min = sig(min / sc.f, 6)
-    const cap = sellCap()
-    if (cap != null) $('amount').max = sig(cap / sc.f, 8)
-  }
-  if (force || sc.key !== st.scaleKey) {
-    $('amount').value = sc.unit === 'money' ? priceOf(st.tih) : sig(st.tih / sc.f, sc.unit === 'rate' ? 4 : 6)
-  } else if (sc.unit === 'money') {
-    // The typed sum holds still while the price moves; the TiH it buys follow.
-    st.tih = Math.floor((Number($('amount').value) || 0) * sc.f)
-  }
-  st.scaleKey = sc.key
-}
+    if (!(per > 0)) return null
+    return { key: `money-${st.method}`, f: coin ? TIH_PER_PIH / per : TIH_PER_PIH * 1000 / per, label: coin || 'sats', minStep: coin ? 0.01 : 1, price: priceOf }
+  },
+  onChange: (what) => what === 'unit' ? loadInfo() : renderPrice()
+})
+const amountScale = (u) => amt.scale(u)
+const fmtAmount = (tih) => amt.fmt(tih)
 const fmtRate = (hs) => { if (!(hs > 0)) return '0 H/s'; const u = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s']; let i = 0; while (hs >= 1000 && i < u.length - 1) { hs /= 1000; i++ } return `${hs.toFixed(hs >= 100 ? 0 : 1)} ${u[i]}` }
 const fmtDur = (s) => { if (!Number.isFinite(s) || s < 0) return '—'; s = Math.round(s); if (s < 60) return `${s}s`; if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`; return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m` }
 const STABLES = { usdt: 'USDT', usdc: 'USDC' }
@@ -391,7 +340,7 @@ async function copy (text, btn) {
 // ---- 1. choose ----------------------------------------------------------
 function renderPrice () {
   const i = st.info; if (!i) return
-  const n = Math.max(1, st.tih)
+  const n = Math.max(1, amt.tih)
   const thh = n / TIH_PER_THH
   const hours = Math.round(thh * 10) / 10
   $('equiv').textContent = `${n.toLocaleString()} TiH ≈ ${hours < 48 ? `1 TH/s for ${hours} h` : `${(thh / 24).toFixed(1)} TH/s for a day`}`
@@ -420,62 +369,22 @@ function capBar (total, allocated, available, fmtN) {
   const pa = t > 0 ? Math.min(100, allocated / t * 100) : 0
   const pv = t > 0 ? Math.min(100 - pa, available / t * 100) : 0
   const k = hashUnit(t)
-  const fmtH = (x) => st.unit === 'rate' ? fmtAmount(x) : fmtHashes(x, k)
+  const fmtH = (x) => amt.unit === 'rate' ? fmtAmount(x) : fmtHashes(x, k)
   return `<div class="capbar" role="img" aria-label="${fmtN(allocated)} TiH allocated, ${fmtN(available)} TiH available of ${fmtN(total)} TiH total"><span class="alloc" style="width:${pa}%"></span><span class="avail" style="width:${pv}%"></span></div>` +
     `<div class="caplegend"><span><i style="background:var(--target)"></i>Allocated ${fmtH(allocated)}</span><span><i style="background:var(--brand)"></i>Available ${fmtH(available)}</span><span>Total ${fmtH(total)}</span></div>`
-}
-// Amount chips follow the mint's stock: powers of two from the minimum
-// purchase up to the largest that fits in what is left (or the mint's
-// per-order cap when uncapped), plus one for everything available. A
-// sold-out mint keeps the last set, disabled.
-function renderChips () {
-  const i = st.info; if (!i) return
-  const min = Math.max(1, i.min_buy_tih || TIH_PER_PIH)
-  const av = i.available_tih
-  const cap = av != null ? Math.min(i.max_tih || av, av) : i.max_tih
-  if (!(cap >= min)) return
-  const sc = amountScale()
-  let chips
-  if (sc.unit === 'rate' || sc.unit === 'money') {
-    // Round 1-2-5 steps in TH/s/Day (or PH/s/Day) between the minimum (or
-    // a thousandth of what is left) and what is left, log-spaced, at most four.
-    const hi = cap / sc.f, lo = Math.max(min / sc.f, hi / 1000, sc.minStep || 0)
-    const cand = []
-    for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++) {
-      for (const m of [1, 2, 5]) { const v = sig(m * 10 ** e, 3); if (v >= lo && v <= hi) cand.push(v) }
-    }
-    const n = Math.min(4, cand.length)
-    const picks = []
-    for (let j = 0; j < n; j++) { const v = cand[n === 1 ? cand.length - 1 : Math.round((cand.length - 1) * j / (n - 1))]; if (!picks.includes(v)) picks.push(v) }
-    // A sum to spend buys the TiH it covers, rounded down.
-    const toTih = (u) => sc.unit === 'money' ? Math.floor(u * sc.f) : Math.round(u * sc.f)
-    chips = picks.map((u) => ({ v: Math.min(cap, Math.max(min, toTih(u))), u, label: sc.unit === 'money' ? fmtMoney(u, sc.label) : `${fmtUnits(u)} ${sc.label}` }))
-  } else {
-    const lo = Math.ceil(Math.log2(min))
-    const hi = Math.floor(Math.log2(cap))
-    const exps = []
-    const n = Math.min(4, hi - lo + 1)
-    for (let j = 0; j < n; j++) { const e = n === 1 ? hi : Math.round(lo + (hi - lo) * j / (n - 1)); if (!exps.includes(e)) exps.push(e) }
-    chips = exps.map((e) => ({ v: 2 ** e, label: fmtHashes(2 ** e) }))
-  }
-  const last = chips.length ? chips[chips.length - 1].v : 0
-  const all = Math.floor(av)
-  if (av != null && av <= (i.max_tih || av) && all > last) chips.push({ v: all, label: `All ${fmtAmount(all)}` })
-  const html = chips.map((c) => `<button data-v="${c.v}"${c.u != null ? ` data-u="${c.u}"` : ''} title="${c.v.toLocaleString()} TiH">${c.label}</button>`).join('')
-  if ($('chips').innerHTML !== html) $('chips').innerHTML = html
 }
 // Buying needs hashrate to sell: with none left (or an amount above what
 // is left) the button stays off. The mint refuses such quotes too.
 function updateBuy () {
   const i = st.info; if (!i) return
   const av = i.available_tih
-  const n = st.tih
+  const n = amt.tih
   const soldOut = av === 0
   const over = av != null && av > 0 && n > av
   $('btn-buy').disabled = !!st.buying || i.issuance_paused || !i.methods.length || soldOut || over || n < 1
   $('btn-buy').textContent = soldOut ? 'Sold out' : i.issuance_paused ? 'Sales paused' : 'Get invoice'
   $('amount').disabled = soldOut
-  for (const b of $('chips').querySelectorAll('button')) b.disabled = soldOut || (av != null && Number(b.dataset.v) > av)
+  amt.disableChips(soldOut)
   $('over').hidden = !over
   if (over) $('over').textContent = `Only ${fmtAmount(av)} (${Math.floor(av).toLocaleString()} TiH) available right now. Lower the amount to buy.`
 }
@@ -516,29 +425,15 @@ async function loadInfo () {
     const total = st.info.capacity_tih
     $('cap-bar').hidden = av == null || total == null
     if (av != null && total != null) $('cap-bar').innerHTML = capBar(total, st.info.allocated_tih || 0, av, (n) => Math.floor(n).toLocaleString())
-    renderUnit()
-    renderChips()
+    amt.renderUnit()
+    amt.renderChips()
     renderPrice()
   } catch (e) { alertMsg(`Cannot reach the mint: ${e.message}`) }
 }
 $('methods').addEventListener('click', (ev) => { const b = ev.target.closest('button'); if (!b) return; st.method = b.dataset.m; loadInfo() })
-$('chips').addEventListener('click', (ev) => {
-  const b = ev.target.closest('button'); if (!b) return
-  st.tih = Number(b.dataset.v)
-  renderUnit(true)
-  if (b.dataset.u != null && st.unit === 'money') $('amount').value = b.dataset.u
-  renderPrice()
-})
-$('amount').addEventListener('input', () => { st.tih = Math.floor((Number($('amount').value) || 0) * amountScale().f); renderPrice() })
-$('units').addEventListener('click', (ev) => {
-  const b = ev.target.closest('button'); if (!b || b.dataset.u === st.unit) return
-  st.unit = b.dataset.u
-  try { localStorage.setItem('hashu.checkout.unit', st.unit) } catch {}
-  renderUnit(true); renderChips(); loadInfo()
-})
 
 $('btn-buy').addEventListener('click', async () => {
-  const amount = st.tih
+  const amount = amt.tih
   st.buying = true; updateBuy()
   try {
     st.checkout = await post('api/buy', { amount_tih: amount, method: st.method })

@@ -75,6 +75,9 @@ use serde_json::{json, Value};
 use crate::checkout::{self, CheckoutState};
 
 const PAGE: &str = include_str!("operator.html");
+/// The page with the checkout's amount picker inlined.
+static PAGE_HTML: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| crate::checkout::with_amount_js(PAGE));
 
 /// Lowest markup the GUI accepts: −90%, so a price can never reach zero.
 pub const MIN_MARKUP_BPS: i64 = -9_000;
@@ -387,7 +390,7 @@ pub fn redact_status(v: &mut Value) {
 }
 
 async fn page() -> Html<&'static str> {
-    Html(PAGE)
+    Html(PAGE_HTML.as_str())
 }
 
 /// Serve the proxy control API's routes unchanged.
