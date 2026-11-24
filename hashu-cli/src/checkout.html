@@ -887,9 +887,13 @@ function showStop (r) {
   const charge = r.stop_charge_tih, change = r.stop_change_tih
   const known = change != null
   const floor = r.floor_tih || 0
-  const belowFloor = (r.filled_tih || 0) < floor
+  // While the mint's rigs are down the floor doesn't hold the stop back.
+  const down = r.rigs_down_since_ms != null
+  const belowFloor = !down && (r.filled_tih || 0) < floor
   $('btn-stop').hidden = (known && change === 0) || belowFloor
-  if (belowFloor && r.amount_tih <= floor) {
+  if (down && known && change > 0) {
+    $('p-stop-note').textContent = `This mint's rigs have been offline since ${new Date(r.rigs_down_since_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. You can stop now: it charges ${charge} TiH and returns ${change} TiH as change, or keep it open and delivery resumes when they reconnect.`
+  } else if (belowFloor && r.amount_tih <= floor) {
     $('p-stop-note').textContent = `This redemption is the ${floor} TiH minimum, so it has no refundable part. It runs until ${r.amount_tih} TiH is delivered; if delivery fails, contact the mint operator.`
   } else if (belowFloor) {
     $('p-stop-note').textContent = `You can stop for change once ${floor} TiH is delivered (${fmtTih(r.filled_tih)} so far). Stopping then charges the delivered TiH rounded up and returns the rest. If delivery doesn't start, contact the mint operator.`

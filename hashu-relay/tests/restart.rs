@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use hashu_core::redemption::RedemptionLedger;
 use hashu_proxy::router::Router;
+use hashu_proxy::sessions::Session;
 use hashu_proxy::stratum::run_routed_listener_on;
 use hashu_proxy::ProxyMetrics;
 use serde_json::{json, Value};
@@ -83,10 +84,18 @@ async fn fake_pool(seen: mpsc::UnboundedSender<Submit>) -> String {
 struct DaemonProcess {
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    router: Arc<Router>,
 }
 
 impl DaemonProcess {
-    fn start(addr: SocketAddr, pool: String) -> Self {
+    /// Start on `addr`, carrying on rig sessions saved by an earlier run
+    /// (as the ops database does).
+    fn start(addr: SocketAddr, pool: String, saved: Vec<Session>) -> Self {
+        let router = Arc::new(Router::new(pool, Arc::new(RedemptionLedger::new())));
+        if !saved.is_empty() {
+            router.restore_sessions(saved, now_ms(), 0);
+        }
+        let r = router.clone();
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let thread = std::thread::spawn(move || {
@@ -103,7 +112,7 @@ impl DaemonProcess {
                     }
                 };
                 ready_tx.send(()).unwrap();
-                let router = Arc::new(Router::new(pool, Arc::new(RedemptionLedger::new())));
+                let router = r;
                 tokio::select! {
                     _ = run_routed_listener_on(listener, router, Arc::new(ProxyMetrics::default()), None, Duration::from_millis(20)) => {}
                     _ = rx => {}
@@ -115,13 +124,25 @@ impl DaemonProcess {
         Self {
             stop: Some(tx),
             thread: Some(thread),
+            router,
         }
     }
 
-    fn stop(mut self) {
+    /// Stop as the daemon does on SIGTERM; returns its rig sessions as
+    /// saved on the way out.
+    fn stop(mut self) -> Vec<Session> {
+        self.router.begin_shutdown();
         let _ = self.stop.take().unwrap().send(());
         self.thread.take().unwrap().join().unwrap();
+        self.router.rig_sessions(0).0
     }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 
 struct Miner {
@@ -194,7 +215,7 @@ async fn miner_stays_connected_across_a_daemon_restart() {
     let (seen_tx, mut seen) = mpsc::unbounded_channel();
     let pool = fake_pool(seen_tx).await;
     let daemon_addr = free_addr().await;
-    let daemon = DaemonProcess::start(daemon_addr, pool.clone());
+    let daemon = DaemonProcess::start(daemon_addr, pool.clone(), Vec::new());
 
     let relay = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay_addr = relay.local_addr().unwrap();
@@ -237,8 +258,15 @@ async fn miner_stays_connected_across_a_daemon_restart() {
         "pool en2 carries the miner's extranonce1"
     );
 
+    // The rig's session started when it connected.
+    let (before, _) = daemon.router.rig_sessions(0);
+    assert_eq!(before.len(), 1, "{before:?}");
+    assert_eq!(before[0].rig, "alice.rig1");
+    assert_eq!(before[0].end_ms, None);
+
     // Deploy: the daemon process goes away...
-    daemon.stop();
+    let saved = daemon.stop();
+    assert_eq!(saved, before, "a restart is not a disconnect");
     tokio::time::sleep(Duration::from_millis(200)).await;
     // ...a share sent meanwhile is answered as stale, not lost silently...
     let gap = m
@@ -250,7 +278,7 @@ async fn miner_stays_connected_across_a_daemon_restart() {
     let r = m.answer(gap).await;
     assert_eq!(r["error"][0], 21, "{r}");
     // ...and comes back on the same port.
-    let daemon = DaemonProcess::start(daemon_addr, pool);
+    let daemon = DaemonProcess::start(daemon_addr, pool, saved);
 
     // Same connection: a new job from the new pool session, no
     // set_extranonce, and the next share still fits.
@@ -271,5 +299,23 @@ async fn miner_stays_connected_across_a_daemon_restart() {
         "resumed with the miner's extranonce1 {en1}, pool got en2 {}",
         second.en2
     );
+    // The new daemon carries on the same session: the relay told it when
+    // the miner connected.
+    let (after, _) = daemon.router.rig_sessions(0);
+    assert_eq!(after, before, "one unbroken session across the restart");
+
+    // The miner goes away: now the session ends.
+    drop(m);
+    let mut ended = None;
+    for _ in 0..100 {
+        let (v, _) = daemon.router.rig_sessions(0);
+        if v.len() == 1 && v[0].end_ms.is_some() {
+            ended = Some(v[0].clone());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let ended = ended.expect("session ended after the miner left");
+    assert_eq!(ended.start_ms, before[0].start_ms);
     daemon.stop();
 }

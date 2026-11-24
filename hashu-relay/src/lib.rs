@@ -42,7 +42,9 @@ use tokio::time::Instant;
 
 /// Line the relay sends before replaying a miner's handshake:
 /// `{"id":null,"method":"hashu.resume","params":["<extranonce1 hex>",
-/// <extranonce2 size>]}`. Must match `hashu_proxy::stratum::RESUME_METHOD`.
+/// <extranonce2 size>, <unix ms the miner connected>]}`. The time lets the
+/// daemon carry on the miner's connect/disconnect record instead of
+/// counting a restart as a disconnect. Must match `hashu_proxy::stratum::RESUME_METHOD`.
 pub const RESUME_METHOD: &str = "hashu.resume";
 
 /// Request ids the relay uses for a replayed handshake. Within 32 bits
@@ -162,6 +164,8 @@ struct Facts {
     authorized: bool,
     /// The miner's requests the daemon hasn't answered: id key -> (id, method).
     pending: HashMap<String, (Value, String)>,
+    /// When the miner connected to the relay (Unix ms).
+    connected_ms: u64,
 }
 
 impl Facts {
@@ -254,6 +258,13 @@ fn mask_of(result: Option<&Value>) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default()
+}
+
 fn parse(line: &str) -> Option<Value> {
     serde_json::from_str(line.trim()).ok()
 }
@@ -268,7 +279,10 @@ async fn session(sock: TcpStream, cfg: &Config) -> Result<String> {
     sock.set_nodelay(true).ok();
     let (r, mut mw) = sock.into_split();
     let mut miner: MinerLines = BufReader::new(r).lines();
-    let mut f = Facts::default();
+    let mut f = Facts {
+        connected_ms: unix_ms(),
+        ..Facts::default()
+    };
 
     // First connection: the miner's lines wait in its socket until the
     // daemon is reachable.
@@ -489,8 +503,11 @@ async fn resume(
 async fn replay(upstream: &str, f: &Facts) -> std::io::Result<Replayed> {
     let mut d = Daemon::dial(upstream).await?;
     if let Some((en1, en2)) = &f.extranonce {
-        d.send(&json!({"id": null, "method": RESUME_METHOD, "params": [en1, en2]}).to_string())
-            .await?;
+        d.send(
+            &json!({"id": null, "method": RESUME_METHOD, "params": [en1, en2, f.connected_ms]})
+                .to_string(),
+        )
+        .await?;
     }
     if let Some((_, p)) = &f.configure {
         d.send(&json!({"id": R_CONFIGURE, "method": "mining.configure", "params": p}).to_string())

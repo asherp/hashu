@@ -61,7 +61,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hashu_core::redemption::{Redemption, RedemptionId, RedemptionLedger};
 use serde_json::Value;
@@ -69,7 +69,9 @@ use tokio::sync::{broadcast, watch};
 
 use crate::credit::{ConnectionId, RedemptionBinding};
 use crate::home::{HomeConfig, MinerIdentity, REFUSE_NO_HOME};
+use crate::sessions::{Session, SessionLog};
 use crate::suppliers::{Check, SupplierRegistry};
+use hashu_core::availability::DOWN_AFTER;
 
 /// Start of the authorize error for a supplier name with a wrong or
 /// missing `pw=`; the name follows.
@@ -352,6 +354,10 @@ struct Binding {
     /// The miner's authorize user (e.g. `alice.rig1`), once seen: the
     /// rig's label on the operator's hashrate chart.
     rig: Option<String>,
+    /// Set when a Stratum relay resumed this miner's session, with the
+    /// time the miner connected if the relay said (see
+    /// [`crate::sessions`]).
+    resumed: Option<Option<u64>>,
 }
 
 /// Which orders a rig may fill.
@@ -368,6 +374,16 @@ pub enum Serves {
 }
 
 impl Serves {
+    /// The mint whose orders this rig fills: `Some(None)` for the
+    /// operator's, `Some(Some(name))` for a supplier's, `None` for none.
+    fn mint(&self) -> Option<Option<String>> {
+        match self {
+            Serves::Operator => Some(None),
+            Serves::Supplier(n) => Some(Some(n.clone())),
+            Serves::Nobody => None,
+        }
+    }
+
     /// Whether a rig with this role may fill `r`.
     pub fn fits(&self, r: &Redemption) -> bool {
         match self {
@@ -419,6 +435,9 @@ struct Inner {
     rig_work: HashMap<String, RigWork>,
     /// Hosts of the mints served here, for naming delivery workers.
     hosts: MintHosts,
+    /// When a rig last stopped filling each mint's orders (Unix ms), by
+    /// mint (`None` = the operator's), for [`Router::down_since`].
+    served_until: HashMap<Option<String>, u64>,
 }
 
 /// Hosts of the mints whose orders this proxy fills, so a redeemer's pool
@@ -481,6 +500,13 @@ const RIG_LABEL_MAX: usize = 64;
 
 /// The rig label for an authorize: its user, trimmed and cut to
 /// [`RIG_LABEL_MAX`] characters.
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default()
+}
+
 fn rig_label(authorize: &Value) -> Option<String> {
     let user = authorize.get(0)?.as_str()?.trim();
     (!user.is_empty()).then(|| user.chars().take(RIG_LABEL_MAX).collect())
@@ -494,6 +520,12 @@ pub struct Router {
     home: HomeConfig,
     registry: Arc<SupplierRegistry>,
     inner: Mutex<Inner>,
+    /// When each rig was connected (see [`crate::sessions`]). Locked
+    /// after `inner` when both are needed.
+    sessions: Mutex<SessionLog>,
+    /// When this router started (Unix ms): before any rig, every mint has
+    /// been without rigs since then.
+    started_ms: u64,
 }
 
 /// What a new connection gets from [`Router::assign`].
@@ -515,6 +547,8 @@ impl Router {
             home: HomeConfig::off(),
             registry: Arc::new(SupplierRegistry::empty()),
             inner: Mutex::new(Inner::default()),
+            sessions: Mutex::new(SessionLog::new(unix_ms())),
+            started_ms: unix_ms(),
         }
     }
 
@@ -604,8 +638,14 @@ impl Router {
                 }),
                 serves,
                 rig: authorize.and_then(rig_label),
+                resumed: None,
             },
         );
+        let rig = inner.conns.get(&conn).and_then(|b| b.rig.clone());
+        drop(inner);
+        if let Some(rig) = rig {
+            self.sessions().open(conn, &rig, unix_ms(), None);
+        }
         match &route {
             Route::Redemption { id, upstream, .. } => {
                 tracing::info!(%conn, redemption = %id, %upstream, "routing connection to redeemer's pool");
@@ -684,9 +724,13 @@ impl Router {
         };
         let idle = self.idle_route(Some(&id));
         let serves = self.serves(Some(&id));
-        if let Some(b) = self.lock().conns.get_mut(&conn) {
+        let mut inner = self.lock();
+        if let Some(b) = inner.conns.get_mut(&conn) {
             if b.rig.is_none() {
                 b.rig = rig_label(authorize);
+                if let Some(rig) = &b.rig {
+                    self.sessions().open(conn, rig, unix_ms(), b.resumed);
+                }
             }
             if b.supplier.is_none() {
                 b.supplier = Some(match &serves {
@@ -694,10 +738,15 @@ impl Router {
                     _ => id.supplier,
                 });
             }
+            // A rig that changes role stops filling its old mint's orders.
+            let left = (b.serves != serves).then(|| b.serves.mint()).flatten();
             b.serves = serves;
             if matches!(b.idle, Route::Default { .. }) && matches!(idle, Route::Home { .. }) {
                 tracing::info!(%conn, upstream = idle.upstream(), "miner has a home pool; it goes there after its next redemption or reconnect");
                 b.idle = idle;
+            }
+            if let Some(mint) = left {
+                inner.served_until.insert(mint, unix_ms());
             }
         }
     }
@@ -836,7 +885,77 @@ impl Router {
 
     /// Forget a connection once it has closed.
     pub fn release(&self, conn: ConnectionId) {
-        self.lock().conns.remove(&conn);
+        let mut inner = self.lock();
+        if let Some(b) = inner.conns.remove(&conn) {
+            if let Some(mint) = b.serves.mint() {
+                inner.served_until.insert(mint, unix_ms());
+            }
+        }
+        self.sessions().close(conn, unix_ms());
+    }
+
+    /// Since when (Unix ms) no rig has been connected to fill `mint`'s
+    /// orders (`None` = the operator's mint), once that has lasted
+    /// [`DOWN_AFTER`]; `None` while one is connected or for less than
+    /// that. See [`hashu_core::availability`].
+    pub fn down_since(&self, mint: Option<&str>) -> Option<u64> {
+        self.down_since_at(mint, unix_ms())
+    }
+
+    fn down_since_at(&self, mint: Option<&str>, now: u64) -> Option<u64> {
+        let inner = self.lock();
+        let key = mint.map(str::to_string);
+        if inner
+            .conns
+            .values()
+            .any(|b| b.serves.mint().as_ref() == Some(&key))
+        {
+            return None;
+        }
+        let since = inner
+            .served_until
+            .get(&key)
+            .copied()
+            .unwrap_or(self.started_ms);
+        (now.saturating_sub(since) >= DOWN_AFTER.as_millis() as u64).then_some(since)
+    }
+
+    /// A Stratum relay resumed this connection's miner, which first
+    /// connected at `since` (Unix ms) if the relay said: it continues that
+    /// miner's session rather than starting one.
+    pub fn resumed(&self, conn: ConnectionId, since: Option<u64>) {
+        let mut inner = self.lock();
+        let Some(b) = inner.conns.get_mut(&conn) else {
+            return;
+        };
+        b.resumed = Some(since);
+        if b.rig.is_some() {
+            self.sessions().resumed(conn, unix_ms(), since);
+        }
+    }
+
+    /// The daemon is stopping: connections closing from now on leave their
+    /// rigs' sessions open, to be resumed through the relay.
+    pub fn begin_shutdown(&self) {
+        self.sessions().begin_shutdown();
+    }
+
+    /// Rig sessions open at or after `from_ms`, and since when sessions
+    /// are recorded (Unix ms).
+    pub fn rig_sessions(&self, from_ms: u64) -> (Vec<Session>, u64) {
+        let mut log = self.sessions();
+        (log.list(unix_ms(), from_ms), log.since_ms())
+    }
+
+    /// Carry on sessions saved by an earlier run (see
+    /// [`SessionLog::restore`]).
+    pub fn restore_sessions(&self, saved: Vec<Session>, alive_ms: u64, since_ms: u64) {
+        self.sessions()
+            .restore(saved, alive_ms, since_ms, unix_ms());
+    }
+
+    fn sessions(&self) -> std::sync::MutexGuard<'_, SessionLog> {
+        self.sessions.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Record an accepted share of bdiff `difficulty` from `conn`, on any
@@ -1788,6 +1907,27 @@ mod tests {
     }
 
     use hashu_core::redemption::HASHES_PER_DIFF_ONE;
+
+    #[test]
+    fn a_mint_is_down_once_its_rigs_are_gone_for_two_minutes() {
+        let router = Router::new("pool:3333", Arc::new(RedemptionLedger::new()));
+        let t0 = router.started_ms;
+        let two = DOWN_AFTER.as_millis() as u64;
+        // No rig since start.
+        assert_eq!(router.down_since_at(None, t0 + two - 1), None);
+        assert_eq!(router.down_since_at(None, t0 + two), Some(t0));
+        // A rig connects: up.
+        let conn = ConnectionId(1);
+        router.assign_with(conn, Some(&serde_json::json!(["bc1qxyz.rig1", "x"])));
+        assert_eq!(router.down_since_at(None, t0 + 10 * two), None);
+        // It leaves: down again two minutes later, since it left.
+        router.release(conn);
+        let left = router.lock().served_until[&None];
+        assert_eq!(router.down_since_at(None, left + two - 1), None);
+        assert_eq!(router.down_since_at(None, left + two), Some(left));
+        // A supplier's mint is separate.
+        assert_eq!(router.down_since_at(Some("alice"), t0 + two), Some(t0));
+    }
 
     #[test]
     fn rig_work_is_kept_per_authorize_user_across_reconnects() {

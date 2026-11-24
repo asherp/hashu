@@ -36,6 +36,7 @@ use cdk::cdk_payment::{
 use cdk::nuts::{CurrencyUnit, MeltQuoteState};
 use cdk::Amount;
 use futures::stream::{self, BoxStream};
+use hashu_core::availability::RigsDown;
 use hashu_core::redemption::{
     PoolTarget, Redemption, RedemptionId, RedemptionLedger, RedemptionState, MAX_FALLBACK_POOLS,
 };
@@ -180,6 +181,8 @@ pub struct HashrateMelter {
     /// The registered supplier whose mint this is; `None` for the
     /// operator's own mint. Its redemptions go only to that supplier's rigs.
     supplier: Option<String>,
+    /// Whether this mint's rigs are down: then it quotes no redemptions.
+    rigs: Option<Arc<RigsDown>>,
 }
 
 impl HashrateMelter {
@@ -189,7 +192,15 @@ impl HashrateMelter {
             min_tih: DEFAULT_MIN_TIH,
             max_tih: None,
             supplier: None,
+            rigs: None,
         }
+    }
+
+    /// Refuse to quote redemptions while this mint's rigs are down (see
+    /// [`hashu_core::availability`]): nothing could deliver them.
+    pub fn with_rigs(mut self, rigs: Arc<RigsDown>) -> Self {
+        self.rigs = Some(rigs);
+        self
     }
 
     /// Melter for supplier `name`'s mint: its redemptions carry the name,
@@ -396,6 +407,13 @@ impl MintPayment for HashrateMelter {
             return Err(Error::UnsupportedPaymentOption);
         }
         let req = self.validated(&custom.request)?;
+        if let Some(since) = self
+            .rigs
+            .as_ref()
+            .and_then(|r| r.down_since(self.supplier.as_deref()))
+        {
+            return Err(Error::Custom(RigsDown::message(since)));
+        }
         let floor = self.floor_for(req.amount_tih);
         Ok(PaymentQuoteResponse {
             request_lookup_id: Some(lookup_id(&self.id_for(&custom.request))),
@@ -608,6 +626,23 @@ mod tests {
             .check_outgoing_payment(&paid.payment_lookup_id)
             .await
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn no_quotes_while_the_rigs_are_down() {
+        let (m, _) = melter();
+        let rigs = RigsDown::new();
+        let m = m.with_rigs(rigs.clone());
+        assert!(m
+            .get_payment_quote(&HashrateMelter::unit(), custom(request(2048)))
+            .await
+            .is_ok());
+        rigs.set(Arc::new(|mint: Option<&str>| mint.is_none().then_some(0)));
+        let e = m
+            .get_payment_quote(&HashrateMelter::unit(), custom(request(2048)))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("offline since"), "{e}");
     }
 
     #[test]

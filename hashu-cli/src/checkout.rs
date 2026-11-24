@@ -52,6 +52,7 @@ use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, State as ProofSpentState, Token};
 use cdk::wallet::{KeysetFilter, Wallet};
 use cdk::Amount;
+use hashu_core::availability::RigsDown;
 use hashu_core::redemption::{RedemptionId, RedemptionLedger, HASHES_PER_TIH};
 use hashu_mint::capacity::{LiveView, MIN_PURCHASE_TIH};
 use hashu_mint::melt::{redemption_id_for, METHOD as HASHRATE};
@@ -254,6 +255,9 @@ pub struct CheckoutState {
     pub app_url: Option<String>,
     /// Where miners connect to this mint's proxy.
     pub stratum: Option<crate::stratum_addr::StratumAddr>,
+    /// Whether the mints' rigs are down: then a redeemer may stop before
+    /// the minimum is delivered (see `hashu_core::availability`).
+    pub rigs: Option<Arc<RigsDown>>,
     checkouts: Mutex<HashMap<String, Arc<Mutex<Checkout>>>>,
 }
 
@@ -288,6 +292,7 @@ impl CheckoutState {
             orders,
             app_url: None,
             stratum: None,
+            rigs: None,
             checkouts: Mutex::new(HashMap::new()),
         }
     }
@@ -295,6 +300,17 @@ impl CheckoutState {
     pub fn with_app_url(mut self, app_url: Option<String>) -> Self {
         self.app_url = app_url;
         self
+    }
+
+    /// Lets redeemers stop early while the rigs are down.
+    pub fn with_rigs(mut self, rigs: Arc<RigsDown>) -> Self {
+        self.rigs = Some(rigs);
+        self
+    }
+
+    /// Since when (Unix ms) the rigs filling `r` have been down.
+    fn rigs_down_since(&self, r: &hashu_core::redemption::Redemption) -> Option<u64> {
+        self.rigs.as_ref()?.down_since(r.supplier.as_deref())
     }
 
     /// The public Stratum address shown in `/checkout/api/info`.
@@ -1353,6 +1369,10 @@ async fn order(State(s): State<Arc<CheckoutState>>, Path(order_id): Path<String>
     };
     redemption["order_id"] = json!(order_id);
     redemption["can_stop"] = json!(o.stop_hash.is_some());
+    redemption["rigs_down_since_ms"] = json!(s
+        .ledger
+        .get(&o.redemption_id)
+        .and_then(|r| s.rigs_down_since(&r)));
     redemption["change"] = change;
     ([(header::CACHE_CONTROL, "no-store")], Json(redemption)).into_response()
 }
@@ -1402,20 +1422,9 @@ async fn stop_order(
     // already rounds up to the full amount. The operator's settle can still
     // clear such a redemption.
     if let Some(r) = s.ledger.get(&o.redemption_id) {
-        // Below the floor a stop charges the whole floor for less work, so
-        // only the operator may end the redemption there (e.g. a delivery
-        // that never started).
-        if !r.is_finished() && r.accumulated_hashes < u128::from(r.floor_tih) * HASHES_PER_TIH {
-            return err(
-                StatusCode::CONFLICT,
-                format!("the redeemer can stop this redemption once {} TiH is delivered; before that only the mint operator can stop it", r.floor_tih),
-            );
-        }
-        if let Some((charged, 0)) = r.settle_preview() {
-            return err(
-                StatusCode::CONFLICT,
-                format!("stopping now would charge all {charged} TiH and return nothing, so this redemption cannot be stopped for change"),
-            );
+        let down = s.rigs_down_since(&r).is_some();
+        if let Some(why) = stop_refusal(&r, down) {
+            return err(StatusCode::CONFLICT, why);
         }
     }
     match s.ledger.settle(&o.redemption_id) {
@@ -1433,6 +1442,23 @@ async fn stop_order(
         }
     }
     order(State(s), Path(order_id)).await
+}
+
+/// Why the redeemer may not stop `r` now, if they may not. `down`: the
+/// rigs filling it are down (see `hashu_core::availability`).
+fn stop_refusal(r: &hashu_core::redemption::Redemption, down: bool) -> Option<String> {
+    // Below the floor a stop charges the whole floor for less work, so
+    // only the operator may end the redemption there (e.g. a delivery that
+    // never started). While the rigs are down the redeemer may: nothing is
+    // being delivered, so waiting gains them nothing.
+    if !down && !r.is_finished() && r.accumulated_hashes < u128::from(r.floor_tih) * HASHES_PER_TIH
+    {
+        return Some(format!("the redeemer can stop this redemption once {} TiH is delivered; before that only the mint operator can stop it", r.floor_tih));
+    }
+    if let Some((charged, 0)) = r.settle_preview() {
+        return Some(format!("stopping now would charge all {charged} TiH and return nothing, so this redemption cannot be stopped for change"));
+    }
+    None
 }
 
 /// Where an order's change stands. The server only reports it: the change
@@ -1529,6 +1555,22 @@ fn parse_id(s: &str) -> Option<RedemptionId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn downtime_lets_the_redeemer_stop_before_the_floor() {
+        use hashu_core::redemption::Redemption;
+        let id = RedemptionId::from_bytes([7; 16]);
+        // 4 PiH with a 1 PiH floor, nothing delivered.
+        let r =
+            Redemption::new(id, 4096, "stratum+tcp://p:3333".into(), "w".into()).with_floor(1024);
+        assert!(stop_refusal(&r, false).unwrap().contains("once 1024 TiH"));
+        assert_eq!(stop_refusal(&r, true), None);
+        assert_eq!(r.settle_preview(), Some((1024, 3072)));
+        // Exactly the floor: nothing would come back, down or not.
+        let r =
+            Redemption::new(id, 1024, "stratum+tcp://p:3333".into(), "w".into()).with_floor(1024);
+        assert!(stop_refusal(&r, true).unwrap().contains("return nothing"));
+    }
 
     #[test]
     fn extracts_pasted_tokens() {

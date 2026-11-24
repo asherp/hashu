@@ -12,7 +12,14 @@
 //! - `hashu_tracks`: each redemption's delivered-work curve with its real
 //!   opened and completed times (the ledger keeps no timestamps).
 //! - `hashu_state`: proxy counters and total work, and each rig's work
-//!   with its last share time. Restored so totals carry on.
+//!   with its last share time. Restored so totals carry on. Also when the
+//!   daemon was last up (`alive`) and since when rig sessions are recorded
+//!   (`sessions_since`).
+//! - `hashu_rig_sessions`: when each rig connected and disconnected (see
+//!   `hashu_proxy::sessions`), so the chart tells downtime from a low
+//!   hashrate. Sessions still open at shutdown are saved open and carried
+//!   on if the rig's relay resumes them. Dropped [`KEEP_DAYS`] after they
+//!   end.
 //!
 //! Without a URL nothing is saved and the feed starts empty, as before.
 
@@ -23,6 +30,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use hashu_proxy::meter::{HashrateMeter, RedemptionTrack, Sample};
 use hashu_proxy::router::Router;
+use hashu_proxy::sessions::{Session, KEEP_CLOSED};
 use hashu_proxy::{ProxyMetrics, ProxyMetricsSnapshot};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -54,6 +62,12 @@ CREATE TABLE IF NOT EXISTS hashu_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS hashu_rig_sessions (
+    rig TEXT NOT NULL,
+    start_ms BIGINT NOT NULL,
+    end_ms BIGINT,
+    PRIMARY KEY (rig, start_ms)
+);
 ";
 
 fn now_ms() -> u64 {
@@ -83,7 +97,14 @@ struct Progress {
     last_t_ms: u64,
     /// Completed tracks already written (they no longer change).
     done: HashSet<String>,
+    /// Since when rig sessions are recorded (Unix ms), saved as is.
+    sessions_since: u64,
     flushes: u64,
+}
+
+/// Time of the newest sample, if any.
+fn p_last_sample(samples: &[Sample]) -> Option<u64> {
+    samples.last().map(|s| s.t_ms)
 }
 
 /// The dashboard feed's link to the ops database.
@@ -218,6 +239,35 @@ impl Telemetry {
                 );
             }
         }
+        // Rig sessions: every open one, and those that ended recently
+        // enough to matter to the chart.
+        let from = now.saturating_sub(KEEP_CLOSED.as_millis() as u64) as i64;
+        let rows = c
+            .query(
+                "SELECT rig, start_ms, end_ms FROM hashu_rig_sessions \
+                 WHERE end_ms IS NULL OR end_ms >= $1 ORDER BY start_ms",
+                &[&from],
+            )
+            .await?;
+        let sessions: Vec<Session> = rows
+            .iter()
+            .map(|r| Session {
+                rig: r.get(0),
+                start_ms: r.get::<_, i64>(1) as u64,
+                end_ms: r.get::<_, Option<i64>>(2).map(|v| v as u64),
+            })
+            .collect();
+        let alive = state("alive").await?.and_then(|v| v.parse::<u64>().ok());
+        let since = state("sessions_since")
+            .await?
+            .and_then(|v| v.parse::<u64>().ok());
+        let (_, own_since) = self.router.rig_sessions(now);
+        // With nothing saved yet, sessions are recorded from this start.
+        let since = since.unwrap_or(own_since);
+        self.progress.lock().await.sessions_since = since;
+        let alive = alive.unwrap_or_else(|| p_last_sample(&samples).unwrap_or(now));
+        self.router.restore_sessions(sessions, alive, since);
+
         let n = (samples.len(), tracks.len(), n_rigs);
         let mut p = self.progress.lock().await;
         p.last_t_ms = samples.last().map(|s| s.t_ms).unwrap_or(0);
@@ -243,6 +293,10 @@ impl Telemetry {
             .filter(|t| !p.done.contains(&t.id))
             .collect();
         let now = now_ms();
+        let (sessions, since) = self.router.rig_sessions(0);
+        if p.sessions_since == 0 {
+            p.sessions_since = since;
+        }
         let metrics = serde_json::to_string(&SavedMetrics {
             counters: self.metrics.snapshot(),
             accepted_hashes: self.metrics.accepted_hashes(),
@@ -295,11 +349,32 @@ impl Telemetry {
             .await?;
         tx.execute(&kv, &[&"metrics", &metrics]).await?;
         tx.execute(&kv, &[&"rigs", &rigs]).await?;
+        tx.execute(&kv, &[&"alive", &now.to_string()]).await?;
+        tx.execute(&kv, &[&"sessions_since", &p.sessions_since.to_string()])
+            .await?;
+        let ses = tx
+            .prepare(
+                "INSERT INTO hashu_rig_sessions (rig, start_ms, end_ms) VALUES ($1, $2, $3) \
+                 ON CONFLICT (rig, start_ms) DO UPDATE SET end_ms = $3",
+            )
+            .await?;
+        for s in &sessions {
+            tx.execute(
+                &ses,
+                &[&s.rig, &(s.start_ms as i64), &s.end_ms.map(|e| e as i64)],
+            )
+            .await?;
+        }
         if p.flushes % PRUNE_EVERY == 0 {
             let cut = now.saturating_sub(FULL_RES_MS) as i64;
             let floor = now.saturating_sub(KEEP_DAYS * 86_400_000) as i64;
             tx.execute("DELETE FROM hashu_samples WHERE t_ms < $1", &[&floor])
                 .await?;
+            tx.execute(
+                "DELETE FROM hashu_rig_sessions WHERE end_ms IS NOT NULL AND end_ms < $1",
+                &[&floor],
+            )
+            .await?;
             // One sample per minute past the first hour; only look back a
             // day so each prune stays small.
             tx.execute(
@@ -344,5 +419,62 @@ impl Telemetry {
                 Err(_) => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hashu_core::redemption::RedemptionLedger;
+    use hashu_proxy::credit::ConnectionId;
+
+    fn parts() -> (Arc<HashrateMeter>, Arc<ProxyMetrics>, Arc<Router>) {
+        let metrics = Arc::new(ProxyMetrics::default());
+        let ledger = Arc::new(RedemptionLedger::new());
+        let meter = Arc::new(HashrateMeter::new(
+            metrics.clone(),
+            ledger.clone(),
+            Duration::from_secs(60),
+        ));
+        let router = Arc::new(Router::new("127.0.0.1:1", ledger));
+        (meter, metrics, router)
+    }
+
+    /// Needs a Postgres: `HASHU_TEST_OPS_DB=postgres://...`; skipped
+    /// without one.
+    #[tokio::test]
+    async fn rig_sessions_survive_a_restart() {
+        let Ok(url) = std::env::var("HASHU_TEST_OPS_DB") else {
+            return;
+        };
+        {
+            let c = connect(&url).await.unwrap();
+            c.batch_execute("DELETE FROM hashu_rig_sessions; DELETE FROM hashu_state")
+                .await
+                .unwrap();
+        }
+        let (meter, metrics, router) = parts();
+        let t = Telemetry::open(&url, meter, metrics, router.clone(), Duration::from_secs(5)).await;
+        let conn = ConnectionId(1);
+        router.assign_with(conn, Some(&serde_json::json!(["alice.rig1", "x"])));
+        router.begin_shutdown();
+        router.release(conn);
+        t.flush().await.unwrap();
+        let (before, since) = router.rig_sessions(0);
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].end_ms, None, "saved open across the restart");
+
+        let (meter, metrics, router2) = parts();
+        let _t2 = Telemetry::open(
+            &url,
+            meter,
+            metrics,
+            router2.clone(),
+            Duration::from_secs(5),
+        )
+        .await;
+        let (after, since2) = router2.rig_sessions(0);
+        assert_eq!(after, before);
+        assert_eq!(since2, since, "recording start carried over");
     }
 }

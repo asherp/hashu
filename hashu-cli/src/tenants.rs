@@ -117,6 +117,9 @@ pub struct TenantConfig {
     /// With epochs on (#126): the chain tip every supplier mint dates its
     /// vouchers by.
     pub epochs: Option<crate::epochs::ClockFeed>,
+    /// Whether each supplier's rigs are down: then its mint quotes no
+    /// redemptions (see `hashu_core::availability`).
+    pub rigs: Option<Arc<hashu_core::availability::RigsDown>>,
 }
 
 struct Tenant {
@@ -347,12 +350,16 @@ impl Tenants {
                 tih_unit(),
                 PaymentMethod::Custom(HASHRATE.into()),
                 MintMeltLimits::new(self.cfg.min_redeem_tih.max(1), self.cfg.max_tih),
-                Arc::new(
-                    HashrateMelter::new(self.cfg.ledger.clone())
+                Arc::new({
+                    let m = HashrateMelter::new(self.cfg.ledger.clone())
                         .with_supplier(name)
                         .with_min_tih(self.cfg.min_redeem_tih)
-                        .with_max_tih(self.cfg.max_tih),
-                ),
+                        .with_max_tih(self.cfg.max_tih);
+                    match &self.cfg.rigs {
+                        Some(r) => m.with_rigs(r.clone()),
+                        None => m,
+                    }
+                }),
             )
             .await
             .context("register hashrate melt")?;
@@ -956,6 +963,7 @@ mod tests {
                 .unwrap(),
                 reliability: None,
                 epochs: None,
+                rigs: None,
                 probe: Arc::new(|a: PayEndpoint| {
                     Box::pin(async move {
                         if a.lnurlp_url().starts_with("https://wallet.example/") {
