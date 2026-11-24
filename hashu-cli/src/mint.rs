@@ -156,6 +156,11 @@ pub struct RunArgs {
         default_value = "Hashrate vouchers in tebihashes (TiH, 2^40 hashes). Pay with Lightning or USDT; redeem by pointing hashrate at your pool."
     )]
     pub description: String,
+    /// Mint logo (NUT-06 `icon_url`), shown by wallets beside the mint's
+    /// name. Unset: Hashu's mark, served by the mint itself at
+    /// `<mint url>/nostr/avatar.png`. Empty: no logo.
+    #[arg(long, env = "HASHU_MINT_ICON_URL")]
+    pub icon_url: Option<String>,
     /// How to reach the operator (NUT-06 `contact`), comma separated
     /// `method:info` pairs, e.g. `email:ops@example.com,nostr:npub1...`.
     /// Shown on the landing page. Empty: no contact.
@@ -484,6 +489,20 @@ fn sats_pricer(
     }
 }
 
+/// The mint's NUT-06 `icon_url`: the configured one (empty = none), else
+/// Hashu's mark at `<mint url>/nostr/avatar.png` when the mint has a
+/// public URL.
+pub(crate) fn mint_icon_url(configured: Option<&str>, mint_url: Option<&str>) -> Option<String> {
+    match configured.map(str::trim) {
+        Some("") => None,
+        Some(icon) => Some(icon.to_string()),
+        None => mint_url
+            .map(|u| u.trim().trim_end_matches('/'))
+            .filter(|u| !u.is_empty())
+            .map(|u| format!("{u}{}", hashu_mint::discovery::AVATAR_PATH)),
+    }
+}
+
 /// cdk saves the mint info (NUT-06) in the database on first boot and
 /// serves that copy from then on, so a later `--mint-url`, a newly enabled
 /// payment rail or a new description would never show up in `/v1/info`.
@@ -757,6 +776,9 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     }
     if let Some(url) = &args.mint_url {
         builder = builder.with_urls(vec![url.clone()]);
+    }
+    if let Some(icon) = mint_icon_url(args.icon_url.as_deref(), args.mint_url.as_deref()) {
+        builder = builder.with_icon_url(icon);
     }
     builder
         .configure_unit(
@@ -1587,5 +1609,33 @@ mod app_url_tests {
         );
         assert!(app_url(Some("app.example.com")).is_err());
         assert!(app_url(Some("https://")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod icon_url_tests {
+    use super::mint_icon_url;
+
+    #[test]
+    fn defaults_to_the_mark_at_the_mint_url() {
+        assert_eq!(
+            mint_icon_url(None, Some("https://mint.example/")).as_deref(),
+            Some("https://mint.example/nostr/avatar.png")
+        );
+        assert_eq!(mint_icon_url(None, None), None);
+        assert_eq!(mint_icon_url(None, Some(" ")), None);
+    }
+
+    #[test]
+    fn configured_wins_and_empty_means_none() {
+        assert_eq!(
+            mint_icon_url(
+                Some("https://cdn.example/logo.png"),
+                Some("https://mint.example")
+            )
+            .as_deref(),
+            Some("https://cdn.example/logo.png")
+        );
+        assert_eq!(mint_icon_url(Some(""), Some("https://mint.example")), None);
     }
 }
