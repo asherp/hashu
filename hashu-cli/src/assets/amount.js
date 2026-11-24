@@ -85,8 +85,8 @@ window.HashuAmount = (() => {
     }
     // Chips follow the stock: powers of two from the minimum up to the
     // largest that fits in what is left (or the per-order cap when
-    // uncapped), plus one for everything available. Rate and money units
-    // use round 1-2-5 steps instead. Sold out keeps the last set.
+    // uncapped), plus one for everything available, labelled "(max)".
+    // Rate and money units use round 1-2-5 steps instead. Sold out keeps the last set.
     w.renderChips = () => {
       const l = lim(); if (!l) return
       const min = Math.max(1, l.min)
@@ -119,7 +119,7 @@ window.HashuAmount = (() => {
       }
       const last = chips.length ? chips[chips.length - 1].v : 0
       const all = Math.floor(av)
-      if (av != null && av <= (l.max || av) && all > last) chips.push({ v: all, label: `All ${w.fmt(all)}` })
+      if (av != null && av <= (l.max || av) && all > last) chips.push({ v: all, label: `${w.fmt(all)} (max)` })
       const html = chips.map((c) => `<button type="button" data-v="${c.v}"${c.u != null ? ` data-u="${c.u}"` : ''} title="${c.v.toLocaleString()} TiH">${c.label}</button>`).join('')
       if (o.chips.innerHTML !== html) o.chips.innerHTML = html
       w.chipValues = chips.map((c) => c.v)
