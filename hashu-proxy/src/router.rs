@@ -1062,6 +1062,27 @@ impl Router {
             .and_then(|b| b.rate.rate(Instant::now()))
     }
 
+    /// The rigs each redemption's hashrate comes from right now: live
+    /// connections routed to it, as `(rig label, hashrate estimate)`.
+    /// The label is the authorize user (`conn-<n>` before one is seen);
+    /// the estimate is `None` until the rig has enough shares. Sorted by
+    /// label within each redemption.
+    pub fn rigs_by_redemption(&self) -> HashMap<RedemptionId, Vec<(String, Option<f64>)>> {
+        let now = Instant::now();
+        let inner = self.lock();
+        let mut out: HashMap<RedemptionId, Vec<(String, Option<f64>)>> = HashMap::new();
+        for (conn, b) in &inner.conns {
+            if let Some(id) = b.route.redemption_id() {
+                let label = b.rig.clone().unwrap_or_else(|| conn.to_string());
+                out.entry(id).or_default().push((label, b.rate.rate(now)));
+            }
+        }
+        for v in out.values_mut() {
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+        out
+    }
+
     /// Current route of a live connection.
     pub fn route_of(&self, conn: ConnectionId) -> Option<Route> {
         self.lock().conns.get(&conn).map(|b| b.route.clone())
@@ -1602,6 +1623,21 @@ mod tests {
             })
             .collect();
         assert_eq!(ids, vec![rid(1), rid(2), rid(1), rid(2)]);
+    }
+
+    #[test]
+    fn rigs_by_redemption_lists_each_orders_rigs() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        open(&ledger, 1, "stratum+tcp://alice:3333", "a");
+        open(&ledger, 2, "stratum+tcp://bob:3333", "b");
+        let router = Router::new("default:3333", ledger);
+        let one = serde_json::json!(["acct.rig1", "x"]);
+        let two = serde_json::json!(["acct.rig2", "x"]);
+        router.assign_with(ConnectionId::next(), Some(&one));
+        router.assign_with(ConnectionId::next(), Some(&two));
+        let by = router.rigs_by_redemption();
+        assert_eq!(by[&rid(1)], vec![("acct.rig1".to_string(), None)]);
+        assert_eq!(by[&rid(2)], vec![("acct.rig2".to_string(), None)]);
     }
 
     #[test]

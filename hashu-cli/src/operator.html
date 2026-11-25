@@ -218,7 +218,7 @@ td.num, th.num { text-align: right; }
     <div class="row sub" id="red-meta">No redemption yet. A holder redeems by melting TiH with the <span class="mono">hashrate</span> method.</div>
     <div class="bar"><div id="red-bar" style="width:0%"></div></div>
     <div class="chart" id="c-red"></div>
-    <p class="note">Hashrate integrated since the redemption opened: the TiH the redeemer's pool has received (1 TiH = 2<sup>40</sup> hashes = 256 difficulty-1 shares). The dashed line is the amount redeemed.</p>
+    <p class="note">Hashrate integrated since the redemption opened: the TiH the redeemer's pool has received (1 TiH = 2<sup>40</sup> hashes = 256 difficulty-1 shares). The dashed line is the amount redeemed. Its rate and ETA are the work over the trailing Average set on the hashrate chart (at least 1 min). Each connected rig serves one redemption at a time, so with two open they split the rigs between them, not each rig's hashrate: the rigs on this one are listed above.</p>
   </section>
 
   </div>
@@ -841,7 +841,7 @@ function drawRedemption () {
   const end = t.completed_ms || (state.op ? state.op.now_ms : Date.now())
   const pts = t.points.map((p) => [p[0], p[1] / HASHES_PER_TIH])
   if (!t.completed_ms && pts.length) pts.push([end, pts[pts.length - 1][1]])
-  // Projected finish at the rate of the last minute.
+  // Projected finish at the trailing-window rate (see trackWindowS).
   const rate = trackRate(t)
   const done = pts.length ? pts[pts.length - 1][1] : 0
   // None while paused: it gets no hashrate until resumed.
@@ -868,16 +868,20 @@ function etaProjection (nowMs, doneTih, targetTih, rate) {
   return { t, v: targetTih, label: `ETA ${clock} · ~${fmtDur(secs)} left` }
 }
 
-// Rate into one redemption over its last minute of points.
 // Paused redemptions: who holds them.
 const pausedLabel = (by) => by === 'operator' ? 'Paused by operator' : 'Paused by redeemer'
 const stateLabel = (r) => r.paused_by && r.state !== 'completed' && r.state !== 'settled' ? pausedLabel(r.paused_by) : r.state
+// Trailing window for a redemption's rate and ETA: the hashrate chart's
+// Average setting (1 or 5 min), at least a minute, so the two agree.
+const trackWindowS = () => Math.max(60, state.avg)
+// Rate into one redemption: the work over the trailing window ÷ its length
+// (from when it opened, if younger).
 function trackRate (t) {
   if (!t || t.points.length < 2) return 0
   const last = t.points[t.points.length - 1]
   const end = t.completed_ms || (state.op ? state.op.now_ms : last[0])
   let base = t.points[0]
-  for (const p of t.points) if (p[0] <= end - 60000) base = p
+  for (const p of t.points) if (p[0] <= end - trackWindowS() * 1000) base = p
   return end > base[0] ? (last[1] - base[1]) * 1000 / (end - base[0]) : 0
 }
 
@@ -1051,7 +1055,8 @@ function render () {
   if (sel) {
     const tr = trackRate(state.track)
     const eta = sel.state === 'completed' ? 'done' : sel.state === 'settled' ? `settled: charged ${sel.spent_tih} TiH, ${sel.change_tih} TiH returned as change` : sel.paused_by ? `${pausedLabel(sel.paused_by).toLowerCase()}: no hashrate until resumed` : tr > 0 ? `ETA ${fmtDur((sel.remaining_tih * HASHES_PER_TIH) / tr)}` : 'waiting for shares'
-    $('red-meta').innerHTML = `<span class="mono">${esc(shortId(sel.id))}</span> → <span class="mono">${esc(hostOf(sel.pool_url))}</span> as <b>${esc(sel.worker_name)}</b> · <b>${fmtTih(sel.filled_tih)}</b> of ${sel.amount_tih} TiH (${(sel.progress * 100).toFixed(1)}%) · ${fmtRate(tr)} · ${eta}`
+    $('red-meta').innerHTML = `<span class="mono">${esc(shortId(sel.id))}</span> → <span class="mono">${esc(hostOf(sel.pool_url))}</span> as <b>${esc(sel.worker_name)}</b> · <b>${fmtTih(sel.filled_tih)}</b> of ${sel.amount_tih} TiH (${(sel.progress * 100).toFixed(1)}%) · ${fmtRate(tr)} <span class="sub">(${trackWindowS() / 60}-min avg)</span> · ${eta}`
+      + (sel.state === 'completed' || sel.state === 'settled' ? '' : `<span class="sub" style="flex-basis:100%">${(sel.rigs || []).length ? `Rigs on it now: ${sel.rigs.map((g) => `${esc(rigName(g.rig))} ${g.hashrate_hs != null ? fmtRate(g.hashrate_hs) : '(rate pending)'}`).join(' · ')}` : 'No rig on it now'}</span>`)
       + ((sel.pool_tih || []).length > 1 ? `<br><span class="sub">By pool: ${sel.pool_tih.map((p) => `<span class="mono">${esc(hostOf(p.pool_url))}</span> as ${esc(p.worker_name)} ${p.tih} TiH`).join(' · ')}</span>` : '')
     $('red-bar').style.width = `${(sel.progress * 100).toFixed(1)}%`
     $('red-state').textContent = stateLabel(sel)
@@ -1114,7 +1119,7 @@ for (const [id, key] of [['avg', 'avg'], ['span', 'span']]) {
     const b = ev.target.closest('button'); if (!b) return
     state[key] = Number(b.dataset.v)
     for (const x of $(id).querySelectorAll('button')) x.classList.toggle('on', x === b)
-    render(); drawRate()
+    render(); drawRate(); drawRedemption()
   })
 }
 async function setControls (body) {

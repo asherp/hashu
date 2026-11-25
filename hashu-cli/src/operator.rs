@@ -1018,6 +1018,13 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
 
     // ---- redemptions --------------------------------------------------
     let tracks = s.meter.tracks();
+    // Which rigs each redemption's hashrate comes from right now.
+    let rigs_on = s
+        .control
+        .router
+        .as_ref()
+        .map(|r| r.rigs_by_redemption())
+        .unwrap_or_default();
     let redemptions: Vec<Value> = s
         .control
         .ledger
@@ -1053,6 +1060,12 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
                 "change_tih": r.is_finished().then(|| r.change_tih()),
                 "opened_ms": t.map(|t| t.opened_ms),
                 "completed_ms": t.and_then(|t| t.completed_ms),
+                // Rigs routed to it now, with their hashrate estimate
+                // (null until a rig has enough shares).
+                "rigs": rigs_on.get(&r.id).map(|v| v.iter().map(|(rig, hs)| json!({
+                    "rig": rig,
+                    "hashrate_hs": hs,
+                })).collect::<Vec<_>>()).unwrap_or_default(),
             })
         })
         .collect();
