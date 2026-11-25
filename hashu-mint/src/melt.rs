@@ -153,7 +153,7 @@ pub fn is_stop_hash(h: &str) -> bool {
 /// wallet can't pay for a redemption the router would skip. Mirrors
 /// `hashu_proxy::upstream::normalize_upstream`, which this crate can't
 /// depend on.
-fn is_routable_pool_url(pool_url: &str) -> bool {
+pub fn is_routable_pool_url(pool_url: &str) -> bool {
     if let Some(rest) = pool_url.strip_prefix("stratum2+tcp://") {
         return is_routable_sv2(rest);
     }

@@ -190,6 +190,10 @@ pub struct Redemption {
     /// resumed. It stays owed (and in [`RedemptionLedger::active`])
     /// meanwhile.
     pub paused_by: Option<Pauser>,
+    /// Bumped each time the redeemer changes pools
+    /// ([`RedemptionLedger::change_pools`]), so the router can forget what
+    /// it learned about the old ones. Not journaled.
+    pub pools_rev: u32,
 }
 
 impl Redemption {
@@ -203,6 +207,7 @@ impl Redemption {
             supplier: None,
             stop_hash: None,
             paused_by: None,
+            pools_rev: 0,
             amount_tih,
             floor_tih: amount_tih,
             target_hashes: u128::from(amount_tih) * HASHES_PER_TIH,
@@ -262,6 +267,19 @@ impl Redemption {
             return false;
         };
         stop_hash_matches(want, secret)
+    }
+
+    /// Point it at `primary` then `fallbacks` (same cleanup as
+    /// [`Self::with_password`] and [`Self::with_fallbacks`]).
+    fn set_pools(&mut self, primary: PoolTarget, fallbacks: Vec<PoolTarget>) {
+        let next = Redemption::new(self.id, 0, primary.pool_url, primary.worker_name)
+            .with_password(primary.worker_password)
+            .with_fallbacks(fallbacks);
+        self.pool_url = next.pool_url;
+        self.worker_name = next.worker_name;
+        self.worker_password = next.worker_password;
+        self.fallbacks = next.fallbacks;
+        self.pools_rev = self.pools_rev.wrapping_add(1);
     }
 
     /// Whether delivery is paused (by anyone).
@@ -452,6 +470,16 @@ enum LedgerRecord {
     },
     /// Delivery resumed.
     Resume { id: RedemptionId },
+    /// The redeemer sent its hashrate to other pools.
+    Pools {
+        id: RedemptionId,
+        pool_url: String,
+        worker_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_password: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        fallbacks: Vec<PoolTarget>,
+    },
 }
 
 /// Store of redemptions, shared between the melt method (which opens
@@ -517,6 +545,24 @@ impl RedemptionLedger {
                 LedgerRecord::Resume { id } => {
                     if let Some(r) = ledger.lock().get_mut(&id) {
                         r.paused_by = None;
+                    }
+                }
+                LedgerRecord::Pools {
+                    id,
+                    pool_url,
+                    worker_name,
+                    worker_password,
+                    fallbacks,
+                } => {
+                    if let Some(r) = ledger.lock().get_mut(&id) {
+                        r.set_pools(
+                            PoolTarget {
+                                pool_url,
+                                worker_name,
+                                worker_password,
+                            },
+                            fallbacks,
+                        );
                     }
                 }
                 LedgerRecord::Settle { id } => {
@@ -731,6 +777,32 @@ impl RedemptionLedger {
         Ok(true)
     }
 
+    /// Send `id`'s hashrate to `primary` (then `fallbacks`) from now on.
+    /// Work already delivered stays credited; the router moves its rigs on
+    /// its next pass. Returns false if it had finished.
+    pub fn change_pools(
+        &self,
+        id: &RedemptionId,
+        primary: PoolTarget,
+        fallbacks: Vec<PoolTarget>,
+    ) -> Result<bool, LedgerError> {
+        let mut map = self.lock();
+        let redemption = map.get_mut(id).ok_or(LedgerError::Unknown(*id))?;
+        if redemption.is_finished() {
+            return Ok(false);
+        }
+        redemption.set_pools(primary, fallbacks);
+        self.record(&LedgerRecord::Pools {
+            id: *id,
+            pool_url: redemption.pool_url.clone(),
+            worker_name: redemption.worker_name.clone(),
+            worker_password: redemption.worker_password.clone(),
+            fallbacks: redemption.fallbacks.clone(),
+        });
+        tracing::info!(redemption = %id, pool_url = %redemption.pool_url, "redemption pools changed");
+        Ok(true)
+    }
+
     /// Record which pool each redemption's rigs are on (index into
     /// [`Redemption::pools`]), replacing the previous report. Redemptions
     /// missing from `serving` have no rig right now.
@@ -933,6 +1005,27 @@ mod tests {
         }
         let ledger = RedemptionLedger::persistent(&path).unwrap();
         assert!(!ledger.get(&id(1)).unwrap().is_paused());
+        // New pools survive a reopen too (compaction folds them into the
+        // open record).
+        ledger
+            .change_pools(
+                &id(1),
+                PoolTarget {
+                    pool_url: "stratum+tcp://q:2".into(),
+                    worker_name: "w2".into(),
+                    worker_password: Some("".into()),
+                },
+                vec![],
+            )
+            .unwrap();
+        drop(ledger);
+        let ledger = RedemptionLedger::persistent(&path).unwrap();
+        let r = ledger.get(&id(1)).unwrap();
+        assert_eq!(
+            (r.pool_url.as_str(), r.worker_name.as_str()),
+            ("stratum+tcp://q:2", "w2")
+        );
+        assert_eq!(r.worker_password, None);
         // A finished redemption can't be paused.
         ledger.settle(&id(1)).unwrap();
         assert_eq!(ledger.pause(&id(1), Pauser::Operator), Ok(false));

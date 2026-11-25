@@ -773,6 +773,17 @@ async fn wallet_pauses_resumes_and_stops_with_its_stop_key() {
     let v = post_json(&format!("{base}/resume"), key.clone()).await;
     assert_eq!(v["paused"], false);
 
+    // Change pools: same redemption, new pool from now on.
+    let mut body = key.clone();
+    body["pool_url"] = "stratum+tcp://other.example:3333".into();
+    body["worker_name"] = "carol.rig".into();
+    let v = post_json(&format!("{base}/pool"), body.clone()).await;
+    assert_eq!(v["pool_url"], "stratum+tcp://other.example:3333");
+    assert_eq!(v["worker_name"], "carol.rig");
+    body["pool_url"] = "http://nope".into();
+    let (code, _) = post_status(&format!("{base}/pool"), body).await;
+    assert_eq!(code, 400);
+
     // 3.5 TiH delivered, then the redeemer stops: 4 charged, 6 back.
     let part = (HASHES_PER_TIH * 7 / 2) as f64 / (1u64 << 32) as f64;
     h.ledger.credit_share(&rid, part).unwrap();

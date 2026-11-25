@@ -1489,6 +1489,10 @@ async fn stop_order(
 ///   (never below the floor), the rest returned as change on the wallet's
 ///   blanks when it next checks the melt. Same rules as the checkout's
 ///   stop ([`stop_refusal`]).
+/// - `pool` with `pool_url`, `worker_name`, optional `worker_password`
+///   and optional `fallback_pools` sends its hashrate there from now on
+///   (any time, paused or not, before the floor too: it changes nothing
+///   charged). The router switches its rigs in place.
 /// - `pause` sends its hashrate elsewhere until `resume`. Nothing is
 ///   charged or returned; it keeps its place and stays owed. The redeemer
 ///   can't resume a pause the operator set (409); while the operator has
@@ -1503,7 +1507,7 @@ async fn redeemer_action(
     let Some(rid) = parse_id(&id) else {
         return err(StatusCode::BAD_REQUEST, "bad redemption id");
     };
-    if !matches!(action.as_str(), "stop" | "pause" | "resume") {
+    if !matches!(action.as_str(), "stop" | "pause" | "resume" | "pool") {
         return err(StatusCode::NOT_FOUND, "unknown action");
     }
     let Some(r) = s.ledger.get(&rid) else {
@@ -1515,9 +1519,8 @@ async fn redeemer_action(
             "this redemption was opened without a stop key, so only the operator can stop it",
         );
     }
-    let secret = serde_json::from_slice::<Value>(&body)
-        .ok()
-        .and_then(|v| v["stop_secret"].as_str().and_then(|h| hex::decode(h).ok()));
+    let v = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+    let secret = v["stop_secret"].as_str().and_then(|h| hex::decode(h).ok());
     let Some(secret) = secret else {
         return err(StatusCode::BAD_REQUEST, "stop_secret (hex) is required");
     };
@@ -1542,6 +1545,13 @@ async fn redeemer_action(
         "pause" => {
             let _ = s.ledger.pause(&rid, Pauser::Redeemer);
         }
+        "pool" => {
+            let (primary, fallbacks) = match new_pools(&v, &r) {
+                Ok(p) => p,
+                Err(why) => return err(StatusCode::BAD_REQUEST, why),
+            };
+            let _ = s.ledger.change_pools(&rid, primary, fallbacks);
+        }
         _ => {
             if let Err(e) = s.ledger.resume(&rid, Pauser::Redeemer) {
                 return err(StatusCode::CONFLICT, e);
@@ -1552,6 +1562,59 @@ async fn redeemer_action(
         Some(v) => ([(header::CACHE_CONTROL, "no-store")], Json(v)).into_response(),
         None => err(StatusCode::NOT_FOUND, "unknown redemption"),
     }
+}
+
+/// The pools a `pool` action asks for: `pool_url`, `worker_name`,
+/// optional `worker_password`, and optional `fallback_pools` (left as they
+/// were when absent). Same checks as a melt request.
+fn new_pools(
+    v: &Value,
+    r: &hashu_core::redemption::Redemption,
+) -> Result<
+    (
+        hashu_core::redemption::PoolTarget,
+        Vec<hashu_core::redemption::PoolTarget>,
+    ),
+    String,
+> {
+    use hashu_core::redemption::{PoolTarget, MAX_FALLBACK_POOLS};
+    use hashu_mint::melt::is_routable_pool_url;
+    let primary = PoolTarget {
+        pool_url: v["pool_url"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        worker_name: v["worker_name"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        worker_password: v["worker_password"].as_str().map(str::to_string),
+    };
+    let fallbacks: Vec<PoolTarget> = match v.get("fallback_pools") {
+        None | Some(Value::Null) => r.fallbacks.clone(),
+        Some(f) => {
+            serde_json::from_value(f.clone()).map_err(|e| format!("invalid fallback_pools: {e}"))?
+        }
+    };
+    if fallbacks.len() > MAX_FALLBACK_POOLS {
+        return Err(format!("at most {MAX_FALLBACK_POOLS} fallback_pools"));
+    }
+    for (i, p) in std::iter::once(&primary).chain(&fallbacks).enumerate() {
+        let what = if i == 0 {
+            "pool_url".to_string()
+        } else {
+            format!("fallback_pools[{}].pool_url", i - 1)
+        };
+        if !is_routable_pool_url(&p.pool_url) {
+            return Err(format!("{what} must be stratum+tcp://host:port, stratum+ssl://host:port or stratum2+tcp://host[:port]/<authority key>"));
+        }
+        if p.worker_name.is_empty() {
+            return Err(format!("a worker name is required for {what}"));
+        }
+    }
+    Ok((primary, fallbacks))
 }
 
 /// Why the redeemer may not stop `r` now, if they may not. `down`: the
