@@ -773,7 +773,10 @@ async fn wallet_pauses_resumes_and_stops_with_its_stop_key() {
     let v = post_json(&format!("{base}/resume"), key.clone()).await;
     assert_eq!(v["paused"], false);
 
-    // Change pools: same redemption, new pool from now on.
+    // 1.5 TiH to the first pool, then change pools: same redemption, new
+    // pool from now on.
+    let tih = HASHES_PER_TIH as f64 / (1u64 << 32) as f64;
+    h.ledger.credit_share(&rid, 1.5 * tih).unwrap();
     let mut body = key.clone();
     body["pool_url"] = "stratum+tcp://other.example:3333".into();
     body["worker_name"] = "carol.rig".into();
@@ -784,9 +787,17 @@ async fn wallet_pauses_resumes_and_stops_with_its_stop_key() {
     let (code, _) = post_status(&format!("{base}/pool"), body).await;
     assert_eq!(code, 400);
 
-    // 3.5 TiH delivered, then the redeemer stops: 4 charged, 6 back.
-    let part = (HASHES_PER_TIH * 7 / 2) as f64 / (1u64 << 32) as f64;
-    h.ledger.credit_share(&rid, part).unwrap();
+    // 2 TiH more on the new pool (3.5 delivered), then the redeemer
+    // stops: 4 charged, 6 back.
+    h.ledger.credit_share(&rid, 2.0 * tih).unwrap();
+    let per_pool = get_json(&base).await["pool_tih"].clone();
+    assert_eq!(
+        per_pool,
+        serde_json::json!([
+            { "pool_url": "stratum+tcp://pool.example:3333", "worker_name": "bob.rig1", "tih": 2 },
+            { "pool_url": "stratum+tcp://other.example:3333", "worker_name": "carol.rig", "tih": 2 },
+        ])
+    );
     assert_eq!(
         get_json(&base).await["stop_refusal"],
         serde_json::Value::Null

@@ -1703,6 +1703,12 @@ fn redemption_json(s: &CheckoutState, rid: &RedemptionId) -> Option<Value> {
                 "worker_name": p.worker_name,
             })).collect::<Vec<_>>(),
             "serving_pool": serving,
+            // Whole TiH each pool got, adding up to the delivered total.
+            "pool_tih": r.pool_tih().iter().map(|(p, tih)| json!({
+                "pool_url": p.pool_url,
+                "worker_name": p.worker_name,
+                "tih": tih,
+            })).collect::<Vec<_>>(),
             "serving_pool_url": serving.map(|i| pools[i].pool_url.clone()),
             "amount_tih": r.amount_tih,
             "floor_tih": r.floor_tih,

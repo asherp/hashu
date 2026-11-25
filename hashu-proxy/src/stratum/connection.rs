@@ -276,6 +276,9 @@ pub async fn proxy_routed_connection(
     result
 }
 
+/// What a submit was sent for: the redemption, and which of its pools.
+type Bound = (Option<RedemptionId>, Option<usize>);
+
 /// Per-connection identity and hooks.
 struct Ctx {
     conn: ConnectionId,
@@ -289,14 +292,20 @@ struct Ctx {
 }
 
 impl Ctx {
-    /// Redemption a submit sent on a leg with `route` is for.
-    fn bound_for(&self, route: &Route) -> Option<RedemptionId> {
+    /// Redemption a submit sent on a leg with `route` is for, and which
+    /// of its pools the leg is on (`None`: not known here).
+    fn bound_for(&self, route: &Route) -> Bound {
         if self.router.is_some() {
-            return route.redemption_id();
+            return match route.redemption_pool() {
+                Some((id, pool)) => (Some(id), Some(pool)),
+                None => (None, None),
+            };
         }
-        self.credit
+        let id = self
+            .credit
             .as_ref()
-            .and_then(|c| c.binding.current(self.conn))
+            .and_then(|c| c.binding.current(self.conn));
+        (id, None)
     }
 }
 
@@ -404,7 +413,7 @@ struct Leg {
     map: Option<ExtranonceMap>,
     /// Redemption each in-flight `mining.submit` on this leg was sent
     /// for, keyed by request id.
-    submits: HashMap<i64, Option<RedemptionId>>,
+    submits: HashMap<i64, Bound>,
     /// Shares rejected in a row since the last accepted one.
     reject_streak: u32,
 }
@@ -501,11 +510,12 @@ impl Leg {
                 // tree, so every credited hash has a leaf behind it
                 // (§4.7.2).
                 self.reject_streak = 0;
-                let bound = self.submits.remove(&id).flatten();
+                let (bound, pool) = self.submits.remove(&id).unwrap_or_default();
                 if let Some(credit) = &ctx.credit {
-                    credit.credit_accepted(
+                    credit.credit_accepted_on(
                         ctx.conn,
                         bound,
+                        pool,
                         submit.difficulty_at_submit,
                         evidence,
                         &ctx.metrics,

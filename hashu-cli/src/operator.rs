@@ -916,6 +916,12 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
                 "worker_name": r.worker_name,
                 "amount_tih": r.amount_tih,
                 "filled_tih": filled,
+                // Whole TiH each pool got, adding up to the delivered total.
+                "pool_tih": r.pool_tih().iter().map(|(p, tih)| json!({
+                    "pool_url": p.pool_url,
+                    "worker_name": p.worker_name,
+                    "tih": tih,
+                })).collect::<Vec<_>>(),
                 "remaining_tih": remaining,
                 "stop_charge_tih": r.settle_preview().map(|(c, _)| c),
                 "stop_change_tih": r.settle_preview().map(|(_, m)| m),

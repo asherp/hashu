@@ -1034,6 +1034,7 @@ function render () {
     const tr = trackRate(state.track)
     const eta = sel.state === 'completed' ? 'done' : sel.state === 'settled' ? `settled: charged ${sel.spent_tih} TiH, ${sel.change_tih} TiH returned as change` : sel.paused_by ? `${pausedLabel(sel.paused_by).toLowerCase()}: no hashrate until resumed` : tr > 0 ? `ETA ${fmtDur((sel.remaining_tih * HASHES_PER_TIH) / tr)}` : 'waiting for shares'
     $('red-meta').innerHTML = `<span class="mono">${esc(shortId(sel.id))}</span> → <span class="mono">${esc(hostOf(sel.pool_url))}</span> as <b>${esc(sel.worker_name)}</b> · <b>${fmtTih(sel.filled_tih)}</b> of ${sel.amount_tih} TiH (${(sel.progress * 100).toFixed(1)}%) · ${fmtRate(tr)} · ${eta}`
+      + ((sel.pool_tih || []).length > 1 ? `<br><span class="sub">By pool: ${sel.pool_tih.map((p) => `<span class="mono">${esc(hostOf(p.pool_url))}</span> as ${esc(p.worker_name)} ${p.tih} TiH`).join(' · ')}</span>` : '')
     $('red-bar').style.width = `${(sel.progress * 100).toFixed(1)}%`
     $('red-state').textContent = stateLabel(sel)
     $('red-state').className = `pill ${sel.state === 'completed' ? 'on' : sel.paused_by ? 'off' : 'rail'}`

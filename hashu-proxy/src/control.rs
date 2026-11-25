@@ -339,6 +339,12 @@ fn redemption_json(r: &Redemption) -> Value {
         "worker_name": r.worker_name,
         "amount_tih": r.amount_tih,
         "filled_tih": r.accumulated_hashes as f64 / HASHES_PER_TIH as f64,
+        // Whole TiH each pool got, adding up to the delivered total.
+        "pool_tih": r.pool_tih().iter().map(|(p, tih)| json!({
+            "pool_url": p.pool_url,
+            "worker_name": p.worker_name,
+            "tih": tih,
+        })).collect::<Vec<_>>(),
         // u128 does not fit a JSON number; send exact values as strings.
         "accumulated_hashes": r.accumulated_hashes.to_string(),
         "target_hashes": r.target_hashes.to_string(),

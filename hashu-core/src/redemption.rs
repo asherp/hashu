@@ -194,6 +194,25 @@ pub struct Redemption {
     /// ([`RedemptionLedger::change_pools`]), so the router can forget what
     /// it learned about the old ones. Not journaled.
     pub pools_rev: u32,
+    /// Hashes credited per pool (by URL and worker), in the order each
+    /// pool first got work. Sums to [`Self::accumulated_hashes`].
+    pub pool_hashes: Vec<PoolHashes>,
+}
+
+/// Work one pool received for a redemption.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PoolHashes {
+    pub pool_url: String,
+    pub worker_name: String,
+    pub hashes: u128,
+}
+
+impl PoolHashes {
+    /// Whole `TiH` received, rounded down. See [`Redemption::pool_tih`]
+    /// for figures that add up to the redemption's total.
+    pub fn tih_floor(&self) -> u64 {
+        u64::try_from(self.hashes / HASHES_PER_TIH).unwrap_or(u64::MAX)
+    }
 }
 
 impl Redemption {
@@ -208,6 +227,7 @@ impl Redemption {
             stop_hash: None,
             paused_by: None,
             pools_rev: 0,
+            pool_hashes: Vec::new(),
             amount_tih,
             floor_tih: amount_tih,
             target_hashes: u128::from(amount_tih) * HASHES_PER_TIH,
@@ -308,16 +328,76 @@ impl Redemption {
     /// Credit `hashes` directly. Same rules as [`Self::credit_share`];
     /// settled redemptions ignore credits too.
     pub fn credit_hashes(&mut self, hashes: u128) -> RedemptionState {
+        self.credit_hashes_on(hashes, 0)
+    }
+
+    /// Credit `hashes` mined for pool `pool` (index into [`Self::pools`];
+    /// out of range counts as the primary).
+    pub fn credit_hashes_on(&mut self, hashes: u128, pool: usize) -> RedemptionState {
         if self.state.is_finished() {
             return self.state;
         }
+        let target = self.pools().into_iter().nth(pool).unwrap_or_else(|| PoolTarget {
+            pool_url: self.pool_url.clone(),
+            worker_name: self.worker_name.clone(),
+            worker_password: None,
+        });
+        self.add_pool_hashes(&target.pool_url, &target.worker_name, hashes);
         self.accumulated_hashes = self.accumulated_hashes.saturating_add(hashes);
+        self.refresh_state();
+        self.state
+    }
+
+    /// Add to one pool's tally only.
+    fn add_pool_hashes(&mut self, pool_url: &str, worker_name: &str, hashes: u128) {
+        if hashes == 0 {
+            return;
+        }
+        match self
+            .pool_hashes
+            .iter_mut()
+            .find(|p| p.pool_url == pool_url && p.worker_name == worker_name)
+        {
+            Some(p) => p.hashes = p.hashes.saturating_add(hashes),
+            None => self.pool_hashes.push(PoolHashes {
+                pool_url: pool_url.to_string(),
+                worker_name: worker_name.to_string(),
+                hashes,
+            }),
+        }
+    }
+
+    fn refresh_state(&mut self) {
+        if self.state.is_finished() {
+            return;
+        }
         self.state = if self.accumulated_hashes >= self.target_hashes {
             RedemptionState::Completed
         } else {
             RedemptionState::Active
         };
-        self.state
+    }
+
+    /// Whole `TiH` per pool, in [`Self::pool_hashes`] order, adding up to
+    /// exactly [`Self::delivered_tih`]: each pool's share rounded down,
+    /// then the units rounding leaves over go to the largest remainders.
+    pub fn pool_tih(&self) -> Vec<(&PoolHashes, u64)> {
+        let mut out: Vec<(&PoolHashes, u64)> =
+            self.pool_hashes.iter().map(|p| (p, p.tih_floor())).collect();
+        let sum: u64 = out.iter().map(|(_, t)| *t).sum();
+        let mut left = self.delivered_tih().saturating_sub(sum);
+        let mut by_rem: Vec<usize> = (0..out.len()).collect();
+        by_rem.sort_by_key(|&i| std::cmp::Reverse(out[i].0.hashes % HASHES_PER_TIH));
+        for i in by_rem {
+            if left == 0 {
+                break;
+            }
+            if out[i].0.hashes % HASHES_PER_TIH > 0 {
+                out[i].1 += 1;
+                left -= 1;
+            }
+        }
+        out
     }
 
     pub fn is_complete(&self) -> bool {
@@ -459,6 +539,19 @@ enum LedgerRecord {
         id: RedemptionId,
         /// Decimal string: u128 does not fit a JSON number portably.
         hashes: String,
+        /// Which of the redemption's pools (index into
+        /// [`Redemption::pools`] as they stood then) got the share.
+        /// Absent in journals from before per-pool totals: the primary.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        pool: usize,
+    },
+    /// Hashes one pool got, written by compaction in place of the credits
+    /// it sums. Counts toward the total like a credit.
+    PoolCredit {
+        id: RedemptionId,
+        pool_url: String,
+        worker_name: String,
+        hashes: String,
     },
     /// Frozen at the hashes credited before this record.
     Settle { id: RedemptionId },
@@ -480,6 +573,10 @@ enum LedgerRecord {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         fallbacks: Vec<PoolTarget>,
     },
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// Store of redemptions, shared between the melt method (which opens
@@ -570,12 +667,30 @@ impl RedemptionLedger {
                         r.settle();
                     }
                 }
-                LedgerRecord::Credit { id, hashes } => {
+                LedgerRecord::Credit { id, hashes, pool } => {
                     let Ok(hashes) = hashes.parse::<u128>() else {
                         continue;
                     };
                     if let Some(r) = ledger.lock().get_mut(&id) {
-                        r.credit_hashes(hashes);
+                        r.credit_hashes_on(hashes, pool);
+                    }
+                }
+                LedgerRecord::PoolCredit {
+                    id,
+                    pool_url,
+                    worker_name,
+                    hashes,
+                } => {
+                    let Ok(hashes) = hashes.parse::<u128>() else {
+                        continue;
+                    };
+                    // Compaction writes these before any settle record,
+                    // and their sum is what was credited, so add them
+                    // whole even past the target.
+                    if let Some(r) = ledger.lock().get_mut(&id) {
+                        r.add_pool_hashes(&pool_url, &worker_name, hashes);
+                        r.accumulated_hashes = r.accumulated_hashes.saturating_add(hashes);
+                        r.refresh_state();
                     }
                 }
             }
@@ -595,15 +710,17 @@ impl RedemptionLedger {
                     supplier: r.supplier.clone(),
                     stop_hash: r.stop_hash.clone(),
                 };
-                let credit = (r.accumulated_hashes > 0).then(|| LedgerRecord::Credit {
+                let credits = r.pool_hashes.iter().map(|p| LedgerRecord::PoolCredit {
                     id: r.id,
-                    hashes: r.accumulated_hashes.to_string(),
+                    pool_url: p.pool_url.clone(),
+                    worker_name: p.worker_name.clone(),
+                    hashes: p.hashes.to_string(),
                 });
                 let settle = (r.state == RedemptionState::Settled)
                     .then_some(LedgerRecord::Settle { id: r.id });
                 let pause = r.paused_by.map(|by| LedgerRecord::Pause { id: r.id, by });
                 std::iter::once(open)
-                    .chain(credit)
+                    .chain(credits)
                     .chain(settle)
                     .chain(pause)
             })
@@ -694,15 +811,29 @@ impl RedemptionLedger {
         id: &RedemptionId,
         difficulty: f64,
     ) -> Result<CreditOutcome, LedgerError> {
+        self.credit_share_on(id, difficulty, None)
+    }
+
+    /// Like [`Self::credit_share_outcome`], for a share sent to pool
+    /// `pool` (index into [`Redemption::pools`]). `None`: the pool the
+    /// router last reported serving it, else the primary.
+    pub fn credit_share_on(
+        &self,
+        id: &RedemptionId,
+        difficulty: f64,
+        pool: Option<usize>,
+    ) -> Result<CreditOutcome, LedgerError> {
+        let pool = pool.or_else(|| self.serving_pool(id)).unwrap_or(0);
         let mut map = self.lock();
         let redemption = map.get_mut(id).ok_or(LedgerError::Unknown(*id))?;
         let was_finished = redemption.is_finished();
         let hashes = hashes_for_difficulty(difficulty);
-        let state = redemption.credit_hashes(hashes);
+        let state = redemption.credit_hashes_on(hashes, pool);
         if !was_finished && hashes > 0 {
             self.record(&LedgerRecord::Credit {
                 id: *id,
                 hashes: hashes.to_string(),
+                pool,
             });
         }
         Ok(CreditOutcome {
@@ -1031,6 +1162,87 @@ mod tests {
         assert_eq!(ledger.pause(&id(1), Pauser::Operator), Ok(false));
         // No stop key: no secret matches.
         assert!(!Redemption::new(id(2), 1, "p".into(), "w".into()).stop_key_matches(&secret));
+    }
+
+    #[test]
+    fn hashes_are_totalled_per_pool_across_changes_and_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("redemptions.jsonl");
+        let tih = HASHES_PER_TIH as f64 / HASHES_PER_DIFF_ONE as f64;
+        let backup = PoolTarget {
+            pool_url: "stratum+tcp://b:2".into(),
+            worker_name: "wb".into(),
+            worker_password: None,
+        };
+        {
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            ledger
+                .open(
+                    Redemption::new(id(1), 100, "stratum+tcp://a:1".into(), "wa".into())
+                        .with_fallbacks(vec![backup.clone()]),
+                )
+                .unwrap();
+            // 3 TiH on the primary, 2.5 on its fallback.
+            ledger.credit_share_on(&id(1), 3.0 * tih, Some(0)).unwrap();
+            ledger.credit_share_on(&id(1), 2.5 * tih, Some(1)).unwrap();
+            // The redeemer moves to pool c; 4 more TiH there.
+            ledger
+                .change_pools(
+                    &id(1),
+                    PoolTarget {
+                        pool_url: "stratum+tcp://c:3".into(),
+                        worker_name: "wc".into(),
+                        worker_password: None,
+                    },
+                    vec![backup.clone()],
+                )
+                .unwrap();
+            ledger.credit_share_on(&id(1), 4.0 * tih, Some(0)).unwrap();
+            // Unknown pool index: the router's serving pool (none
+            // reported here), else the primary.
+            ledger.credit_share_on(&id(1), 0.5 * tih, None).unwrap();
+        }
+        let want = |r: &Redemption| {
+            r.pool_tih()
+                .iter()
+                .map(|(p, t)| (p.pool_url.clone(), p.worker_name.clone(), *t))
+                .collect::<Vec<_>>()
+        };
+        let expect = vec![
+            ("stratum+tcp://a:1".to_string(), "wa".to_string(), 3),
+            ("stratum+tcp://b:2".to_string(), "wb".to_string(), 3),
+            ("stratum+tcp://c:3".to_string(), "wc".to_string(), 4),
+        ];
+        // Replayed from the full journal, then again from the compacted one.
+        for _ in 0..2 {
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            let r = ledger.get(&id(1)).unwrap();
+            assert_eq!(r.delivered_tih(), 10);
+            assert_eq!(want(&r), expect);
+            let sum: u128 = r.pool_hashes.iter().map(|p| p.hashes).sum();
+            assert_eq!(sum, r.accumulated_hashes);
+        }
+    }
+
+    #[test]
+    fn journal_from_before_pool_totals_credits_the_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("redemptions.jsonl");
+        let rid = id(1).to_string();
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"op\":\"open\",\"id\":\"{rid}\",\"amount_tih\":4,\"pool_url\":\"p\",\"worker_name\":\"w\"}}\n\
+                 {{\"op\":\"credit\",\"id\":\"{rid}\",\"hashes\":\"{}\"}}\n",
+                2 * HASHES_PER_TIH
+            ),
+        )
+        .unwrap();
+        let ledger = RedemptionLedger::persistent(&path).unwrap();
+        let r = ledger.get(&id(1)).unwrap();
+        assert_eq!(r.pool_tih().len(), 1);
+        assert_eq!(r.pool_tih()[0].1, 2);
+        assert_eq!(r.pool_tih()[0].0.pool_url, "p");
     }
 
     #[test]
