@@ -105,6 +105,27 @@ impl RedemptionState {
     }
 }
 
+/// Who paused a redemption.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pauser {
+    /// The holder of its stop key (the wallet that opened it).
+    #[default]
+    Redeemer,
+    /// The mint operator.
+    Operator,
+}
+
+impl Pauser {
+    /// Lowercase name for status APIs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Redeemer => "redeemer",
+            Self::Operator => "operator",
+        }
+    }
+}
+
 /// Most fallback pools a redemption may list after its primary pool.
 pub const MAX_FALLBACK_POOLS: usize = 3;
 
@@ -165,9 +186,10 @@ pub struct Redemption {
     /// redemption (see [`Self::stop_key_matches`]). `None`: only the
     /// operator can.
     pub stop_hash: Option<String>,
-    /// The redeemer paused delivery: routing skips it until resumed. It
-    /// stays owed (and in [`RedemptionLedger::active`]) meanwhile.
-    pub paused: bool,
+    /// Who paused delivery, if it is paused: routing skips it until
+    /// resumed. It stays owed (and in [`RedemptionLedger::active`])
+    /// meanwhile.
+    pub paused_by: Option<Pauser>,
 }
 
 impl Redemption {
@@ -180,7 +202,7 @@ impl Redemption {
             fallbacks: Vec::new(),
             supplier: None,
             stop_hash: None,
-            paused: false,
+            paused_by: None,
             amount_tih,
             floor_tih: amount_tih,
             target_hashes: u128::from(amount_tih) * HASHES_PER_TIH,
@@ -240,6 +262,11 @@ impl Redemption {
             return false;
         };
         stop_hash_matches(want, secret)
+    }
+
+    /// Whether delivery is paused (by anyone).
+    pub fn is_paused(&self) -> bool {
+        self.paused_by.is_some()
     }
 
     /// Set the non-refundable part (clamped to `amount_tih`).
@@ -369,6 +396,8 @@ pub enum LedgerError {
     Duplicate(RedemptionId),
     #[error("unknown redemption {0}")]
     Unknown(RedemptionId),
+    #[error("the mint operator paused redemption {0}; only the operator can resume it")]
+    PausedByOperator(RedemptionId),
 }
 
 /// Result of [`RedemptionLedger::settle`].
@@ -415,9 +444,13 @@ enum LedgerRecord {
     },
     /// Frozen at the hashes credited before this record.
     Settle { id: RedemptionId },
-    /// The redeemer paused delivery.
-    Pause { id: RedemptionId },
-    /// The redeemer resumed delivery.
+    /// Delivery paused, by the redeemer unless `by` says otherwise.
+    Pause {
+        id: RedemptionId,
+        #[serde(default)]
+        by: Pauser,
+    },
+    /// Delivery resumed.
     Resume { id: RedemptionId },
 }
 
@@ -476,10 +509,14 @@ impl RedemptionLedger {
                             .with_floor(floor_tih.unwrap_or(amount_tih)),
                     );
                 }
-                LedgerRecord::Pause { id } | LedgerRecord::Resume { id } => {
-                    let paused = matches!(record, LedgerRecord::Pause { .. });
+                LedgerRecord::Pause { id, by } => {
                     if let Some(r) = ledger.lock().get_mut(&id) {
-                        r.paused = paused;
+                        r.paused_by = Some(by);
+                    }
+                }
+                LedgerRecord::Resume { id } => {
+                    if let Some(r) = ledger.lock().get_mut(&id) {
+                        r.paused_by = None;
                     }
                 }
                 LedgerRecord::Settle { id } => {
@@ -518,7 +555,7 @@ impl RedemptionLedger {
                 });
                 let settle = (r.state == RedemptionState::Settled)
                     .then_some(LedgerRecord::Settle { id: r.id });
-                let pause = r.paused.then_some(LedgerRecord::Pause { id: r.id });
+                let pause = r.paused_by.map(|by| LedgerRecord::Pause { id: r.id, by });
                 std::iter::once(open)
                     .chain(credit)
                     .chain(settle)
@@ -654,23 +691,43 @@ impl RedemptionLedger {
         })
     }
 
-    /// Pause (`true`) or resume (`false`) delivery to `id`. A paused
-    /// redemption keeps its place and what it is owed, but the router
-    /// sends it no hashrate until it is resumed. Returns whether this call
-    /// changed anything; finished redemptions are left as they are.
-    pub fn set_paused(&self, id: &RedemptionId, paused: bool) -> Result<bool, LedgerError> {
+    /// Pause delivery to `id`, as `by`. A paused redemption keeps its
+    /// place and what it is owed, but the router sends it no hashrate
+    /// until it is resumed. An operator's pause takes over a redeemer's;
+    /// a redeemer's pause leaves an operator's in place. Returns whether
+    /// this call changed anything; finished redemptions are left as they
+    /// are.
+    pub fn pause(&self, id: &RedemptionId, by: Pauser) -> Result<bool, LedgerError> {
         let mut map = self.lock();
         let redemption = map.get_mut(id).ok_or(LedgerError::Unknown(*id))?;
-        if redemption.is_finished() || redemption.paused == paused {
+        if redemption.is_finished()
+            || redemption.paused_by == Some(by)
+            || (by == Pauser::Redeemer && redemption.paused_by == Some(Pauser::Operator))
+        {
             return Ok(false);
         }
-        redemption.paused = paused;
-        self.record(&if paused {
-            LedgerRecord::Pause { id: *id }
-        } else {
-            LedgerRecord::Resume { id: *id }
-        });
-        tracing::info!(redemption = %id, paused, "redemption pause changed");
+        redemption.paused_by = Some(by);
+        self.record(&LedgerRecord::Pause { id: *id, by });
+        tracing::info!(redemption = %id, by = by.as_str(), "redemption paused");
+        Ok(true)
+    }
+
+    /// Resume delivery to `id`, as `by`. The operator may resume any pause;
+    /// the redeemer only their own ([`LedgerError::PausedByOperator`]
+    /// otherwise). Returns whether this call changed anything.
+    pub fn resume(&self, id: &RedemptionId, by: Pauser) -> Result<bool, LedgerError> {
+        let mut map = self.lock();
+        let redemption = map.get_mut(id).ok_or(LedgerError::Unknown(*id))?;
+        match redemption.paused_by {
+            None => return Ok(false),
+            Some(Pauser::Operator) if by == Pauser::Redeemer => {
+                return Err(LedgerError::PausedByOperator(*id))
+            }
+            Some(_) => {}
+        }
+        redemption.paused_by = None;
+        self.record(&LedgerRecord::Resume { id: *id });
+        tracing::info!(redemption = %id, by = by.as_str(), "redemption resumed");
         Ok(true)
     }
 
@@ -847,24 +904,38 @@ mod tests {
                         .with_stop_hash(Some(hash.clone())),
                 )
                 .unwrap();
-            assert_eq!(ledger.set_paused(&id(1), true), Ok(true));
-            assert_eq!(ledger.set_paused(&id(1), true), Ok(false));
+            assert_eq!(ledger.pause(&id(1), Pauser::Redeemer), Ok(true));
+            assert_eq!(ledger.pause(&id(1), Pauser::Redeemer), Ok(false));
             // Paused redemptions are still owed.
             assert_eq!(ledger.active().len(), 1);
         }
         {
             let ledger = RedemptionLedger::persistent(&path).unwrap();
             let r = ledger.get(&id(1)).unwrap();
-            assert!(r.paused);
+            assert_eq!(r.paused_by, Some(Pauser::Redeemer));
             assert!(r.stop_key_matches(&secret));
             assert!(!r.stop_key_matches(&[8u8; 32]));
-            assert_eq!(ledger.set_paused(&id(1), false), Ok(true));
+            // The operator's pause takes over; the redeemer can't lift it
+            // and their own pause doesn't replace it.
+            assert_eq!(ledger.pause(&id(1), Pauser::Operator), Ok(true));
+            assert_eq!(ledger.pause(&id(1), Pauser::Redeemer), Ok(false));
+            assert_eq!(
+                ledger.resume(&id(1), Pauser::Redeemer),
+                Err(LedgerError::PausedByOperator(id(1)))
+            );
+        }
+        {
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            let r = ledger.get(&id(1)).unwrap();
+            assert_eq!(r.paused_by, Some(Pauser::Operator));
+            assert_eq!(ledger.resume(&id(1), Pauser::Operator), Ok(true));
+            assert_eq!(ledger.resume(&id(1), Pauser::Operator), Ok(false));
         }
         let ledger = RedemptionLedger::persistent(&path).unwrap();
-        assert!(!ledger.get(&id(1)).unwrap().paused);
+        assert!(!ledger.get(&id(1)).unwrap().is_paused());
         // A finished redemption can't be paused.
         ledger.settle(&id(1)).unwrap();
-        assert_eq!(ledger.set_paused(&id(1), true), Ok(false));
+        assert_eq!(ledger.pause(&id(1), Pauser::Operator), Ok(false));
         // No stop key: no secret matches.
         assert!(!Redemption::new(id(2), 1, "p".into(), "w".into()).stop_key_matches(&secret));
     }

@@ -923,6 +923,8 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
                     (r.accumulated_hashes as f64 / r.target_hashes as f64).min(1.0)
                 },
                 "state": r.state.as_str(),
+                // "redeemer" or "operator" while paused, else null.
+                "paused_by": r.paused_by.map(|p| p.as_str()),
                 "spent_tih": r.is_finished().then(|| r.spent_tih()),
                 "change_tih": r.is_finished().then(|| r.change_tih()),
                 "opened_ms": t.map(|t| t.opened_ms),

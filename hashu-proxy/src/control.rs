@@ -142,6 +142,12 @@ pub fn route(method: &str, path: &str, body: &[u8], state: &ControlState) -> (u1
             json!({ "error": "opening redemptions over HTTP is disabled (start the proxy with --control-allow-open)" }),
         ),
         ("POST", p) if p.starts_with("/redemptions/") && p.ends_with("/settle") => settle(p, state),
+        ("POST", p) if p.starts_with("/redemptions/") && p.ends_with("/pause") => {
+            pause(p, "/pause", true, state)
+        }
+        ("POST", p) if p.starts_with("/redemptions/") && p.ends_with("/resume") => {
+            pause(p, "/resume", false, state)
+        }
         ("GET", p) if p.starts_with("/redemptions/") => audit_route(p, state),
         _ => (404, json!({ "error": "not found" })),
     }
@@ -238,6 +244,41 @@ fn settle(path: &str, state: &ControlState) -> (u16, Value) {
     }
 }
 
+/// `POST /redemptions/{id}/pause` and `/resume`: the operator holds or
+/// releases the redemption's hashrate. The operator may resume a pause
+/// the redeemer set too; the redeemer can't lift the operator's.
+fn pause(path: &str, suffix: &str, pause: bool, state: &ControlState) -> (u16, Value) {
+    use hashu_core::redemption::Pauser;
+    let id_hex = path
+        .trim_start_matches("/redemptions/")
+        .trim_end_matches(suffix);
+    let Some(id) = parse_id(id_hex) else {
+        return (
+            400,
+            json!({ "error": "redemption id must be 32 hex characters" }),
+        );
+    };
+    let res = if pause {
+        state.ledger.pause(&id, Pauser::Operator)
+    } else {
+        state.ledger.resume(&id, Pauser::Operator)
+    };
+    match res {
+        Ok(changed) => {
+            let r = state.ledger.get(&id);
+            (
+                200,
+                json!({
+                    "id": id.to_string(),
+                    "changed": changed,
+                    "paused_by": r.and_then(|r| r.paused_by).map(|p| p.as_str()),
+                }),
+            )
+        }
+        Err(e) => (404, json!({ "error": e.to_string() })),
+    }
+}
+
 fn parse_id(s: &str) -> Option<RedemptionId> {
     let bytes: [u8; 16] = hex::decode(s).ok()?.try_into().ok()?;
     Some(RedemptionId::from_bytes(bytes))
@@ -303,6 +344,8 @@ fn redemption_json(r: &Redemption) -> Value {
         "target_hashes": r.target_hashes.to_string(),
         "progress": progress,
         "state": state,
+        // "redeemer" or "operator" while paused, else null.
+        "paused_by": r.paused_by.map(|p| p.as_str()),
         "supplier": r.supplier,
     })
 }
@@ -412,6 +455,22 @@ mod tests {
         assert_eq!(r["worker_name"], "bob.1");
         assert!((r["progress"].as_f64().unwrap() - 0.25).abs() < 1e-6);
         assert_eq!(r["target_hashes"], (2u128 << 40).to_string());
+    }
+
+    #[test]
+    fn operator_pauses_and_resumes_a_redemption() {
+        use hashu_core::redemption::Pauser;
+        let s = state(false);
+        let id = RedemptionId::from_bytes([3; 16]);
+        s.ledger
+            .open(Redemption::new(id, 4, "pool:3333".into(), "w".into()))
+            .unwrap();
+        s.ledger.pause(&id, Pauser::Redeemer).unwrap();
+        let (code, v) = route("POST", &format!("/redemptions/{id}/pause"), b"", &s);
+        assert_eq!((code, v["paused_by"].as_str()), (200, Some("operator")));
+        let (code, v) = route("POST", &format!("/redemptions/{id}/resume"), b"", &s);
+        assert_eq!((code, v["paused_by"].clone()), (200, Value::Null));
+        assert_eq!(route("POST", "/redemptions/zz/pause", b"", &s).0, 400);
     }
 
     #[test]

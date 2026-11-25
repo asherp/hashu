@@ -1251,7 +1251,7 @@ impl Router {
         self.ledger
             .active()
             .into_iter()
-            .filter(|r| !r.paused)
+            .filter(|r| !r.is_paused())
             .filter(|r| {
                 let ok = r
                     .pools()
@@ -1838,7 +1838,9 @@ mod tests {
         assert_eq!(router.current(a.conn), Some(rid(1)));
 
         // Paused: the rig goes back to the default pool.
-        ledger.set_paused(&rid(1), true).unwrap();
+        ledger
+            .pause(&rid(1), hashu_core::redemption::Pauser::Operator)
+            .unwrap();
         assert_eq!(router.reconcile(), 1);
         let back = switch_target(&a);
         assert_eq!(back.redemption_id(), None);
@@ -1849,7 +1851,9 @@ mod tests {
         assert_eq!(b.route.redemption_id(), None);
 
         // Resumed: the rigs come back.
-        ledger.set_paused(&rid(1), false).unwrap();
+        ledger
+            .resume(&rid(1), hashu_core::redemption::Pauser::Operator)
+            .unwrap();
         assert!(router.reconcile() >= 1);
         assert_eq!(switch_target(&a).redemption_id(), Some(rid(1)));
     }

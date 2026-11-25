@@ -764,11 +764,12 @@ async fn wallet_pauses_resumes_and_stops_with_its_stop_key() {
     assert_eq!(code, 403);
     let (code, _) = post_status(&format!("{base}/melt"), key.clone()).await;
     assert_eq!(code, 404);
-    assert!(!h.ledger.get(&rid).unwrap().paused);
+    assert!(!h.ledger.get(&rid).unwrap().is_paused());
 
     let v = post_json(&format!("{base}/pause"), key.clone()).await;
     assert_eq!(v["paused"], true);
-    assert!(h.ledger.get(&rid).unwrap().paused);
+    assert_eq!(v["paused_by"], "redeemer");
+    assert!(h.ledger.get(&rid).unwrap().is_paused());
     let v = post_json(&format!("{base}/resume"), key.clone()).await;
     assert_eq!(v["paused"], false);
 
@@ -804,4 +805,33 @@ async fn wallet_redemption_without_stop_key_cannot_be_paused() {
     )
     .await;
     assert_eq!(code, 403);
+}
+
+/// While the operator has a redemption paused, the redeemer can't resume
+/// it, but may stop it before the floor (nothing is being delivered, as in
+/// downtime) and gets everything back.
+#[tokio::test(flavor = "multi_thread")]
+async fn operator_pause_blocks_resume_and_waives_the_floor() {
+    use hashu_core::redemption::Pauser;
+    use sha2::{Digest, Sha256};
+    let h = harness(4).await;
+    let checkout = serve_checkout(&h, Arc::new(OrderBook::new())).await;
+    let secret = [5u8; 32];
+    let (quote_id, rid) = redeem_all_with(&h, 4, Some(hex::encode(Sha256::digest(secret)))).await;
+    let base = format!("{checkout}/checkout/api/redemption/{rid}");
+    let key = serde_json::json!({ "stop_secret": hex::encode(secret) });
+    // Floor is 1 TiH and nothing is delivered: no stop yet.
+    assert!(get_json(&base).await["stop_refusal"].is_string());
+    h.ledger.pause(&rid, Pauser::Operator).unwrap();
+    let v = get_json(&base).await;
+    assert_eq!(v["paused_by"], "operator");
+    assert_eq!(v["stop_refusal"], serde_json::Value::Null);
+    let (code, _) = post_status(&format!("{base}/resume"), key.clone()).await;
+    assert_eq!(code, 409);
+    // Pausing again as the redeemer leaves the operator's pause in place.
+    let v = post_json(&format!("{base}/pause"), key.clone()).await;
+    assert_eq!(v["paused_by"], "operator");
+    let v = post_json(&format!("{base}/stop"), key).await;
+    assert_eq!(v["state"], "settled");
+    assert_eq!(paid_state(&h, &quote_id).await, MeltQuoteState::Paid);
 }

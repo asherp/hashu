@@ -53,7 +53,7 @@ use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, State as ProofSpent
 use cdk::wallet::{KeysetFilter, Wallet};
 use cdk::Amount;
 use hashu_core::availability::RigsDown;
-use hashu_core::redemption::{RedemptionId, RedemptionLedger, HASHES_PER_TIH};
+use hashu_core::redemption::{Pauser, RedemptionId, RedemptionLedger, HASHES_PER_TIH};
 use hashu_mint::capacity::{LiveView, MIN_PURCHASE_TIH};
 use hashu_mint::melt::{redemption_id_for, METHOD as HASHRATE};
 use hashu_mint::tether::{METHOD as USDT, USDC_METHOD as USDC};
@@ -324,6 +324,13 @@ impl CheckoutState {
     /// Since when (Unix ms) the rigs filling `r` have been down.
     fn rigs_down_since(&self, r: &hashu_core::redemption::Redemption) -> Option<u64> {
         self.rigs.as_ref()?.down_since(r.supplier.as_deref())
+    }
+
+    /// Whether nothing is being delivered to `r` through no fault of the
+    /// redeemer: its rigs are down, or the operator paused it. Then the
+    /// redeemer may stop before the floor is delivered.
+    fn stop_waived(&self, r: &hashu_core::redemption::Redemption) -> bool {
+        self.rigs_down_since(r).is_some() || r.paused_by == Some(Pauser::Operator)
     }
 
     /// The public Stratum address shown in `/checkout/api/info`.
@@ -1452,7 +1459,7 @@ async fn stop_order(
     // already rounds up to the full amount. The operator's settle can still
     // clear such a redemption.
     if let Some(r) = s.ledger.get(&o.redemption_id) {
-        let down = s.rigs_down_since(&r).is_some();
+        let down = s.stop_waived(&r);
         if let Some(why) = stop_refusal(&r, down) {
             return err(StatusCode::CONFLICT, why);
         }
@@ -1483,7 +1490,9 @@ async fn stop_order(
 ///   blanks when it next checks the melt. Same rules as the checkout's
 ///   stop ([`stop_refusal`]).
 /// - `pause` sends its hashrate elsewhere until `resume`. Nothing is
-///   charged or returned; it keeps its place and stays owed.
+///   charged or returned; it keeps its place and stays owed. The redeemer
+///   can't resume a pause the operator set (409); while the operator has
+///   it paused the redeemer may stop it before the floor, like downtime.
 ///
 /// Answers like `GET /checkout/api/redemption/{id}`.
 async fn redeemer_action(
@@ -1520,7 +1529,7 @@ async fn redeemer_action(
     }
     match action.as_str() {
         "stop" => {
-            let down = s.rigs_down_since(&r).is_some();
+            let down = s.stop_waived(&r);
             if let Some(why) = stop_refusal(&r, down) {
                 return err(StatusCode::CONFLICT, why);
             }
@@ -1530,10 +1539,12 @@ async fn redeemer_action(
                 }
             }
         }
-        a => {
-            let paused = a == "pause";
-            if let Ok(true) = s.ledger.set_paused(&rid, paused) {
-                tracing::info!(redemption = %rid, paused, "redeemer paused or resumed the redemption");
+        "pause" => {
+            let _ = s.ledger.pause(&rid, Pauser::Redeemer);
+        }
+        _ => {
+            if let Err(e) = s.ledger.resume(&rid, Pauser::Redeemer) {
+                return err(StatusCode::CONFLICT, e);
             }
         }
     }
@@ -1639,10 +1650,12 @@ fn redemption_json(s: &CheckoutState, rid: &RedemptionId) -> Option<Value> {
             // The wallet that opened it holds a stop key (melt request
             // `stop_hash`): it may stop, pause and resume it.
             "can_stop": r.stop_hash.is_some(),
-            "paused": r.paused,
+            "paused": r.is_paused(),
+            // "redeemer" or "operator" while paused, else null.
+            "paused_by": r.paused_by.map(|p| p.as_str()),
             // Why a stop now would be refused; null when it would go
             // through (or the redemption has ended).
-            "stop_refusal": (!r.is_finished()).then(|| stop_refusal(&r, s.rigs_down_since(&r).is_some())).flatten(),
+            "stop_refusal": (!r.is_finished()).then(|| stop_refusal(&r, s.stop_waived(&r))).flatten(),
             "progress": if r.target_hashes == 0 { 1.0 } else { (r.accumulated_hashes as f64 / r.target_hashes as f64).min(1.0) },
             "state": r.state.as_str(),
             "spent_tih": r.is_finished().then(|| r.spent_tih()),
