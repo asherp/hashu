@@ -1111,6 +1111,7 @@ impl Router {
             .map(|r| QueuedOrder {
                 id: r.id,
                 remaining: r.target_hashes.saturating_sub(r.accumulated_hashes) as f64,
+                target: r.target_hashes as f64,
                 waited: inner
                     .unserved_since
                     .get(&r.id)
@@ -1454,10 +1455,14 @@ fn rescue(
 }
 
 /// When a mint's open orders should start getting hashrate: an estimate
-/// from the rigs' measured rates and the dedicated-assignment rules (a rig
-/// stays on its order until it is filled; an order waiting
-/// [`STARVE_AFTER`] takes a spare rig from an order that has two or more;
-/// otherwise waiting orders get rigs oldest first as they free up).
+/// from the rigs' measured rates and the dedicated-assignment rules (see
+/// the module docs): a rig stays on its order until it is filled, except
+/// that a first-half order with no rig takes a rig as soon as that rig's
+/// order is past half (even its only rig), and an order waiting
+/// [`STARVE_AFTER`] takes a spare rig from an order in the same half that
+/// has two or more. Waiting first-half orders go before waiting orders
+/// past half, oldest first within each. It ignores the slowdown of an
+/// order that gives up a rig.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RigQueue {
     /// Rigs that fill this mint's orders.
@@ -1485,6 +1490,8 @@ struct QueuedOrder {
     id: RedemptionId,
     /// Hashes still owed.
     remaining: f64,
+    /// Hashes redeemed in all.
+    target: f64,
     /// How long it has had no rig (zero while it has one).
     waited: Duration,
     /// Has a pool the proxy can dial and that is not marked down.
@@ -1510,14 +1517,19 @@ fn estimate_starts(
     let avg = (!rated.is_empty()).then(|| rated.iter().sum::<f64>() / rated.len() as f64);
     let rate_of = |h: Option<f64>| h.filter(|h| *h > 0.0).or(avg);
 
+    #[derive(Clone)]
     struct Slot {
-        /// Seconds from now until it is free.
+        /// Seconds from now until its order is filled.
         free_at: f64,
+        /// Seconds from now until its order is past half (0 if it is).
+        half_at: f64,
         rate: f64,
-        /// Shares its order with another rig, so a starving order may
-        /// take it before that order is filled.
+        /// Shares its order with another rig, so a starving order in the
+        /// same half may take it before that order is filled.
         spare: bool,
     }
+    let half_in =
+        |remaining: f64, target: f64, rate: f64| ((remaining - target / 2.0) / rate).max(0.0);
     let mut slots: Vec<Slot> = Vec::new();
     for o in orders {
         let on: Vec<f64> = rigs
@@ -1538,9 +1550,11 @@ fn estimate_starts(
             continue;
         }
         let done = o.remaining / total;
+        let half_at = half_in(o.remaining, o.target, total);
         for (i, rate) in on.into_iter().enumerate() {
             slots.push(Slot {
                 free_at: done,
+                half_at,
                 rate,
                 spare: i > 0,
             });
@@ -1552,45 +1566,72 @@ fn estimate_starts(
             if let Some(rate) = rate_of(r.1) {
                 slots.push(Slot {
                     free_at: 0.0,
+                    half_at: 0.0,
                     rate,
                     spare: false,
                 });
             }
         }
     }
-    // Waiting orders take the first rig to free up, oldest first; a
-    // spare rig comes free once the order has starved.
+    // A waiting order takes the slot it can have first.
     let starve = STARVE_AFTER.as_secs_f64();
-    let mut take = |remaining: f64, waited: f64| -> Option<f64> {
+    let take = |slots: &mut Vec<Slot>, remaining: f64, target: f64, waited: f64| -> Option<f64> {
+        let first_half = remaining * 2.0 > target;
         let rescue_at = (starve - waited).max(0.0);
         let at = |s: &Slot| {
-            if s.spare {
-                s.free_at.min(rescue_at)
-            } else {
-                s.free_at
+            let mut t = s.free_at;
+            if first_half {
+                // Its order past half: a first-half order takes the rig.
+                t = t.min(s.half_at);
+                // A spare from an order also in its first half.
+                if s.spare && rescue_at < s.half_at {
+                    t = t.min(rescue_at);
+                }
+            } else if s.spare {
+                // A spare once both are past half and it has starved.
+                t = t.min(rescue_at.max(s.half_at));
             }
+            t
         };
         let i = (0..slots.len()).min_by(|a, b| at(&slots[*a]).total_cmp(&at(&slots[*b])))?;
         let start = at(&slots[i]);
         let s = &mut slots[i];
         s.free_at = start + remaining / s.rate;
+        s.half_at = start + half_in(remaining, target, s.rate);
         s.spare = false;
         Some(start)
     };
-    for o in orders {
-        if out.orders[&o.id].rigs > 0 {
-            continue;
+    let waiting = |first: bool| {
+        orders
+            .iter()
+            .filter(move |o| (o.remaining * 2.0 > o.target) == first)
+            .filter(|o| out.orders[&o.id].rigs == 0)
+            .map(|o| o.id)
+            .collect::<Vec<_>>()
+    };
+    let (first, second) = (waiting(true), waiting(false));
+    let mut starts: Vec<(RedemptionId, Option<f64>)> = Vec::new();
+    let mut run = |slots: &mut Vec<Slot>, ids: &[RedemptionId]| {
+        for id in ids {
+            let o = orders.iter().find(|o| o.id == *id).expect("listed");
+            let start = if o.routable {
+                take(slots, o.remaining, o.target, o.waited.as_secs_f64())
+            } else {
+                None
+            };
+            starts.push((*id, start));
         }
-        let start = if o.routable {
-            take(o.remaining, o.waited.as_secs_f64())
-        } else {
-            None
-        };
-        if let Some(e) = out.orders.get_mut(&o.id) {
+    };
+    run(&mut slots, &first);
+    // A new order is in its first half and newest: after the waiting
+    // first-half orders, ahead of those past half.
+    out.new_order_start_s = take(&mut slots.clone(), 1.0, 1.0, 0.0);
+    run(&mut slots, &second);
+    for (id, start) in starts {
+        if let Some(e) = out.orders.get_mut(&id) {
             e.start_s = start;
         }
     }
-    out.new_order_start_s = take(0.0, 0.0);
     out
 }
 
@@ -2563,7 +2604,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lone_rig_queues_orders_in_melt_order() {
+    fn a_lone_rig_moves_to_a_new_order_when_its_own_is_half_done() {
         let ledger = Arc::new(RedemptionLedger::new());
         let router = Router::new("default:3333", ledger.clone());
         let t0 = Instant::now();
@@ -2576,11 +2617,25 @@ mod tests {
         assert_eq!(q.rigs, 1);
         assert_eq!(q.orders[&rid(1)].rigs, 1);
         assert_eq!(q.orders[&rid(1)].start_s, Some(0.0));
-        // 10 THh at 10 TH/s: about an hour, then order 2 (half an hour).
+        // 10 THh at 10 TH/s: half done in about half an hour, then the
+        // rig moves to order 2 (5 THh, half done 15 min later).
         let s2 = q.orders[&rid(2)].start_s.unwrap();
-        assert!((s2 - 3600.0).abs() < 120.0, "{s2}");
+        assert!((s2 - 1800.0).abs() < 120.0, "{s2}");
         let new = q.new_order_start_s.unwrap();
-        assert!((new - 5400.0).abs() < 180.0, "{new}");
+        assert!((new - 2700.0).abs() < 180.0, "{new}");
+    }
+
+    #[test]
+    fn a_rig_on_an_order_past_half_starts_a_new_order_now() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let t0 = Instant::now();
+        open_thh(&ledger, 1, 10);
+        let a = router.assign(ConnectionId::next());
+        warm(&router, a.conn, 10.0, t0);
+        fill(&ledger, 1, 0.6);
+        let q = router.rig_queue_at(None, t0);
+        assert_eq!(q.new_order_start_s, Some(0.0));
     }
 
     #[test]
