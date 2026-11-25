@@ -1246,6 +1246,7 @@ pub(crate) async fn operator_test_mint(
     s: &CheckoutState,
     mint: &cdk::mint::Mint,
     amount_tih: u64,
+    memo: &str,
 ) -> Result<(String, String), (StatusCode, String)> {
     let bad_gw = |e: String| (StatusCode::BAD_GATEWAY, e);
     let Some(method) = s.methods.first().cloned() else {
@@ -1308,7 +1309,7 @@ pub(crate) async fn operator_test_mint(
     let token = Token::new(
         mint_url,
         proofs,
-        Some("Hashu test TiH (operator)".into()),
+        Some(memo.into()),
         CurrencyUnit::Custom("tih".into()),
     );
     tracing::warn!(
@@ -1766,7 +1767,7 @@ mod tests {
         }
 
         async fn token(s: &CheckoutState, tih: u64) -> String {
-            operator_test_mint(s, &s.mint, tih).await.unwrap().0
+            operator_test_mint(s, &s.mint, tih, "test").await.unwrap().0
         }
 
         fn body(amount_tih: Option<u64>) -> Bytes {

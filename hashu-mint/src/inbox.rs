@@ -21,8 +21,9 @@ use nostr::nips::nip59::UnwrappedGift;
 use nostr::{Event, EventBuilder, Keys, Kind, PublicKey, ToBech32};
 use serde::{Deserialize, Serialize};
 
-/// Longest message kept, in characters.
-pub const MAX_TEXT: usize = 4000;
+/// Longest message kept, in characters: room for a Cashu token of a couple
+/// dozen proofs (the operator sends hashes this way).
+pub const MAX_TEXT: usize = 16000;
 /// Messages kept per sender.
 pub const MAX_PER_PEER: usize = 200;
 /// Messages kept in all.

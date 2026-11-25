@@ -20,6 +20,12 @@
 //!   payment and return the token, to rehearse a redemption on a live mint.
 //!   It counts as issued ecash (an obligation) like any other TiH.
 //! - `POST /api/test-redeem` `{ token, pool_url, worker_name }`: redeem it.
+//! - `POST /api/inbox/send-hashes` `{ "peer", "amount_tih", "note"? }`: mint
+//!   hashes the same way and send them to `peer` (npub or hex) in a NIP-17
+//!   direct message from the mint: the note, then the `cashuB` token on its
+//!   own line, which any Cashu wallet can claim (hashu.me shows a Receive
+//!   button on it). If the message cannot be sent the token comes back in
+//!   the error so it is not lost.
 //! - `GET /api/capacity`: rented hashrate, TiH it can still deliver, TiH
 //!   owed and TiH available to sell (see `hashu_mint::capacity`).
 //! - `GET /api/operator` also carries `heat`: the heat the hashrate turned
@@ -73,6 +79,7 @@ use hashu_proxy::meter::HashrateMeter;
 use serde_json::{json, Value};
 
 use crate::checkout::{self, CheckoutState};
+use hashu_proxy::reliability::OPERATOR_MINT;
 
 const PAGE: &str = include_str!("operator.html");
 /// The page with the checkout's amount picker inlined.
@@ -340,6 +347,7 @@ pub fn router(state: Arc<OperatorState>) -> axum::Router {
     if let Some(rel) = &state.reliability {
         // Behind the operator login below, like every other route here.
         r = r.merge(crate::inbox::router(rel.clone(), "", None));
+        r = r.route("/api/inbox/send-hashes", post(send_hashes));
     }
     let auth = state.auth.clone();
     r.route("/", get(page))
@@ -507,7 +515,9 @@ async fn test_mint(State(s): State<Arc<OperatorState>>, body: Bytes) -> Response
     else {
         return bad(format!("amount_tih must be 1 to {MAX_TEST_MINT_TIH}"));
     };
-    match checkout::operator_test_mint(&s.checkout, &s.mint, amount).await {
+    match checkout::operator_test_mint(&s.checkout, &s.mint, amount, "Hashu test TiH (operator)")
+        .await
+    {
         Ok((token, quote)) => {
             let token_qr = crate::checkout::token_qr_frames(&token);
             Json(json!({ "token": token, "token_qr": token_qr, "amount_tih": amount, "quote": quote }))
@@ -515,6 +525,93 @@ async fn test_mint(State(s): State<Arc<OperatorState>>, body: Bytes) -> Response
         }
         Err((code, msg)) => (code, Json(json!({ "error": msg }))).into_response(),
     }
+}
+
+/// `POST /api/inbox/send-hashes` `{ peer, amount_tih, note? }`: mint hashes
+/// like the test mint and send them to `peer` as a token in a direct
+/// message. The token is in the answer either way.
+async fn send_hashes(State(s): State<Arc<OperatorState>>, body: Bytes) -> Response {
+    let Some(rel) = s.reliability.clone() else {
+        return bad("direct messages are off".into());
+    };
+    let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let peer = v["peer"].as_str().unwrap_or_default().trim().to_string();
+    if hashu_mint::inbox::parse_peer(&peer).is_err() {
+        return bad("peer must be an npub or a hex public key".into());
+    }
+    let Some(amount) = v["amount_tih"]
+        .as_u64()
+        .filter(|a| (1..=MAX_TEST_MINT_TIH).contains(a))
+    else {
+        return bad(format!("amount_tih must be 1 to {MAX_TEST_MINT_TIH}"));
+    };
+    let note = v["note"].as_str().unwrap_or_default().trim();
+    if note.chars().count() > 1000 {
+        return bad("note longer than 1000 characters".into());
+    }
+    // Relays are checked before minting, so nothing is minted to go nowhere.
+    if rel.configured_relays().is_empty() {
+        return bad("no Nostr relays configured (HASHU_NOSTR_RELAYS)".into());
+    }
+    let (token, quote) =
+        match checkout::operator_test_mint(&s.checkout, &s.mint, amount, "Hashes").await {
+            Ok(x) => x,
+            Err((code, msg)) => return (code, Json(json!({ "error": msg }))).into_response(),
+        };
+    let text = hashes_message(note, amount, &s.checkout.public_url, &token);
+    match rel.send_reply(OPERATOR_MINT, &peer, &text).await {
+        Ok(m) => Json(json!({ "message": m, "token": token, "amount_tih": amount, "quote": quote }))
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({
+                "error": format!("minted, but the message was not sent: {e}. The token is below: send it another way or redeem it."),
+                "token": token,
+                "amount_tih": amount,
+            })),
+        )
+            .into_response(),
+    }
+}
+
+/// The text of a hashes DM: the note (or a default), then the token on its
+/// own line so wallets that look for `cashuB…` words find it.
+fn hashes_message(note: &str, amount_tih: u64, mint_url: &str, token: &str) -> String {
+    let note = if note.is_empty() {
+        format!(
+            "{} of hashes from {mint_url}. Claim them in any Cashu wallet by pasting the token below.",
+            fmt_hashes(amount_tih)
+        )
+    } else {
+        note.to_string()
+    };
+    format!("{note}\n\n{token}")
+}
+
+/// `4 EiH (4,194,304 TiH)`, `1.5 PiH (1,536 TiH)`, `12 TiH`.
+fn fmt_hashes(tih: u64) -> String {
+    let (unit, f) = if tih >= 1 << 20 {
+        ("EiH", (1u64 << 20) as f64)
+    } else if tih >= 1 << 10 {
+        ("PiH", 1024.0)
+    } else {
+        return format!("{tih} TiH");
+    };
+    let v = format!("{:.2}", tih as f64 / f);
+    let v = v.trim_end_matches('0').trim_end_matches('.');
+    format!("{v} {unit} ({} TiH)", fmt_thousands(tih))
+}
+
+fn fmt_thousands(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// `POST /api/test-redeem` `{ token, pool_url, worker_name }`: same as the
@@ -1057,6 +1154,20 @@ mod tests {
         fn price(&self, tih: u64) -> Result<u64, PricingError> {
             Ok(self.0 * tih)
         }
+    }
+
+    #[test]
+    fn hashes_dm_puts_the_token_on_its_own_line() {
+        assert_eq!(fmt_hashes(12), "12 TiH");
+        assert_eq!(fmt_hashes(1536), "1.5 PiH (1,536 TiH)");
+        assert_eq!(fmt_hashes(1 << 22), "4 EiH (4,194,304 TiH)");
+        let t = hashes_message("", 1024, "https://mint.example", "cashuBxyz");
+        assert!(t.starts_with("1 PiH (1,024 TiH) of hashes from https://mint.example."));
+        assert!(t.ends_with("\n\ncashuBxyz"));
+        assert_eq!(
+            hashes_message("Thanks!", 1, "u", "cashuBq"),
+            "Thanks!\n\ncashuBq"
+        );
     }
 
     #[test]
