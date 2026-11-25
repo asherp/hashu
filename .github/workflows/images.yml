@@ -13,7 +13,11 @@
 # (nothing is pushed), as a check that the images still build.
 #
 # A merge in asherp/hashu.me doesn't trigger this: run the workflow by hand
-# (Actions > images > Run workflow) to ship a new wallet build.
+# (Actions > images > Run workflow) to ship a new wallet build. Only the
+# caddy image is rebuilt then: hashu, hashu-mdk, hashu-relay and
+# hashu-phoenixd are rebuilt only when their own sources change (see
+# `only_if_changed`), so `compose pull` leaves those containers running.
+# Tick "Rebuild every image" on a manual run to rebuild them all anyway.
 
 name: images
 
@@ -34,6 +38,11 @@ on:
       - docs/redeem/**
       - .github/workflows/images.yml
   workflow_dispatch:
+    inputs:
+      rebuild_all:
+        description: Rebuild every image, even ones whose sources are unchanged
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -53,12 +62,20 @@ jobs:
           - name: hashu
             context: .
             file: Dockerfile
+            # Every rebuild is a new image, and a new image makes
+            # `compose pull` restart the daemon. Rebuild it only when
+            # something the build copies in changes: the Rust workspace
+            # and deploy/hashu, not the site, slides, docs or wallet.
+            only_if_changed: >-
+              Dockerfile .dockerignore Cargo.toml Cargo.lock rust-toolchain.toml
+              hashu-core hashu-mint hashu-proxy hashu-cli hashu-relay deploy/hashu
           - name: hashu-caddy
             context: .
             file: deploy/caddy/Dockerfile
           - name: hashu-mdk
             context: .
             file: deploy/mdk/Dockerfile
+            only_if_changed: deploy/mdk mdk
           - name: hashu-relay
             context: .
             file: hashu-relay/Dockerfile
@@ -93,20 +110,32 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Images with `only_if_changed`: tag each build with the git tree
-      # hash of its directory. When that tag is already published the
-      # image is unchanged, so skip the build and point this commit's
-      # sha- tag at the existing image (`latest` already is).
+      # Images with `only_if_changed` (a space-separated list of paths):
+      # tag each build with the git tree hash of its sources (one path:
+      # that path's hash; several: a hash of their hashes). When that tag
+      # is already published the image is unchanged, so skip the build and
+      # point this commit's sha- tag at the existing image (`latest`
+      # already is). A manual run with rebuild_all still builds a fresh
+      # image and moves the tree- tag to it.
       - name: Check for an unchanged image
         id: tree
         if: matrix.only_if_changed
         env:
           IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}
-          DIR: ${{ matrix.only_if_changed }}
+          PATHS: ${{ matrix.only_if_changed }}
+          REBUILD_ALL: ${{ inputs.rebuild_all && 'true' || 'false' }}
         run: |
-          tree=$(git rev-parse "HEAD:$DIR")
+          set -euo pipefail
+          read -ra paths <<< "$PATHS"
+          if [ "${#paths[@]}" -eq 1 ]; then
+            tree=$(git rev-parse "HEAD:${paths[0]}")
+          else
+            tree=$(for p in "${paths[@]}"; do echo "$p $(git rev-parse "HEAD:$p")"; done | sha1sum | cut -d' ' -f1)
+          fi
           echo "tag=tree-$tree" >> "$GITHUB_OUTPUT"
-          if docker buildx imagetools inspect "$IMAGE:tree-$tree" >/dev/null 2>&1; then
+          if [ "$REBUILD_ALL" = true ]; then
+            echo "rebuild_all is set; rebuilding $IMAGE"
+          elif docker buildx imagetools inspect "$IMAGE:tree-$tree" >/dev/null 2>&1; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "$IMAGE:tree-$tree is already published; not rebuilding"
           fi
