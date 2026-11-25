@@ -271,6 +271,9 @@ pub struct CheckoutState {
     /// Whether the mints' rigs are down: then a redeemer may stop before
     /// the minimum is delivered (see `hashu_core::availability`).
     pub rigs: Option<Arc<RigsDown>>,
+    /// The proxy router, once built: when waiting orders should get a
+    /// rig (see [`hashu_proxy::router::RigQueue`]).
+    pub router: std::sync::OnceLock<Arc<hashu_proxy::router::Router>>,
     checkouts: Mutex<HashMap<String, Arc<Mutex<Checkout>>>>,
 }
 
@@ -306,6 +309,7 @@ impl CheckoutState {
             app_url: None,
             stratum: None,
             rigs: None,
+            router: std::sync::OnceLock::new(),
             checkouts: Mutex::new(HashMap::new()),
         }
     }
@@ -562,6 +566,7 @@ const ETA_WINDOW: Duration = Duration::from_secs(300);
 /// tools) it falls back to all accepted work over [`ETA_WINDOW`].
 fn delivery_json(s: &CheckoutState, live: &LiveView) -> Value {
     let queue: Vec<_> = s.ledger.active();
+    let rig_queue = s.router.get().map(|r| r.rig_queue(None));
     let queue_tih: f64 = queue
         .iter()
         .map(|r| r.target_hashes.saturating_sub(r.accumulated_hashes) as f64)
@@ -584,6 +589,12 @@ fn delivery_json(s: &CheckoutState, live: &LiveView) -> Value {
         "window_s": window.as_secs(),
         "queue_tih": queue_tih,
         "open_redemptions": queue.len(),
+        // Rigs filling this mint's orders now; null without a router.
+        "rigs": rig_queue.as_ref().map(|q| q.rigs),
+        // Seconds until a redemption opened now gets its first rig: 0 when
+        // one is free, more when every rig is busy with earlier orders,
+        // null when there is no estimate (no rigs, or no router).
+        "start_in_s": rig_queue.and_then(|q| q.new_order_start_s),
     })
 }
 
@@ -1704,6 +1715,17 @@ fn redemption_json(s: &CheckoutState, rid: &RedemptionId) -> Option<Value> {
     // Which pool is getting the hashrate now: 0 = `pool_url`, then the
     // fallbacks in order; null while no rig is on it.
     let serving = s.ledger.serving_pool(rid).filter(|i| *i < pools.len());
+    // Rigs on it now and, while it has none, when one should take it.
+    let start = (!r.is_finished() && !r.is_paused())
+        .then(|| s.router.get())
+        .flatten()
+        .map(|router| {
+            router
+                .rig_queue(r.supplier.as_deref())
+                .orders
+                .remove(rid)
+                .unwrap_or_default()
+        });
     Some(json!({
             "id": id,
             "pool_url": r.pool_url,
@@ -1733,6 +1755,12 @@ fn redemption_json(s: &CheckoutState, rid: &RedemptionId) -> Option<Value> {
             "paused": r.is_paused(),
             // "redeemer" or "operator" while paused, else null.
             "paused_by": r.paused_by.map(|p| p.as_str()),
+            // Rigs filling it now (null once finished, while paused, or
+            // without a router), and while 0 the seconds until one should
+            // take it (null when there is no estimate).
+            "rigs": start.as_ref().map(|o| o.rigs),
+            "waiting_for_rig": start.as_ref().is_some_and(|o| o.rigs == 0),
+            "start_in_s": start.as_ref().and_then(|o| (o.rigs == 0).then_some(o.start_s).flatten()),
             // Why a stop now would be refused; null when it would go
             // through (or the redemption has ended).
             "stop_refusal": (!r.is_finished()).then(|| stop_refusal(&r, s.stop_waived(&r))).flatten(),
