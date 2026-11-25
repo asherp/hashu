@@ -211,7 +211,12 @@ pub struct LiveView {
     pub available: bool,
     /// Counted in capacity: a horizon is set.
     pub on: bool,
+    /// The seller's horizon: how far ahead they sell (with epochs on, the
+    /// default when none is set). Later epochs it reaches sell separately.
     pub horizon_hours: Option<f64>,
+    /// Hours the live batch covers: the horizon, or with epochs on the
+    /// part of it inside the current epoch.
+    pub batch_hours: Option<f64>,
     /// Measured TH/s of the rigs that fill this mint's orders.
     pub measured_ths: f64,
     /// Of that, TH/s already declared by running rentals.
@@ -481,6 +486,16 @@ impl CapacityBook {
         let sold = g.sold_tih.unwrap_or(0.0);
         let sizing = g.live_sizing();
         let mut live = live_view(measured, rented_ths, sizing.map(|(h, _)| h));
+        // Report the horizon as set, not as cut to the epoch's end: the
+        // dashboard fills its horizon box from this, and saving that box
+        // back would shrink the horizon and stop later epochs' sales.
+        live.batch_hours = live.horizon_hours;
+        if live.horizon_hours.is_some() && g.epoch.is_some() {
+            live.horizon_hours = Some(
+                g.p.live_horizon_hours
+                    .unwrap_or(EPOCH_DEFAULT_HORIZON_HOURS),
+            );
+        }
         let rentals_tih: f64 = rentals.iter().map(|r| r.tih_left).sum();
         let headroom_tih = if live.on {
             let (h, half_life) = sizing.unwrap_or((0.0, 0.0));
@@ -548,6 +563,7 @@ fn live_view(measured_ths: Option<f64>, rented_ths: f64, horizon: Option<f64>) -
         available: measured_ths.is_some(),
         on,
         horizon_hours: horizon,
+        batch_hours: horizon,
         measured_ths: measured,
         rented_ths: rented_ths.min(measured),
         extra_ths: extra,
@@ -886,5 +902,23 @@ mod epoch_tests {
         b.refresh_live(3 * 3_600_000);
         let s = b.snapshot(3 * 3_600_000);
         assert!((s.live.stock.batch_tih - tih_from_ths_hours(1.0, 336.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_horizon_reads_back_as_set_past_the_epochs_end() {
+        let b = CapacityBook::new();
+        b.set_live_source(Arc::new(|| 1.0));
+        b.set_owed(0.0, 0);
+        b.set_sold(0.0);
+        b.set_epoch(10, 32.0);
+        b.set_live_horizon(Some(48.0)).unwrap();
+        b.refresh_live(0);
+        let s = b.snapshot(0);
+        // The setting reads back as 48 h, so saving it again keeps it...
+        assert_eq!(s.live.horizon_hours, Some(48.0));
+        // ...while the live batch covers only this epoch's 32 h.
+        assert_eq!(s.live.batch_hours, Some(32.0));
+        let want = tih_from_ths_hours(1.0, 32.0);
+        assert!((s.live.stock.batch_tih - want).abs() < 1e-6);
     }
 }
