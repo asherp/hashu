@@ -107,6 +107,9 @@ button.act.primary { background: var(--brand); border-color: var(--brand); color
 button.act.danger { border-color: var(--bad); color: var(--bad); }
 input[type=text], input[type=password] { width: 120px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; }
 button.x { border: 0; background: transparent; color: var(--ink-3); cursor: pointer; font: inherit; padding: 0 4px; }
+.sub-h { font-size: 12px; font-weight: 600; color: var(--ink-2); margin: 14px 0 6px; }
+input[type=datetime-local] { padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; }
+#tl-label { width: 170px; }
 input[type=number] { width: 96px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; }
 .bar { height: 8px; background: var(--grid); border-radius: 4px; overflow: hidden; }
 .bar > div { height: 100%; background: var(--brand); transition: width 0.5s; }
@@ -319,16 +322,23 @@ td.num, th.num { text-align: right; }
       </div>
       <div id="cap-bar"></div>
       <dl class="kv" id="cap"></dl>
-      <div id="manual-wrap" hidden>
-        <p class="note">Manual rentals entered earlier. They still count until they end; remove them here.</p>
-        <div class="scroll">
+      <div id="manual-wrap">
+        <h3 class="sub-h">Time-limited hashrate</h3>
+        <div class="scroll" id="manual-table" hidden>
           <table>
-            <thead><tr><th>Manual rental</th><th>TH/s</th><th>Left</th><th>TiH</th><th></th></tr></thead>
+            <thead><tr><th>Hashrate</th><th>TH/s</th><th>Left</th><th>TiH</th><th></th></tr></thead>
             <tbody id="manual-rows"></tbody>
           </table>
         </div>
+        <div class="row" style="margin: 8px 0">
+          <input type="text" id="tl-label" placeholder="label, e.g. borrowed S21" aria-label="Label">
+          <input type="number" id="tl-ths" step="any" min="0" placeholder="TH/s" aria-label="TH/s">
+          <input type="datetime-local" id="tl-end" aria-label="Ends at (your local time)">
+          <button class="act primary" id="btn-tl-add">Add</button>
+        </div>
+        <p class="note">Hashrate on this proxy that stops at a known time (a rental from anywhere, a borrowed machine). It comes out of the live average now, and sells only until it ends: TH/s × hours left, within this epoch's part of the horizon. Add it while it is hashing; the end time is in your browser's time zone.</p>
       </div>
-      <p class="note" id="cap-note">Capacity = MRR rentals (TH/s × hours left) + what is left of the live stock. Allocated + available = total. Mint quotes beyond what is available are refused, so with neither nothing is sold (checkout shows Sold out). Off sells uncapped.</p>
+      <p class="note" id="cap-note">Capacity = MRR rentals and time-limited hashrate (TH/s × hours left) + what is left of the live stock. Allocated + available = total. Mint quotes beyond what is available are refused, so with neither nothing is sold (checkout shows Sold out). Off sells uncapped.</p>
     </section>
 
     <section class="card" aria-labelledby="h-live">
@@ -956,15 +966,15 @@ function render () {
     for (const b of $('cap-limit').querySelectorAll('button')) b.classList.toggle('on', b.dataset.v === mode)
     const rentalRow = (r, del) => `
       <tr style="cursor:default${r.hours_left <= 0 ? ';opacity:0.5' : ''}">
-        <td>${esc(r.label || r.id || 'rental')}${r.source === 'mrr' ? `<br><span class="sub">MRR ${esc(r.id)}</span>` : ''}</td>
+        <td>${esc(r.label || r.id || 'rental')}${r.source === 'mrr' ? `<br><span class="sub">MRR ${esc(r.id)}</span>` : `<br><span class="sub">ends ${fmtEnd(r.end_ms)}</span>`}</td>
         <td>${fmtTih(r.ths, 2)}</td>
         <td>${r.hours_left > 0 ? fmtDur(r.hours_left * 3600) : 'ended'}</td>
         <td>${fmtTih(r.tih_left)}</td>
         ${del != null ? `<td><button class="x" data-del="${del}" title="Remove">✕</button></td>` : ''}
       </tr>`
-    // Manual rentals: no longer added from the GUI, shown only to clear.
+    // Time-limited hashrate the operator lists (manual rentals).
     const manual = cap.rentals.filter((r) => r.source === 'manual')
-    $('manual-wrap').hidden = !manual.length
+    $('manual-table').hidden = !manual.length
     $('manual-rows').innerHTML = manual.map((r, i) => rentalRow(r, i)).join('')
 
     // Live hashrate: the mint's own rigs × horizon.
@@ -972,7 +982,7 @@ function render () {
       $('live-pill').textContent = !lv.available ? 'no proxy' : lv.on ? 'counting' : 'off'
       $('live').innerHTML = kv([
         ["This mint's rigs, measured now", `${fmtTih(lv.measured_ths, 2)} TH/s`],
-        ['Already declared by rentals', `${fmtTih(lv.rented_ths, 2)} TH/s`],
+        ['Declared as rented or time-limited', `${fmtTih(lv.rented_ths, 2)} TH/s`],
         ['Counted', `${fmtTih(lv.extra_ths, 2)} TH/s`],
         ['Horizon', lv.horizon_hours != null ? `${fmtTih(lv.horizon_hours, 1)} h` : 'not set'],
         ...(lv.on && lv.stock ? [
@@ -1266,6 +1276,16 @@ async function setCapacity (body) {
 }
 const manualRentals = () => ((state.op && state.op.capacity && state.op.capacity.rentals) || [])
   .filter((r) => r.source === 'manual').map((r) => ({ id: r.id, label: r.label, ths: r.ths, end_ms: r.end_ms }))
+const fmtEnd = (ms) => new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+$('btn-tl-add').addEventListener('click', () => {
+  const ths = Number($('tl-ths').value)
+  const end = new Date($('tl-end').value).getTime()
+  if (!(ths > 0)) return alertMsg('Enter the TH/s that stops at the end time.')
+  if (!(end > Date.now())) return alertMsg('Pick an end time in the future.')
+  const label = $('tl-label').value.trim()
+  setCapacity({ rentals: [...manualRentals(), { label, ths, end_ms: end }] })
+  $('tl-label').value = ''; $('tl-ths').value = ''; $('tl-end').value = ''
+})
 $('manual-rows').addEventListener('click', (ev) => {
   const b = ev.target.closest('button[data-del]'); if (!b) return
   const i = Number(b.dataset.del)
