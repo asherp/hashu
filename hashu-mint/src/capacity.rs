@@ -101,6 +101,26 @@ impl Rental {
     pub fn tih_left(&self, now_ms: u64) -> f64 {
         tih_from_ths_hours(self.ths.max(0.0), self.hours_left(now_ms))
     }
+
+    /// TiH this rental can still deliver within the next `window` hours
+    /// (all of it with `None`).
+    pub fn tih_within(&self, now_ms: u64, window: Option<f64>) -> f64 {
+        let h = self.hours_left(now_ms);
+        let h = window.map_or(h, |w| h.min(w.max(0.0)));
+        tih_from_ths_hours(self.ths.max(0.0), h)
+    }
+
+    fn running(&self, now_ms: u64) -> bool {
+        self.end_ms > now_ms
+    }
+}
+
+/// TH/s of the rentals still running at `now_ms`.
+fn running_ths<'a>(rentals: impl Iterator<Item = &'a Rental>, now_ms: u64) -> f64 {
+    rentals
+        .filter(|r| r.running(now_ms))
+        .map(|r| r.ths.max(0.0))
+        .sum()
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -161,6 +181,24 @@ impl Inner {
                 .live_horizon_hours
                 .map(|h| (h, crate::stock::half_life_hours(h))),
         }
+    }
+
+    /// Hours ahead a rental's remaining hashrate may be sold. With epochs
+    /// on, live issuance sells only the current epoch's part of the
+    /// horizon, so a rental counts only that far: later epochs size their
+    /// own share of it. Without epochs a rental sells all it has left.
+    fn rental_window(&self) -> Option<f64> {
+        self.epoch.and_then(|_| self.live_sizing().map(|(h, _)| h))
+    }
+
+    fn rentals(&self) -> impl Iterator<Item = &Rental> {
+        self.p.manual.iter().chain(self.p.mrr.iter())
+    }
+
+    /// TiH the rentals can deliver within [`Self::rental_window`].
+    fn rentals_tih(&self, now_ms: u64) -> f64 {
+        let w = self.rental_window();
+        self.rentals().map(|r| r.tih_within(now_ms, w)).sum()
     }
 }
 
@@ -234,6 +272,8 @@ pub struct RentalView {
     #[serde(flatten)]
     pub rental: Rental,
     pub hours_left: f64,
+    /// TiH it can still deliver within the sales window (with epochs on,
+    /// the current epoch's part of the horizon; otherwise until it ends).
     pub tih_left: f64,
 }
 
@@ -287,10 +327,41 @@ impl CapacityBook {
         self.save(&g.p);
     }
 
-    /// Replace the operator's rentals.
+    /// Replace the operator's time-limited hashrate (rentals).
     pub fn set_manual(&self, rentals: Vec<Rental>) {
+        self.set_manual_at(rentals, now_ms())
+    }
+
+    /// [`Self::set_manual`] at `now_ms`.
+    ///
+    /// The operator lists hashrate that is (or is about to be) on the
+    /// proxy and stops at a known time. The live average was built from
+    /// everything measured, the listed rigs included, so the change in
+    /// listed TH/s comes out of it at once and the stock starts a new batch
+    /// sized from what is left: otherwise the average would take a
+    /// half-life (up to a week with epochs) to forget the rented rigs, and
+    /// the stock would keep selling them past their end.
+    pub fn set_manual_at(&self, rentals: Vec<Rental>, now_ms: u64) {
         let mut g = self.inner.lock().unwrap();
+        let before = running_ths(g.p.manual.iter(), now_ms);
+        let after = running_ths(rentals.iter(), now_ms);
         g.p.manual = rentals;
+        let delta = after - before;
+        if delta != 0.0 {
+            if let Some(avg) = g.p.live_stock.ewma.ths {
+                g.p.live_stock.ewma.ths = Some((avg - delta).max(0.0));
+                if let (Some((h, _)), Some(sold)) = (g.live_sizing(), g.sold_tih) {
+                    let excess = self.owed_beyond_rentals(&g, now_ms);
+                    g.p.live_stock.resize(h, excess, sold, now_ms);
+                    tracing::info!(
+                        delta_ths = delta,
+                        batch_tih = g.p.live_stock.batch_tih,
+                        "time-limited hashrate changed; live stock resized"
+                    );
+                }
+            }
+        }
+        g.saved_ms = now_ms;
         self.save(&g.p);
     }
 
@@ -369,13 +440,7 @@ impl CapacityBook {
 
     /// Owed TiH the running rentals cannot cover.
     fn owed_beyond_rentals(&self, g: &Inner, now_ms: u64) -> f64 {
-        let rentals: f64 =
-            g.p.manual
-                .iter()
-                .chain(g.p.mrr.iter())
-                .map(|r| r.tih_left(now_ms))
-                .sum();
-        (g.owed_tih - rentals).max(0.0)
+        (g.owed_tih - g.rentals_tih(now_ms)).max(0.0)
     }
 
     /// Sample the live rigs into the hashrate average and restock the live
@@ -389,13 +454,7 @@ impl CapacityBook {
         else {
             return;
         };
-        let rented: f64 =
-            g.p.manual
-                .iter()
-                .chain(g.p.mrr.iter())
-                .filter(|r| r.end_ms > now_ms)
-                .map(|r| r.ths.max(0.0))
-                .sum();
+        let rented = running_ths(g.rentals(), now_ms);
         let extra = (if measured.is_finite() { measured } else { 0.0 } - rented).max(0.0);
         let excess = self.owed_beyond_rentals(&g, now_ms);
         // A new epoch starts a new batch sized for it.
@@ -468,6 +527,7 @@ impl CapacityBook {
         let g = self.inner.lock().unwrap();
         // Auto means on: no rented hashrate, nothing to sell.
         let limit = g.p.limit.unwrap_or(true);
+        let window = g.rental_window();
         let rentals: Vec<RentalView> =
             g.p.manual
                 .iter()
@@ -477,11 +537,16 @@ impl CapacityBook {
                     source,
                     rental: r.clone(),
                     hours_left: r.hours_left(now_ms),
-                    tih_left: r.tih_left(now_ms),
+                    tih_left: r.tih_within(now_ms, window),
                 })
                 .collect();
         let running = rentals.iter().filter(|r| r.rental.end_ms > now_ms);
-        let rented_ths: f64 = running.clone().map(|r| r.rental.ths.max(0.0)).sum();
+        // An empty sum is -0.0, which the GUI would print as "-0.00".
+        let rented_ths = running
+            .clone()
+            .map(|r| r.rental.ths.max(0.0))
+            .sum::<f64>()
+            .max(0.0);
         let ends_ms = running.map(|r| r.rental.end_ms).max();
         let sold = g.sold_tih.unwrap_or(0.0);
         let sizing = g.live_sizing();
@@ -876,6 +941,18 @@ mod epoch_tests {
     use super::*;
     use std::sync::Arc;
 
+    const H: u64 = 3_600_000;
+    const T: f64 = hashu_core::denom::TIH_PER_THH;
+
+    fn rental(ths: f64, end_ms: u64) -> Rental {
+        Rental {
+            id: String::new(),
+            label: String::new(),
+            ths,
+            end_ms,
+        }
+    }
+
     #[test]
     fn epochs_size_the_live_stock_to_the_epoch() {
         let b = CapacityBook::new();
@@ -902,6 +979,50 @@ mod epoch_tests {
         b.refresh_live(3 * 3_600_000);
         let s = b.snapshot(3 * 3_600_000);
         assert!((s.live.stock.batch_tih - tih_from_ths_hours(1.0, 336.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn adding_time_limited_hashrate_takes_it_out_of_the_stock_now() {
+        let b = CapacityBook::new();
+        // 10 TH/s on the proxy, 24 h horizon: the stock sells all 10.
+        b.set_live_source(Arc::new(|| 10.0));
+        b.set_live_horizon(Some(24.0)).unwrap();
+        b.set_owed(0.0, 0);
+        b.set_sold(0.0);
+        b.refresh_live(0);
+        let full = b.snapshot(0).available_tih.unwrap() as f64;
+        assert!((full - 240.0 * T).abs() < 1.0);
+        // 8 of those TH/s are rented and stop in 6 h.
+        b.set_manual_at(vec![rental(8.0, 6 * H)], 0);
+        let s = b.snapshot(0);
+        assert!((s.live.stock.ewma_ths - 2.0).abs() < 1e-9);
+        // 2 TH/s × 24 h from the stock plus 8 TH/s × 6 h from the rental.
+        let want = 48.0 * T + 48.0 * T;
+        assert!((s.headroom_tih - want).abs() < 1e-6, "{}", s.headroom_tih);
+        // The average no longer drifts back up from the rented rigs.
+        b.refresh_live(H);
+        assert!((b.snapshot(H).live.stock.ewma_ths - 2.0).abs() < 1e-9);
+        // Taking the entry away again puts its TH/s back into the average.
+        b.set_manual_at(vec![], H);
+        assert!((b.snapshot(H).live.stock.ewma_ths - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn with_epochs_a_rental_sells_only_the_current_epochs_window() {
+        let b = CapacityBook::new();
+        b.set_live_source(Arc::new(|| 0.0));
+        b.set_owed(0.0, 0);
+        b.set_sold(0.0);
+        // 30 h left in the epoch, 24 h horizon; the rental runs 72 h.
+        b.set_epoch(10, 30.0);
+        b.set_live_horizon(Some(24.0)).unwrap();
+        b.set_manual_at(vec![rental(5.0, 72 * H)], 0);
+        let s = b.snapshot(0);
+        assert!((s.capacity_tih - 5.0 * 24.0 * T).abs() < 1e-6);
+        assert!((s.rentals[0].tih_left - 5.0 * 24.0 * T).abs() < 1e-6);
+        // A rental ending sooner counts until it ends.
+        b.set_manual_at(vec![rental(5.0, 3 * H)], 0);
+        assert!((b.snapshot(0).capacity_tih - 15.0 * T).abs() < 1e-6);
     }
 
     #[test]
