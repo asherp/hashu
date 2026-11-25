@@ -9,15 +9,15 @@ you for the work the way it pays any miner.
 This page covers what every pool has in common. Pick your pool below for
 the exact values to type in.
 
-| Pool | Account needed | Username you give Hashu |
-|---|---|---|
-| [OCEAN](ocean.md) | No | BTC address (+ `.worker`) |
-| [Braiins Pool](braiins.md) | Yes | `account.worker` |
-| [ViaBTC](viabtc.md) | Yes, for payouts | `account.worker` |
-| [F2Pool](f2pool.md) | Yes | `account.worker` |
-| [Foundry USA](foundry.md) | Yes, institutional | `account.worker` |
-| [solo.ckpool.org](ckpool-solo.md) | No | BTC address (+ `.worker`) |
-| [public-pool.io](public-pool.md) | No | BTC address (+ `.worker`) |
+| Pool | Account needed | Username you give Hashu | Encrypted link |
+|---|---|---|---|
+| [OCEAN](ocean.md) | No | BTC address (+ `.worker`) | No published TLS endpoint |
+| [Braiins Pool](braiins.md) | Yes | `account.worker` | **Yes**: TLS (`:3443`) or Stratum V2 |
+| [ViaBTC](viabtc.md) | Yes, for payouts | `account.worker` | No (its `:443` is plain TCP) |
+| [F2Pool](f2pool.md) | Yes | `account.worker` | TLS endpoint listed, certificate unverified |
+| [Foundry USA](foundry.md) | Yes, institutional | `account.worker` | Ask Foundry |
+| [solo.ckpool.org](ckpool-solo.md) | No | BTC address (+ `.worker`) | No |
+| [public-pool.io](public-pool.md) | No | BTC address (+ `.worker`) | No published TLS endpoint |
 
 ## What you supply
 
@@ -31,18 +31,30 @@ Optionally add `"fallback_pools"`: up to three backup pools, each
 | Field | What Hashu accepts | Notes |
 |---|---|---|
 | Token | a `cashuB…` token, pasted or scanned | Links like `cashu:…` work too. |
-| Pool URL | `stratum+tcp://host:port` or `stratum+ssl://host:port` | **Must have a port.** See the note below. |
+| Pool URL | `stratum+ssl://host:port`, `stratum2+tcp://host[:port]/<key>` or `stratum+tcp://host:port` | **Must have a port** (optional for Stratum V2). See the note below. |
 | Worker name | any non-empty string | Sent to your pool in `mining.authorize` in place of the miner's own name. This is how the pool knows the work is yours. |
 | Worker password | optional, defaults to `x` | Only matters if your pool checks it. |
 | Backup pool | optional: URL, worker name and password | Used when your pool can't be reached, refuses the worker, drops the connection or rejects 10 shares in a row. The miners go back to your pool when it answers again (it is retried after 60 s). Work on the backup fills the same redemption. |
 
-> **Plain TCP or TLS, with a port.** The proxy dials `stratum+ssl://` pools
-> over TLS and checks the pool's certificate against the public CA roots. A
-> pool with a self-signed or expired certificate fails the handshake, and
-> your redemption waits on the operator's pool instead of filling, so use
-> its `stratum+tcp://` endpoint. The mint refuses a URL without a port, with
-> a path, or with another scheme (such as Stratum V2's `stratum2+tcp://`)
-> when you ask for a quote, before you pay anything.
+> **Prefer an encrypted pool URL.** Plain `stratum+tcp://` is readable and
+> redirectable by anyone on the network path: an attacker posing as the
+> pool takes your shares ([Braiins,
+> 2026-11-25](https://braiins.com/blog/bitcoin-hashrate-hijacking-unencrypted-stratum-v1)).
+> The proxy dials `stratum+ssl://` pools over TLS and checks the pool's
+> certificate against the public CA roots, and `stratum2+tcp://` pools over
+> Stratum V2, pinned to the authority key in the URL. A pool with a
+> self-signed or expired certificate fails the handshake.
+>
+> **The pool is tested before you pay.** The wallet and the checkout page
+> ask the mint to connect to your pool and log in your worker
+> (`POST /checkout/api/pool-check`). You see whether it connected, whether
+> the pool accepted the worker, and a warning if the link is not encrypted,
+> before any hashes are spent. Some pools (F2Pool, ViaBTC) accept any worker
+> name, so a typo there still passes. A mint run with
+> `HASHU_ENCRYPTED_POOLS_ONLY=true` refuses plain pools outright.
+>
+> The mint refuses a URL without a port, with a path, or with another
+> scheme when you ask for a quote, before you pay anything.
 
 The redemption must be at least the mint's minimum (`min_redeem_tih`, shown
 by `GET /checkout/api/info`; 1,024 TiH (1 PiH), about 0.31 TH-hours, by default).

@@ -266,6 +266,9 @@ pub struct CheckoutState {
     pub orders: Arc<OrderBook>,
     /// The operator's Hashu wallet, linked from the landing and checkout.
     pub app_url: Option<String>,
+    /// Redeem only to `stratum+ssl://` or `stratum2+tcp://` pools
+    /// (`HASHU_ENCRYPTED_POOLS_ONLY`).
+    pub encrypted_pools_only: bool,
     /// Where miners connect to this mint's proxy.
     pub stratum: Option<crate::stratum_addr::StratumAddr>,
     /// Whether the mints' rigs are down: then a redeemer may stop before
@@ -307,6 +310,7 @@ impl CheckoutState {
             meter,
             orders,
             app_url: None,
+            encrypted_pools_only: false,
             stratum: None,
             rigs: None,
             router: std::sync::OnceLock::new(),
@@ -316,6 +320,13 @@ impl CheckoutState {
 
     pub fn with_app_url(mut self, app_url: Option<String>) -> Self {
         self.app_url = app_url;
+        self
+    }
+
+    /// Refuse plain `stratum+tcp://` pools when a redeemer changes pools,
+    /// as the melter does for new redemptions.
+    pub fn with_encrypted_pools_only(mut self, on: bool) -> Self {
+        self.encrypted_pools_only = on;
         self
     }
 
@@ -379,6 +390,12 @@ pub fn router(state: Arc<CheckoutState>) -> axum::Router {
                 .options(preflight)
                 .layer(from_fn(allow_any_origin)),
         )
+        .route(
+            "/checkout/api/pool-check",
+            post(pool_check)
+                .options(preflight)
+                .layer(from_fn(allow_any_origin)),
+        )
         .route("/api/redeem", post(paid_redeem))
         .route("/checkout/order/{id}", get(page))
         .route("/checkout/api/order/{id}", get(order))
@@ -416,6 +433,113 @@ async fn preflight() -> Response {
 
 async fn page() -> Html<&'static str> {
     Html(PAGE_HTML.as_str())
+}
+
+/// Pool checks running at once: each holds a pool connection for up to
+/// [`hashu_proxy::pool_check::CHECK_TIMEOUT`].
+static POOL_CHECKS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
+
+/// `POST /checkout/api/pool-check` `{pool_url, worker_name,
+/// worker_password?}`: dial the pool as the proxy would (TLS or Stratum
+/// V2 where the URL says so), subscribe and authorize the worker, and say
+/// how it went, before the wallet pays for a redemption. The answer also
+/// carries `warning` for a plain `stratum+tcp://` pool and `refused` when
+/// this mint takes only encrypted pools (`HASHU_ENCRYPTED_POOLS_ONLY`).
+async fn pool_check(State(s): State<Arc<CheckoutState>>, Json(v): Json<Value>) -> Response {
+    use hashu_proxy::pool_check::{check_pool, transport_of};
+    let field = |k: &str| v[k].as_str().unwrap_or_default().trim().to_string();
+    let pool_url = field("pool_url");
+    let worker = field("worker_name");
+    let password = v["worker_password"].as_str().map(str::to_string);
+    if transport_of(&pool_url).is_none() || !hashu_mint::melt::is_routable_pool_url(&pool_url) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "pool_url must be stratum+tcp://host:port, stratum+ssl://host:port or stratum2+tcp://host[:port]/<authority key>",
+        );
+    }
+    if worker.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "worker_name is required");
+    }
+    // Anyone can call this, so it must not become a way to reach the
+    // mint's own network: only pools on public addresses are dialed.
+    if let Err(why) = public_pool_host(&pool_url).await {
+        return err(StatusCode::BAD_REQUEST, why);
+    }
+    let Ok(_permit) = POOL_CHECKS.try_acquire() else {
+        return err(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many pool checks right now; try again in a few seconds",
+        );
+    };
+    let check = check_pool(&pool_url, &worker, password.as_deref()).await;
+    tracing::info!(pool_url = %pool_url, ok = check.ok, transport = ?check.transport, error = ?check.error, "pool check");
+    let mut out = serde_json::to_value(&check).unwrap_or_default();
+    let refused = s.encrypted_pools_only && !check.encrypted;
+    out["refused"] = json!(refused);
+    if refused {
+        out["refusal"] = json!(hashu_mint::melt::unencrypted_refusal(&pool_url));
+    }
+    Json(out).into_response()
+}
+
+/// `Ok` when every address the pool's host resolves to is a public one.
+async fn public_pool_host(pool_url: &str) -> Result<(), String> {
+    let rest = pool_url.split_once("://").map_or(pool_url, |(_, r)| r);
+    let hostport = rest.split('/').next().unwrap_or_default();
+    let target = match hostport.rsplit_once(':') {
+        Some((_, p)) if !p.contains(']') && p.parse::<u16>().is_ok() => hostport.to_string(),
+        // Stratum V2 without a port: the SV2 default.
+        _ => format!("{hostport}:3336"),
+    };
+    let addrs: Vec<std::net::SocketAddr> = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::lookup_host(target),
+    )
+    .await
+    .map_err(|_| "pool host did not resolve in time".to_string())?
+    .map_err(|e| format!("pool host does not resolve: {e}"))?
+    .collect();
+    if addrs.is_empty() {
+        return Err("pool host does not resolve".into());
+    }
+    if addrs.iter().any(|a| !is_public_ip(a.ip())) {
+        return Err("pool host is not a public address".into());
+    }
+    Ok(())
+}
+
+/// Not loopback, private, link-local, shared (CGNAT), multicast,
+/// documentation or unspecified.
+fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_multicast()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                || o[0] == 0
+                || (o[0] == 100 && (o[1] & 0xc0) == 64)
+                || (o[0] == 198 && (o[1] & 0xfe) == 18)
+                || o[0] >= 240)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_ip(IpAddr::V4(v4));
+            }
+            let s = v6.segments();
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                || (s[0] == 0x2001 && s[1] == 0x0db8))
+        }
+    }
 }
 
 fn err(code: StatusCode, msg: impl ToString) -> Response {
@@ -534,6 +658,12 @@ async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
         // Backup pools a redemption may list after its own (melt request
         // field `fallback_pools`).
         "max_fallback_pools": hashu_core::redemption::MAX_FALLBACK_POOLS,
+        // POST /checkout/api/pool-check tests a pool and worker before
+        // the wallet pays for a redemption.
+        "pool_check": true,
+        // When true, redemption pools must be stratum+ssl:// or
+        // stratum2+tcp:// (HASHU_ENCRYPTED_POOLS_ONLY).
+        "encrypted_pools_only": s.encrypted_pools_only,
         // Melt requests may carry `stop_hash`; its secret stops, pauses
         // and resumes the redemption at
         // `POST /checkout/api/redemption/{id}/{stop,pause,resume}`.
@@ -1568,7 +1698,7 @@ async fn redeemer_action(
             let _ = s.ledger.pause(&rid, Pauser::Redeemer);
         }
         "pool" => {
-            let (primary, fallbacks) = match new_pools(&v, &r) {
+            let (primary, fallbacks) = match new_pools(&v, &r, s.encrypted_pools_only) {
                 Ok(p) => p,
                 Err(why) => return err(StatusCode::BAD_REQUEST, why),
             };
@@ -1592,6 +1722,7 @@ async fn redeemer_action(
 fn new_pools(
     v: &Value,
     r: &hashu_core::redemption::Redemption,
+    encrypted_only: bool,
 ) -> Result<
     (
         hashu_core::redemption::PoolTarget,
@@ -1600,7 +1731,7 @@ fn new_pools(
     String,
 > {
     use hashu_core::redemption::{PoolTarget, MAX_FALLBACK_POOLS};
-    use hashu_mint::melt::is_routable_pool_url;
+    use hashu_mint::melt::{is_encrypted_pool_url, is_routable_pool_url, unencrypted_refusal};
     let primary = PoolTarget {
         pool_url: v["pool_url"]
             .as_str()
@@ -1631,6 +1762,9 @@ fn new_pools(
         };
         if !is_routable_pool_url(&p.pool_url) {
             return Err(format!("{what} must be stratum+tcp://host:port, stratum+ssl://host:port or stratum2+tcp://host[:port]/<authority key>"));
+        }
+        if encrypted_only && !is_encrypted_pool_url(&p.pool_url) {
+            return Err(unencrypted_refusal(&p.pool_url));
         }
         if p.worker_name.is_empty() {
             return Err(format!("a worker name is required for {what}"));
@@ -1782,6 +1916,59 @@ fn parse_id(s: &str) -> Option<RedemptionId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pool_checks_only_dial_public_addresses() {
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        for a in ["1.1.1.1", "64.23.252.133", "2606:4700::1111"] {
+            assert!(is_public_ip(ip(a)), "{a}");
+        }
+        for a in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.17.0.2",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(!is_public_ip(ip(a)), "{a}");
+        }
+    }
+
+    #[tokio::test]
+    async fn pool_check_refuses_the_mints_own_network() {
+        assert!(public_pool_host("stratum+tcp://127.0.0.1:3333")
+            .await
+            .is_err());
+        assert!(public_pool_host("stratum+ssl://[::1]:443").await.is_err());
+        assert!(public_pool_host("stratum+tcp://localhost:3334")
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn pool_change_refuses_plain_pools_on_an_encrypted_only_mint() {
+        use hashu_core::redemption::Redemption;
+        let r = Redemption::new(
+            RedemptionId::from_bytes([1; 16]),
+            8,
+            "stratum+ssl://a:443".into(),
+            "w".into(),
+        );
+        let plain = json!({"pool_url": "stratum+tcp://b:3333", "worker_name": "w"});
+        assert!(new_pools(&plain, &r, false).is_ok());
+        assert!(new_pools(&plain, &r, true)
+            .unwrap_err()
+            .contains("encrypted"));
+        let tls = json!({"pool_url": "stratum+ssl://b:443", "worker_name": "w",
+            "fallback_pools": [{"pool_url": "stratum+tcp://c:1", "worker_name": "w"}]});
+        assert!(new_pools(&tls, &r, true).is_err());
+    }
 
     #[test]
     fn downtime_lets_the_redeemer_stop_before_the_floor() {

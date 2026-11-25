@@ -190,7 +190,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
       </select>
     </label>
     <label class="f">Pool URL
-      <input type="text" id="r-pool" placeholder="stratum+tcp://pool.example:3333">
+      <input type="text" id="r-pool" placeholder="stratum+ssl://pool.example:443">
     </label>
     <p class="note" id="r-pool-note">Not sure what to enter? <a href="/redeem/" target="_blank" rel="noopener">Setup guides for popular pools</a> list the pool URL and worker name for each.</p>
     <label class="f">Worker name on that pool
@@ -214,6 +214,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
         </label>
       </div>
     </details>
+    <p class="tok-msg" id="r-check" hidden></p>
     <button class="act primary" id="btn-redeem">Send me the hashrate</button>
     <p class="note">The mint's miners switch to your pool and mine under your worker name until the TiH in the token is delivered.</p>
   </section>
@@ -563,7 +564,7 @@ $('btn-goto-redeem').addEventListener('click', () => { step('redeem'); $('s-rede
 // checkout.rs checks each URL here still appears in its guide.
 const POOLS = [
   { id: 'ocean', name: 'OCEAN', url: 'stratum+tcp://mine.ocean.xyz:3334', worker: 'bc1q….hashu', hint: 'Your BTC address, plus an optional .label. No account needed.' },
-  { id: 'braiins', name: 'Braiins Pool', url: 'stratum+tcp://stratum.braiins.com:3333', worker: 'username.hashu', hint: 'Your Braiins account username, then .hashu (any label).' },
+  { id: 'braiins', name: 'Braiins Pool', url: 'stratum+ssl://stratum.braiins.com:3443', worker: 'username.hashu', hint: 'Your Braiins account username, then .hashu (any label). Connects over TLS.' },
   { id: 'viabtc', name: 'ViaBTC', url: 'stratum+tcp://btc.viabtc.io:3333', worker: 'subaccount.hashu', hint: 'Your ViaBTC sub-account, then .hashu. Check the spelling: ViaBTC accepts unknown names.' },
   { id: 'f2pool', name: 'F2Pool', url: 'stratum+tcp://btc.f2pool.com:1314', worker: 'account.hashu', hint: 'Your F2Pool account name, then .hashu. Check the spelling: F2Pool accepts unknown names.' },
   { id: 'foundry', name: 'Foundry USA', url: 'stratum+tcp://btc.foundryusapool.com:3333', worker: 'account.hashu', hint: 'Your Foundry account, then .hashu. Take the exact URL from your Foundry portal.' },
@@ -669,9 +670,48 @@ $('btn-change-token').addEventListener('click', () => {
   $('r-token').focus()
 })
 $('btn-redeem').disabled = true
+// The pool is tested (connect, TLS or Stratum V2 handshake, worker login)
+// before the token is spent. A failure or a plain stratum+tcp link is
+// shown, and a second click sends anyway.
+const REDEEM_LABEL = $('btn-redeem').textContent
+const poolKey = () => [$('r-pool').value.trim(), $('r-worker').value.trim(), $('r-password').value].join('\n')
+function checkMsg (m, bad) {
+  const el = $('r-check')
+  el.textContent = m || ''
+  el.hidden = !m
+  el.className = 'tok-msg' + (bad ? ' bad' : '')
+}
+for (const id of ['r-pool', 'r-worker', 'r-password', 'r-pool-pick']) {
+  $(id).addEventListener('input', () => { st.poolAck = null; checkMsg(''); $('btn-redeem').textContent = REDEEM_LABEL })
+}
+async function poolCheckPasses () {
+  const key = poolKey()
+  if (st.poolAck === key) return true
+  $('btn-redeem').textContent = 'Testing your pool…'
+  let c
+  try {
+    c = await post('api/pool-check', { pool_url: $('r-pool').value, worker_name: $('r-worker').value, worker_password: $('r-password').value })
+  } catch (e) {
+    $('btn-redeem').textContent = REDEEM_LABEL
+    if (e.body && e.body.error) { checkMsg(e.body.error, true); return false }
+    return true // An older mint, or the check itself failed: don't block.
+  }
+  $('btn-redeem').textContent = REDEEM_LABEL
+  if (c.refused) { checkMsg(c.refusal, true); return false }
+  if (c.ok && c.encrypted) { checkMsg(`Pool connected and accepted your worker (${c.transport === 'sv2' ? 'Stratum V2' : 'TLS'}).`); return true }
+  const parts = []
+  if (!c.ok) parts.push(`Pool test failed: ${c.error}.`)
+  else parts.push('Pool connected and accepted your worker.')
+  if (c.warning) parts.push(c.warning)
+  checkMsg(parts.join(' '), true)
+  st.poolAck = key
+  $('btn-redeem').textContent = 'Send anyway'
+  return false
+}
 $('btn-redeem').addEventListener('click', async () => {
   $('btn-redeem').disabled = true
   try {
+    if (!(await poolCheckPasses())) return
     // Blank outputs for change, made here from a fresh key. The key goes
     // only into the order link's #fragment, which the server never sees.
     const C = await loadChange()

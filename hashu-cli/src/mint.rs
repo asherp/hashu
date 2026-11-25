@@ -172,6 +172,13 @@ pub struct RunArgs {
     /// Smallest redemption, in TiH.
     #[arg(long, default_value_t = hashu_mint::melt::DEFAULT_MIN_TIH)]
     pub min_redeem_tih: u64,
+    /// Redeem only to pools the proxy reaches encrypted: `stratum+ssl://`
+    /// (TLS, certificate checked) or `stratum2+tcp://` (Stratum V2).
+    /// Quotes and pool changes naming a plain `stratum+tcp://` pool, as
+    /// the main pool or a backup, are refused. Plain Stratum V1 can be
+    /// hijacked in transit, sending the redeemer's shares elsewhere.
+    #[arg(long, env = "HASHU_ENCRYPTED_POOLS_ONLY", default_value_t = false)]
+    pub encrypted_pools_only: bool,
     /// Serve the hosted-mint waitlist for miners at `/waitlist/` and store
     /// sign-ups in `<data-dir>/waitlist.jsonl` (operator view at
     /// `/waitlist` on the control API). Off: `/waitlist/` is a 404.
@@ -802,6 +809,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
                 HashrateMelter::new(ledger.clone())
                     .with_min_tih(args.min_redeem_tih)
                     .with_max_tih(args.max_tih)
+                    .with_encrypted_pools_only(args.encrypted_pools_only)
                     .with_rigs(rigs.clone()),
             ),
         )
@@ -999,6 +1007,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             ),
         )
         .with_app_url(app_url(args.app_url.as_deref())?)
+        .with_encrypted_pools_only(args.encrypted_pools_only)
         .with_stratum(stratum.clone())
         .with_rigs(rigs.clone()),
     );
@@ -1438,6 +1447,7 @@ fn supplier_mints(
             ledger: ledger.clone(),
             min_redeem_tih: args.min_redeem_tih,
             max_tih: args.max_tih,
+            encrypted_pools_only: args.encrypted_pools_only,
             fake_lightning,
             hashrate: Arc::new(move |name: &str| r.supplier_hashrate(name)),
             stratum: stratum.clone(),
