@@ -975,6 +975,8 @@ function render () {
         ['Already declared by rentals', `${fmtTih(lv.rented_ths, 2)} TH/s`],
         ['Counted', `${fmtTih(lv.extra_ths, 2)} TH/s`],
         ['Horizon', lv.horizon_hours != null ? `${fmtTih(lv.horizon_hours, 1)} h` : 'not set'],
+        ...(lv.batch_hours != null && lv.horizon_hours != null && lv.batch_hours < lv.horizon_hours - 0.05
+          ? [['Sold now (rest of this epoch)', `${fmtTih(lv.batch_hours, 1)} h`]] : []),
         ...(lv.on && lv.stock ? [
           [`Average (half-life ${fmtTih(lv.stock.half_life_hours, 1)} h)`, `${fmtTih(lv.stock.ewma_ths, 2)} TH/s`],
           ['Last batch', `${fmtTih(lv.stock.batch_tih)} TiH${lv.stock.restocked_ms ? `, ${fmtDur((op.now_ms - lv.stock.restocked_ms) / 1000)} ago` : ''}`],
