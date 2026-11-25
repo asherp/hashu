@@ -25,22 +25,23 @@
 //! Strategy is *dedicated assignment* (§4.6 "v1 alternative"): each
 //! connection serves exactly one redemption, picked by [`pick_route`]:
 //!
-//! - **Size matching.** Each connection's hashrate is an EWMA of its
-//!   accepted share work ([`RIG_RATE_TAU`]). An order can usefully absorb
-//!   `remaining / TARGET_RUN − assigned rate` more hashrate: anything past
-//!   that just finishes it sooner than [`TARGET_RUN`] and overshoots (about
-//!   one share per rig plus the switch drain). A rig goes to the order with
-//!   the *smallest* such room that still fits it (best fit), so large rigs
-//!   land on large orders and small rigs on small ones. A rig too big for
-//!   every order goes where it overshoots least.
-//! - **Cap.** An order whose assigned rigs already finish it within
-//!   [`TARGET_RUN`] takes no more. If every order is capped, extra rigs
-//!   stay on (or go back to) the default pool.
-//! - **Fairness.** An order with no rig waiting longer than
-//!   [`STARVE_AFTER`] is served first (oldest first), then orders with no
-//!   rig at all, then the rest. A starving order also takes one rig from
-//!   an order that has two or more ([`starving_rescue`]), so rigs already
-//!   placed don't leave it waiting until the others finish.
+//! - **First half first.** An order still in its first half (less than
+//!   half its hashes delivered) outranks every order past half, so a new
+//!   redemption starts right away and reaches half quickly, while orders
+//!   nearly done wait a little longer. Within each half: an order with no
+//!   rig waiting longer than [`STARVE_AFTER`] first, then orders with no
+//!   rig at all, then the rest; oldest first within each.
+//! - **Cap.** Each connection's hashrate is an EWMA of its accepted share
+//!   work ([`RIG_RATE_TAU`]). An order whose assigned rigs already finish
+//!   it within [`TARGET_RUN`] takes no more (more would only overshoot by
+//!   about a share per rig plus the switch drain). If every order is
+//!   capped, extra rigs stay on (or go back to) the default pool.
+//! - **Moving placed rigs.** A rig stays on its order until it fills,
+//!   with two exceptions ([`rescue`]): a first-half order with no rig
+//!   takes the biggest rig from an order past half at once, even its only
+//!   rig; and an order with no rig for [`STARVE_AFTER`] takes one from an
+//!   order in the same half that has two or more. One rig per order per
+//!   pass.
 //! - **Fallback pools.** A redemption lists its pool and up to
 //!   [`hashu_core::redemption::MAX_FALLBACK_POOLS`] fallbacks. A pool that
 //!   can't be dialed, refuses the authorize, drops the session or rejects
@@ -49,10 +50,8 @@
 //!   list. Shares on any of its pools fill the same redemption. Once the
 //!   hold ends, rigs on a fallback try the earlier pool again (seamless
 //!   mode only). With every pool down the rig idles.
-//! - **Unrated rigs.** Until a rig has a hashrate estimate ([`MIN_RATE_SHARES`]
-//!   shares over [`MIN_RATE_WINDOW`]) it goes to the order with the fewest
-//!   connections, oldest first, as before. With one miner, redemptions are
-//!   served in melt order.
+//! - **One miner.** It serves each new order's first half as it arrives,
+//!   then stays on that order to the end before going back to the oldest.
 //!
 //! The proportional EMA-weighted split in §4.6 stays a TODO.
 //!
@@ -1169,7 +1168,7 @@ impl Router {
         });
         let mut signalled = 0;
         // Starving orders a rig was taken for this pass (see
-        // [`starving_rescue`]), so one pass sends each just one rig.
+        // [`rescue`]), so one pass sends each just one rig.
         let mut rescued: std::collections::HashSet<RedemptionId> = Default::default();
         for (conn, _) in ids {
             let target = {
@@ -1183,7 +1182,7 @@ impl Router {
                         if let Some(r) = mine.iter().find(|r| r.id == *id) {
                             // An order starved of rigs takes this one if
                             // its own order keeps another.
-                            if let Some(to) = starving_rescue(&mine, &inner, *id, now, &rescued) {
+                            if let Some(to) = rescue(&mine, &inner, r, now, &rescued) {
                                 if let Some(sid) = to.redemption_id() {
                                     rescued.insert(sid);
                                 }
@@ -1366,17 +1365,17 @@ impl Inner {
     }
 }
 
-/// Where a rig already filling order `current` should go instead: the
-/// oldest order in `active` that has had no rig for [`STARVE_AFTER`],
-/// provided `current` keeps at least one other rig. Without this a rig
-/// never left an open order, so an order that lost its rigs (a pause, a
-/// pool marked down, rigs reconnecting onto the order with the least
-/// left) waited for the others to finish. `skip` lists orders already
-/// sent a rig this pass.
-fn starving_rescue(
+/// Where a rig already filling order `current` should go instead, if
+/// anywhere: the oldest first-half order with no rig when `current` is
+/// past half (taking even its only rig), else the oldest order in the same
+/// half that has had no rig for [`STARVE_AFTER`] when `current` keeps
+/// another rig. Without this a rig never left an open order, so a new or
+/// starved order waited for the others to finish. `skip` lists orders
+/// already sent a rig this pass.
+fn rescue(
     active: &[Redemption],
     inner: &Inner,
-    current: RedemptionId,
+    current: &Redemption,
     now: Instant,
     skip: &std::collections::HashSet<RedemptionId>,
 ) -> Option<Route> {
@@ -1387,12 +1386,25 @@ fn starving_rescue(
             .filter(|b| b.effective().redemption_id() == Some(id))
             .count()
     };
-    if heading_to(current) < 2 {
+    let empty =
+        |r: &&Redemption| r.id != current.id && !skip.contains(&r.id) && heading_to(r.id) == 0;
+    if !in_first_half(current) {
+        let new = active
+            .iter()
+            .filter(empty)
+            .filter(|r| in_first_half(r))
+            .find_map(|r| redemption_route(r, inner, now));
+        if new.is_some() {
+            return new;
+        }
+    }
+    if heading_to(current.id) < 2 {
         return None;
     }
     active
         .iter()
-        .filter(|r| r.id != current && !skip.contains(&r.id) && heading_to(r.id) == 0)
+        .filter(empty)
+        .filter(|r| in_first_half(r) == in_first_half(current))
         .filter(|r| {
             inner
                 .unserved_since
@@ -1436,6 +1448,13 @@ struct Order {
     room: f64,
     /// Waited past [`STARVE_AFTER`] with no rig.
     starving: bool,
+    /// Less than half its hashes delivered.
+    first_half: bool,
+}
+
+/// Whether `r` has had less than half its hashes delivered.
+fn in_first_half(r: &Redemption) -> bool {
+    r.accumulated_hashes.saturating_mul(2) < r.target_hashes
 }
 
 /// Choose a route for connection `placing` (or a brand new one when
@@ -1479,40 +1498,27 @@ fn pick_route(
                 load,
                 room: remaining / target_run - assigned,
                 starving,
+                first_half: in_first_half(r),
             }
         })
         .filter(|o| o.room > 0.0)
         .collect();
 
-    // Tier: starving, then unserved, then served.
-    let tier = |o: &Order| match (o.starving, o.load) {
-        (true, _) => 0u8,
-        (false, 0) => 1,
-        _ => 2,
+    // First half before second half; within each, starving, then
+    // unserved, then served; then orders the rig fits; fewest rigs, then
+    // oldest.
+    let rank = |o: &Order| {
+        let tier = match (o.starving, o.load) {
+            (true, _) => 0u8,
+            (false, 0) => 1,
+            _ => 2,
+        };
+        // A rig that would finish an order within TARGET_RUN on its own
+        // overshoots it: prefer orders it fits.
+        let misfit = rig.is_some_and(|h| o.room < h);
+        (!o.first_half, tier, misfit, o.load, o.age)
     };
-    let top = orders.iter().map(tier).min();
-    let best = orders
-        .iter()
-        .filter(|o| Some(tier(o)) == top)
-        .min_by(|a, b| {
-            let fit = match rig {
-                // Starving orders go oldest first whatever the rig.
-                _ if a.starving => std::cmp::Ordering::Equal,
-                Some(h) => {
-                    // Fits → smallest room first; too big for both → most
-                    // room first; a fit beats a misfit.
-                    let (fa, fb) = (a.room >= h, b.room >= h);
-                    match (fa, fb) {
-                        (true, true) => a.room.total_cmp(&b.room),
-                        (false, false) => b.room.total_cmp(&a.room),
-                        (true, false) => std::cmp::Ordering::Less,
-                        (false, true) => std::cmp::Ordering::Greater,
-                    }
-                }
-                None => a.load.cmp(&b.load),
-            };
-            fit.then(a.age.cmp(&b.age))
-        });
+    let best = orders.iter().min_by_key(|o| rank(o));
 
     match best {
         Some(o) => o.route.clone(),
@@ -2213,7 +2219,7 @@ mod tests {
     }
 
     #[test]
-    fn big_rig_with_only_small_orders_takes_the_biggest() {
+    fn big_rig_with_only_small_orders_takes_the_oldest() {
         let ledger = Arc::new(RedemptionLedger::new());
         let router = Router::new("default:3333", ledger.clone());
         let now = Instant::now();
@@ -2223,11 +2229,11 @@ mod tests {
         open_thh(&ledger, 2, 5);
         open_thh(&ledger, 3, 3);
         assert_eq!(router.reconcile_at(now), 1);
-        assert_eq!(switch_target(&a).redemption_id(), Some(rid(2)));
+        assert_eq!(switch_target(&a).redemption_id(), Some(rid(1)));
     }
 
     #[test]
-    fn small_rig_picks_the_smallest_order_it_fits() {
+    fn rigs_go_oldest_first_whatever_the_order_size() {
         let ledger = Arc::new(RedemptionLedger::new());
         let router = Router::new("default:3333", ledger.clone());
         let now = Instant::now();
@@ -2237,7 +2243,7 @@ mod tests {
         open_thh(&ledger, 2, 3);
         open_thh(&ledger, 3, 10);
         assert_eq!(router.reconcile_at(now), 1);
-        assert_eq!(switch_target(&a).redemption_id(), Some(rid(2)));
+        assert_eq!(switch_target(&a).redemption_id(), Some(rid(1)));
     }
 
     #[test]
@@ -2272,16 +2278,71 @@ mod tests {
         router.lock().conns.get_mut(&a.conn).unwrap().fell_back_at = Some(t0);
         assert_eq!(router.reconcile_at(t0), 0);
         router.lock().conns.get_mut(&a.conn).unwrap().fell_back_at = None;
-        // Fresh, the 1 TH/s rig would pick the 3 TiH order (best fit).
-        let idle = Route::Default {
-            upstream: "d:1".into(),
-        };
-        let fresh = pick_route(&ledger.active(), &router.lock(), Some(a.conn), t0, &idle);
-        assert_eq!(fresh.redemption_id(), Some(rid(2)));
         // Both starved: oldest first.
         let later = t0 + STARVE_AFTER;
         assert_eq!(router.reconcile_at(later), 1);
         assert_eq!(switch_target(&a).redemption_id(), Some(rid(1)));
+    }
+
+    /// Deliver `frac` of order `n`'s hashes.
+    fn fill(ledger: &RedemptionLedger, n: u8, frac: f64) {
+        let r = ledger
+            .active()
+            .into_iter()
+            .find(|r| r.id == rid(n))
+            .unwrap();
+        let diff = frac * r.target_hashes as f64 / HASHES_PER_DIFF_ONE as f64;
+        ledger.credit_share(&rid(n), diff).unwrap();
+    }
+
+    #[test]
+    fn first_half_orders_come_before_orders_past_half() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let now = Instant::now();
+        open_thh(&ledger, 1, 1000);
+        open_thh(&ledger, 2, 1000);
+        fill(&ledger, 1, 0.6);
+        // Both have no rig; the newer one is still in its first half.
+        let a = router.assign(ConnectionId::next());
+        warm(&router, a.conn, 10.0, now);
+        assert_eq!(a.route.redemption_id(), Some(rid(2)));
+    }
+
+    #[test]
+    fn a_new_order_takes_the_only_rig_from_one_past_half() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let t0 = Instant::now();
+        open_thh(&ledger, 1, 1000);
+        let a = router.assign(ConnectionId::next());
+        warm(&router, a.conn, 10.0, t0);
+        assert_eq!(a.route.redemption_id(), Some(rid(1)));
+        // Still in its first half: a new order waits.
+        open_thh(&ledger, 2, 1000);
+        assert_eq!(router.reconcile_at(t0), 0);
+        // Past half: the new order takes the rig at once.
+        fill(&ledger, 1, 0.6);
+        assert_eq!(router.reconcile_at(t0), 1);
+        assert_eq!(switch_target(&a).redemption_id(), Some(rid(2)));
+    }
+
+    #[test]
+    fn a_lone_rig_on_an_order_past_half_is_not_taken_by_another_past_half() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let t0 = Instant::now();
+        open_thh(&ledger, 1, 1000);
+        open_thh(&ledger, 2, 1000);
+        fill(&ledger, 1, 0.8);
+        fill(&ledger, 2, 0.6);
+        // Both past half: the rig takes the oldest and stays there, even
+        // once order 2 has waited past STARVE_AFTER (its only rig).
+        let a = router.assign(ConnectionId::next());
+        warm(&router, a.conn, 10.0, t0);
+        assert_eq!(a.route.redemption_id(), Some(rid(1)));
+        assert_eq!(router.reconcile_at(t0), 0);
+        assert_eq!(router.reconcile_at(t0 + STARVE_AFTER), 0);
     }
 
     #[test]

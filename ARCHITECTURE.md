@@ -252,18 +252,21 @@ a Hashu operator is selling computation, not moving money.
 ### 4.6 Pool routing controller
 
 - Receives "redirect" intents from voucher accounting.
-- *Prototype:* dedicated assignment (below) is what ships first, sized
-  to the order. Each connection's hashrate is an EWMA of its accepted
-  share work. An order can absorb `remaining / 60 s − assigned` more
-  hashrate; a rig goes to the order with the smallest room it still
-  fits (large rigs to large orders, small to small), and an order whose
-  rigs already finish it within a minute takes no more (extra rigs stay
-  on the default pool). Orders with no rig come first, and one waiting
-  over two minutes jumps the queue, oldest first. A rig with no
-  estimate yet goes to the order with the fewest connections, oldest
-  first, so with one miner redemptions are served in melt order. The
-  router polls the ledger for new redemptions and wakes on the share
-  crediter's completion signal.
+- *Prototype:* dedicated assignment (below) is what ships first: each
+  rig serves one order at a time. **First half first:** orders with less
+  than half their hashes delivered outrank orders past half; within each
+  half, orders with no rig (longest waiting first) come before served
+  ones, then orders the rig fits, then fewest rigs, then oldest. Each
+  connection's hashrate is an EWMA of its accepted share work, and an
+  order whose rigs already finish it within a minute takes no more
+  (extra rigs stay on the default pool). Rigs stay on their order until
+  it fills, except: a first-half order with no rig takes the biggest rig
+  from an order past half at once (even its only rig), and an order with
+  no rig for two minutes takes one from an order in the same half that
+  has two or more. So one miner serves each new order's first half as it
+  arrives, then finishes the order it is on. The router polls the ledger
+  for new redemptions and wakes on the share crediter's completion
+  signal.
 - Maintains a per-redemption allocation. Strategy v0: proportional —
   every connected hashrate source contributes a slice weighted by its
   hashrate EMA, so concurrent redemptions progress at roughly equal
