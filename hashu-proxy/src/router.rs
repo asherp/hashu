@@ -38,7 +38,9 @@
 //!   stay on (or go back to) the default pool.
 //! - **Fairness.** An order with no rig waiting longer than
 //!   [`STARVE_AFTER`] is served first (oldest first), then orders with no
-//!   rig at all, then the rest.
+//!   rig at all, then the rest. A starving order also takes one rig from
+//!   an order that has two or more ([`starving_rescue`]), so rigs already
+//!   placed don't leave it waiting until the others finish.
 //! - **Fallback pools.** A redemption lists its pool and up to
 //!   [`hashu_core::redemption::MAX_FALLBACK_POOLS`] fallbacks. A pool that
 //!   can't be dialed, refuses the authorize, drops the session or rejects
@@ -1062,6 +1064,27 @@ impl Router {
             .and_then(|b| b.rate.rate(Instant::now()))
     }
 
+    /// The rigs each redemption's hashrate comes from right now: live
+    /// connections routed to it, as `(rig label, hashrate estimate)`.
+    /// The label is the authorize user (`conn-<n>` before one is seen);
+    /// the estimate is `None` until the rig has enough shares. Sorted by
+    /// label within each redemption.
+    pub fn rigs_by_redemption(&self) -> HashMap<RedemptionId, Vec<(String, Option<f64>)>> {
+        let now = Instant::now();
+        let inner = self.lock();
+        let mut out: HashMap<RedemptionId, Vec<(String, Option<f64>)>> = HashMap::new();
+        for (conn, b) in &inner.conns {
+            if let Some(id) = b.route.redemption_id() {
+                let label = b.rig.clone().unwrap_or_else(|| conn.to_string());
+                out.entry(id).or_default().push((label, b.rate.rate(now)));
+            }
+        }
+        for v in out.values_mut() {
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+        out
+    }
+
     /// Current route of a live connection.
     pub fn route_of(&self, conn: ConnectionId) -> Option<Route> {
         self.lock().conns.get(&conn).map(|b| b.route.clone())
@@ -1145,6 +1168,9 @@ impl Router {
             (None, None) => a.0.cmp(&b.0),
         });
         let mut signalled = 0;
+        // Starving orders a rig was taken for this pass (see
+        // [`starving_rescue`]), so one pass sends each just one rig.
+        let mut rescued: std::collections::HashSet<RedemptionId> = Default::default();
         for (conn, _) in ids {
             let target = {
                 let b = &inner.conns[&conn];
@@ -1155,29 +1181,38 @@ impl Router {
                 match &b.route {
                     Route::Redemption { id, pool, .. } => {
                         if let Some(r) = mine.iter().find(|r| r.id == *id) {
-                            // Still open: stay unless its pool went down
-                            // (move to the next one) or an earlier pool is
-                            // back (try it again, in place only).
-                            match redemption_route(r, &inner, now) {
-                                Some(best) => {
-                                    let to = best.redemption_pool().map_or(0, |(_, p)| p);
-                                    if best == b.route {
-                                        continue;
-                                    }
-                                    // Same pool slot but a new pool behind
-                                    // it (the redeemer changed pools): go.
-                                    if to != *pool {
-                                        if to < *pool && self.mode != SwitchMode::Seamless {
-                                            continue;
-                                        }
-                                        if to > *pool && !inner.is_down(*id, *pool, now) {
-                                            continue;
-                                        }
-                                    }
-                                    best
+                            // An order starved of rigs takes this one if
+                            // its own order keeps another.
+                            if let Some(to) = starving_rescue(&mine, &inner, *id, now, &rescued) {
+                                if let Some(sid) = to.redemption_id() {
+                                    rescued.insert(sid);
                                 }
-                                // Every pool of it is down.
-                                None => pick_route(&mine, &inner, Some(conn), now, &b.idle),
+                                to
+                            } else {
+                                // Still open: stay unless its pool went down
+                                // (move to the next one) or an earlier pool is
+                                // back (try it again, in place only).
+                                match redemption_route(r, &inner, now) {
+                                    Some(best) => {
+                                        let to = best.redemption_pool().map_or(0, |(_, p)| p);
+                                        if best == b.route {
+                                            continue;
+                                        }
+                                        // Same pool slot but a new pool behind
+                                        // it (the redeemer changed pools): go.
+                                        if to != *pool {
+                                            if to < *pool && self.mode != SwitchMode::Seamless {
+                                                continue;
+                                            }
+                                            if to > *pool && !inner.is_down(*id, *pool, now) {
+                                                continue;
+                                            }
+                                        }
+                                        best
+                                    }
+                                    // Every pool of it is down.
+                                    None => pick_route(&mine, &inner, Some(conn), now, &b.idle),
+                                }
                             }
                         } else if b.holding() {
                             b.idle.clone()
@@ -1329,6 +1364,42 @@ impl Inner {
             }
         }
     }
+}
+
+/// Where a rig already filling order `current` should go instead: the
+/// oldest order in `active` that has had no rig for [`STARVE_AFTER`],
+/// provided `current` keeps at least one other rig. Without this a rig
+/// never left an open order, so an order that lost its rigs (a pause, a
+/// pool marked down, rigs reconnecting onto the order with the least
+/// left) waited for the others to finish. `skip` lists orders already
+/// sent a rig this pass.
+fn starving_rescue(
+    active: &[Redemption],
+    inner: &Inner,
+    current: RedemptionId,
+    now: Instant,
+    skip: &std::collections::HashSet<RedemptionId>,
+) -> Option<Route> {
+    let heading_to = |id: RedemptionId| {
+        inner
+            .conns
+            .values()
+            .filter(|b| b.effective().redemption_id() == Some(id))
+            .count()
+    };
+    if heading_to(current) < 2 {
+        return None;
+    }
+    active
+        .iter()
+        .filter(|r| r.id != current && !skip.contains(&r.id) && heading_to(r.id) == 0)
+        .filter(|r| {
+            inner
+                .unserved_since
+                .get(&r.id)
+                .is_some_and(|t| now.saturating_duration_since(*t) >= STARVE_AFTER)
+        })
+        .find_map(|r| redemption_route(r, inner, now))
 }
 
 /// The route to `r`'s first pool that the proxy can dial and that is not
@@ -1602,6 +1673,21 @@ mod tests {
             })
             .collect();
         assert_eq!(ids, vec![rid(1), rid(2), rid(1), rid(2)]);
+    }
+
+    #[test]
+    fn rigs_by_redemption_lists_each_orders_rigs() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        open(&ledger, 1, "stratum+tcp://alice:3333", "a");
+        open(&ledger, 2, "stratum+tcp://bob:3333", "b");
+        let router = Router::new("default:3333", ledger);
+        let one = serde_json::json!(["acct.rig1", "x"]);
+        let two = serde_json::json!(["acct.rig2", "x"]);
+        router.assign_with(ConnectionId::next(), Some(&one));
+        router.assign_with(ConnectionId::next(), Some(&two));
+        let by = router.rigs_by_redemption();
+        assert_eq!(by[&rid(1)], vec![("acct.rig1".to_string(), None)]);
+        assert_eq!(by[&rid(2)], vec![("acct.rig2".to_string(), None)]);
     }
 
     #[test]
@@ -2196,6 +2282,43 @@ mod tests {
         let later = t0 + STARVE_AFTER;
         assert_eq!(router.reconcile_at(later), 1);
         assert_eq!(switch_target(&a).redemption_id(), Some(rid(1)));
+    }
+
+    #[test]
+    fn starving_order_takes_a_rig_from_a_shared_one() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let t0 = Instant::now();
+        open_thh(&ledger, 1, 1000);
+        // Both rigs on order 1.
+        let a = router.assign(ConnectionId::next());
+        let b = router.assign(ConnectionId::next());
+        warm(&router, a.conn, 8.0, t0);
+        warm(&router, b.conn, 6.0, t0);
+        assert_eq!(a.route.redemption_id(), Some(rid(1)));
+        assert_eq!(b.route.redemption_id(), Some(rid(1)));
+        open_thh(&ledger, 2, 1000);
+        // Not starving yet: both stay.
+        assert_eq!(router.reconcile_at(t0), 0);
+        // Starved: one rig (the bigger, placed first) moves over, only one.
+        assert_eq!(router.reconcile_at(t0 + STARVE_AFTER), 1);
+        assert_eq!(switch_target(&a).redemption_id(), Some(rid(2)));
+        // Served again: nothing more moves.
+        assert_eq!(router.reconcile_at(t0 + STARVE_AFTER * 2), 0);
+    }
+
+    #[test]
+    fn a_lone_rig_stays_on_its_order() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let t0 = Instant::now();
+        open_thh(&ledger, 1, 1000);
+        let a = router.assign(ConnectionId::next());
+        warm(&router, a.conn, 8.0, t0);
+        open_thh(&ledger, 2, 1000);
+        assert_eq!(router.reconcile_at(t0), 0);
+        // One miner: melt order, no flip-flopping.
+        assert_eq!(router.reconcile_at(t0 + STARVE_AFTER), 0);
     }
 
     const ADDR: &str = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
