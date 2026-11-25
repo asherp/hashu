@@ -22,10 +22,11 @@
 //! - `POST /api/test-redeem` `{ token, pool_url, worker_name }`: redeem it.
 //! - `POST /api/inbox/send-hashes` `{ "peer", "amount_tih", "note"? }`: mint
 //!   hashes the same way and send them to `peer` (npub or hex) in a NIP-17
-//!   direct message from the mint: the note, then the `cashuB` token on its
-//!   own line, which any Cashu wallet can claim (hashu.me shows a Receive
-//!   button on it). If the message cannot be sent the token comes back in
-//!   the error so it is not lost.
+//!   direct message from the mint whose content is a NUT-18 payment payload
+//!   `{mint, unit, memo, proofs}`, the note as its memo. Cashu wallets that
+//!   take NUT-18 payments over Nostr (Cashu.me, hashu.me) receive it as an
+//!   incoming payment. If the message cannot be sent the hashes come back
+//!   as a `cashuB` token in the error so they are not lost.
 //! - `GET /api/capacity`: rented hashrate, TiH it can still deliver, TiH
 //!   owed and TiH available to sell (see `hashu_mint::capacity`).
 //! - `GET /api/operator` also carries `heat`: the heat the hashrate turned
@@ -57,6 +58,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -553,12 +555,23 @@ async fn send_hashes(State(s): State<Arc<OperatorState>>, body: Bytes) -> Respon
     if rel.configured_relays().is_empty() {
         return bad("no Nostr relays configured (HASHU_NOSTR_RELAYS)".into());
     }
-    let (token, quote) =
-        match checkout::operator_test_mint(&s.checkout, &s.mint, amount, "Hashes").await {
-            Ok(x) => x,
-            Err((code, msg)) => return (code, Json(json!({ "error": msg }))).into_response(),
-        };
-    let text = hashes_message(note, amount, &s.checkout.public_url, &token);
+    let (proofs, quote) = match checkout::operator_mint_proofs(&s.checkout, &s.mint, amount).await {
+        Ok(x) => x,
+        Err((code, msg)) => return (code, Json(json!({ "error": msg }))).into_response(),
+    };
+    let memo = hashes_memo(note, amount, &s.checkout.public_url);
+    // The token too: shown if the message cannot be sent.
+    let token = match cdk::mint_url::MintUrl::from_str(&s.checkout.public_url) {
+        Ok(u) => cdk::nuts::Token::new(
+            u,
+            proofs.clone(),
+            Some(memo.clone()),
+            cdk::nuts::CurrencyUnit::Custom("tih".into()),
+        )
+        .to_string(),
+        Err(e) => return bad(e.to_string()),
+    };
+    let text = hashes_payload(&s.checkout.public_url, &memo, &proofs);
     match rel.send_reply(OPERATOR_MINT, &peer, &text).await {
         Ok(m) => Json(json!({ "message": m, "token": token, "amount_tih": amount, "quote": quote }))
             .into_response(),
@@ -574,18 +587,26 @@ async fn send_hashes(State(s): State<Arc<OperatorState>>, body: Bytes) -> Respon
     }
 }
 
-/// The text of a hashes DM: the note (or a default), then the token on its
-/// own line so wallets that look for `cashuB…` words find it.
-fn hashes_message(note: &str, amount_tih: u64, mint_url: &str, token: &str) -> String {
-    let note = if note.is_empty() {
-        format!(
-            "{} of hashes from {mint_url}. Claim them in any Cashu wallet by pasting the token below.",
-            fmt_hashes(amount_tih)
-        )
+/// The note sent with hashes: the operator's, or one naming the amount.
+fn hashes_memo(note: &str, amount_tih: u64, mint_url: &str) -> String {
+    if note.is_empty() {
+        format!("{} of hashes from {mint_url}", fmt_hashes(amount_tih))
     } else {
         note.to_string()
-    };
-    format!("{note}\n\n{token}")
+    }
+}
+
+/// A hashes DM: a NUT-18 payment payload (`{mint, unit, memo, proofs}`) as
+/// the message content, which Cashu wallets that take payments over NIP-17
+/// (Cashu.me and its forks, hashu.me) receive as an incoming payment.
+fn hashes_payload(mint_url: &str, memo: &str, proofs: &cdk::nuts::Proofs) -> String {
+    json!({
+        "mint": mint_url,
+        "unit": "tih",
+        "memo": memo,
+        "proofs": proofs,
+    })
+    .to_string()
 }
 
 /// `4 EiH (4,194,304 TiH)`, `1.5 PiH (1,536 TiH)`, `12 TiH`.
@@ -1157,17 +1178,34 @@ mod tests {
     }
 
     #[test]
-    fn hashes_dm_puts_the_token_on_its_own_line() {
+    fn hashes_dm_is_a_nut18_payload() {
         assert_eq!(fmt_hashes(12), "12 TiH");
         assert_eq!(fmt_hashes(1536), "1.5 PiH (1,536 TiH)");
         assert_eq!(fmt_hashes(1 << 22), "4 EiH (4,194,304 TiH)");
-        let t = hashes_message("", 1024, "https://mint.example", "cashuBxyz");
-        assert!(t.starts_with("1 PiH (1,024 TiH) of hashes from https://mint.example."));
-        assert!(t.ends_with("\n\ncashuBxyz"));
         assert_eq!(
-            hashes_message("Thanks!", 1, "u", "cashuBq"),
-            "Thanks!\n\ncashuBq"
+            hashes_memo("", 1024, "https://mint.example"),
+            "1 PiH (1,024 TiH) of hashes from https://mint.example"
         );
+        assert_eq!(hashes_memo("Thanks!", 1, "u"), "Thanks!");
+        let proof: cdk::nuts::Proof = serde_json::from_value(json!({
+            "amount": 1024,
+            "id": "00ad268c4d1f5826",
+            "secret": "a".repeat(64),
+            "C": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        }))
+        .unwrap();
+        let v: Value = serde_json::from_str(&hashes_payload(
+            "https://mint.example",
+            "Thanks!",
+            &vec![proof],
+        ))
+        .unwrap();
+        assert_eq!(v["mint"], "https://mint.example");
+        assert_eq!(v["unit"], "tih");
+        assert_eq!(v["memo"], "Thanks!");
+        assert_eq!(v["proofs"][0]["amount"], 1024);
+        assert_eq!(v["proofs"][0]["id"], "00ad268c4d1f5826");
+        assert!(v["proofs"][0]["C"].as_str().unwrap().starts_with("02"));
     }
 
     #[test]

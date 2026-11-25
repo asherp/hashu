@@ -249,7 +249,7 @@ td.num, th.num { text-align: right; }
         <div class="row"><button class="act primary" id="inbox-send">Send reply</button><span class="note" id="inbox-msg"></span></div>
         <details class="send-hashes" id="dm-hashes">
           <summary>Send hashes</summary>
-          <p class="note">Mints fresh hashes (unpaid, from the stock, like the test mint) and sends them as a Cashu token in this conversation. Any Cashu wallet can claim it; hashu.me shows a Receive button.</p>
+          <p class="note">Mints fresh hashes (unpaid, from the stock, like the test mint) and sends them in this conversation as a Cashu payment (NUT-18), with the note as its memo. Cashu.me-style wallets, hashu.me included, receive it as an incoming payment.</p>
           <div class="row"><span class="ctl"><span class="note">Count in</span><span class="seg" id="dm-units"><button type="button" data-u="hash" class="on">PiH</button><button type="button" data-u="rate">TH/s/Day</button></span></span></div>
           <div class="row chips" id="dm-chips"></div>
           <div class="row"><input type="number" id="dm-amt" min="0" step="any" inputmode="decimal" value="1" aria-labelledby="dm-amt-label"> <span id="dm-amt-label">Pebihashes (PiH)</span></div>
@@ -1456,7 +1456,24 @@ const shortNpub = (n) => n ? n.slice(0, 12) + '…' + n.slice(-6) : ''
 const fmtWhen = (s) => new Date(s * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 // A Cashu token in a message is long: show it shortened, with its size.
 const TOKEN_RE = /cashu[AB][A-Za-z0-9_\-+/=]{20,}/g
+// Hashes sent as a NUT-18 payment payload: {mint, unit, memo, proofs}.
+function payment (t) {
+  if (!t.startsWith('{')) return null
+  try {
+    const p = JSON.parse(t)
+    if (!p || !Array.isArray(p.proofs) || !p.mint) return null
+    const n = p.proofs.reduce((a, x) => a + Number(x.amount || 0), 0)
+    const amt = p.unit === 'tih' ? `${HashuAmount.fmtHashes(n)} (${n.toLocaleString()} TiH)` : `${n.toLocaleString()} ${p.unit || 'sat'}`
+    return { memo: p.memo || '', amt }
+  } catch { return null }
+}
+function previewText (t) {
+  const p = payment(t)
+  return p ? `${p.memo ? p.memo + ' · ' : ''}${p.amt} of hashes` : t
+}
 function bubbleText (t) {
+  const p = payment(t)
+  if (p) return esc(p.memo) + `<span class="tok" title="Cashu payment (NUT-18)">${esc(p.amt)} of hashes · Cashu payment</span>`
   return esc(t).replace(TOKEN_RE, (tok) => `<span class="tok" title="Cashu token">${tok.slice(0, 18)}…${tok.slice(-6)} · Cashu token</span>`)
 }
 async function pollInbox () {
@@ -1478,7 +1495,7 @@ function renderInbox () {
     const last = c.messages[c.messages.length - 1] || {}
     return `<li data-peer="${esc(c.peer)}" class="${c.peer === inbox.peer ? 'sel' : ''}">
       <div class="who"><span class="mono">${esc(shortNpub(c.npub))}</span>${c.unread ? `<span class="unread">${c.unread}</span>` : `<small class="muted">${esc(fmtWhen(c.last_at))}</small>`}</div>
-      <div class="prev">${last.outgoing ? 'You: ' : ''}${esc(last.text)}</div></li>`
+      <div class="prev">${last.outgoing ? 'You: ' : ''}${esc(previewText(last.text || ''))}</div></li>`
   }).join('') : '<li class="sub">No messages yet.</li>'
   // A new conversation (typed npub) shows as an empty thread until sent.
   const c = convs.find((x) => x.peer === inbox.peer) ||

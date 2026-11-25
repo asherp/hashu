@@ -1248,6 +1248,24 @@ pub(crate) async fn operator_test_mint(
     amount_tih: u64,
     memo: &str,
 ) -> Result<(String, String), (StatusCode, String)> {
+    let (proofs, quote_id) = operator_mint_proofs(s, mint, amount_tih).await?;
+    let mint_url = MintUrl::from_str(&s.public_url)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let token = Token::new(
+        mint_url,
+        proofs,
+        Some(memo.into()),
+        CurrencyUnit::Custom("tih".into()),
+    );
+    Ok((token.to_string(), quote_id))
+}
+
+/// The proofs behind [`operator_test_mint`], and the quote id.
+pub(crate) async fn operator_mint_proofs(
+    s: &CheckoutState,
+    mint: &cdk::mint::Mint,
+    amount_tih: u64,
+) -> Result<(cdk::nuts::Proofs, String), (StatusCode, String)> {
     let bad_gw = |e: String| (StatusCode::BAD_GATEWAY, e);
     let Some(method) = s.methods.first().cloned() else {
         return Err((
@@ -1304,21 +1322,13 @@ pub(crate) async fn operator_test_mint(
             "minted {minted} TiH, expected {amount_tih}"
         )));
     }
-    let mint_url = MintUrl::from_str(&s.public_url)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let token = Token::new(
-        mint_url,
-        proofs,
-        Some(memo.into()),
-        CurrencyUnit::Custom("tih".into()),
-    );
     tracing::warn!(
         amount_tih,
         quote = %quote_id,
         %payment_id,
         "operator minted test TiH without payment"
     );
-    Ok((token.to_string(), quote_id))
+    Ok((proofs, quote_id))
 }
 
 async fn redemption(State(s): State<Arc<CheckoutState>>, Path(id): Path<String>) -> Response {
