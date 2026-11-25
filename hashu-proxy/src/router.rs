@@ -430,6 +430,8 @@ struct Inner {
     /// When each (redemption, pool index) last failed. Skipped while
     /// younger than [`FALLBACK_HOLD`].
     pool_down: HashMap<(RedemptionId, usize), Instant>,
+    /// [`Redemption::pools_rev`] last seen per redemption.
+    pools_rev: HashMap<RedemptionId, u32>,
     /// Accepted work per rig label since the proxy started, for the
     /// operator's per-rig hashrate chart (see [`Router::rig_work`]).
     rig_work: HashMap<String, RigWork>,
@@ -1120,6 +1122,14 @@ impl Router {
     fn reconcile_at(&self, now: Instant) -> usize {
         let active = self.routable_active();
         let mut inner = self.lock();
+        // A redeemer who changed pools starts fresh: forget which of the
+        // old ones were down.
+        for r in &active {
+            if inner.pools_rev.get(&r.id).copied().unwrap_or(0) != r.pools_rev {
+                inner.pools_rev.insert(r.id, r.pools_rev);
+                inner.pool_down.retain(|(id, _), _| *id != r.id);
+            }
+        }
         inner.track_unserved(&active, now);
         // Place the biggest rigs first so they claim the big orders; rigs
         // without an estimate go last, oldest connection first.
@@ -1151,13 +1161,18 @@ impl Router {
                             match redemption_route(r, &inner, now) {
                                 Some(best) => {
                                     let to = best.redemption_pool().map_or(0, |(_, p)| p);
-                                    if to == *pool
-                                        || (to < *pool && self.mode != SwitchMode::Seamless)
-                                    {
+                                    if best == b.route {
                                         continue;
                                     }
-                                    if to > *pool && !inner.is_down(*id, *pool, now) {
-                                        continue;
+                                    // Same pool slot but a new pool behind
+                                    // it (the redeemer changed pools): go.
+                                    if to != *pool {
+                                        if to < *pool && self.mode != SwitchMode::Seamless {
+                                            continue;
+                                        }
+                                        if to > *pool && !inner.is_down(*id, *pool, now) {
+                                            continue;
+                                        }
                                     }
                                     best
                                 }
@@ -1246,11 +1261,12 @@ impl Router {
     }
 
     /// Active redemptions with at least one pool the proxy can dial,
-    /// oldest first.
+    /// oldest first. Paused ones get no hashrate until resumed.
     fn routable_active(&self) -> Vec<Redemption> {
         self.ledger
             .active()
             .into_iter()
+            .filter(|r| !r.is_paused())
             .filter(|r| {
                 let ok = r
                     .pools()
@@ -1823,6 +1839,70 @@ mod tests {
         router.switched(a.conn, back);
         assert_eq!(router.current(a.conn), None);
         assert_eq!(router.reconcile(), 0);
+    }
+
+    #[test]
+    fn changing_pools_moves_the_rigs_in_place() {
+        use hashu_core::redemption::PoolTarget;
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let a = router.assign(ConnectionId::next());
+        open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
+        assert_eq!(router.reconcile(), 1);
+        let target = switch_target(&a);
+        router.switched(a.conn, target);
+        assert_eq!(router.reconcile(), 0);
+
+        ledger
+            .change_pools(
+                &rid(1),
+                PoolTarget {
+                    pool_url: "stratum+tcp://bob:4444".into(),
+                    worker_name: "bob.w".into(),
+                    worker_password: None,
+                },
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(router.reconcile(), 1);
+        let to = switch_target(&a);
+        assert_eq!(to.redemption_id(), Some(rid(1)));
+        assert_eq!(to.upstream(), "bob:4444");
+        router.switched(a.conn, to);
+        assert_eq!(router.current(a.conn), Some(rid(1)));
+        assert_eq!(router.reconcile(), 0);
+    }
+
+    #[test]
+    fn paused_redemption_gets_no_hashrate_until_resumed() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let a = router.assign(ConnectionId::next());
+        open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
+        assert_eq!(router.reconcile(), 1);
+        let target = switch_target(&a);
+        router.switched(a.conn, target);
+        assert_eq!(router.current(a.conn), Some(rid(1)));
+
+        // Paused: the rig goes back to the default pool.
+        ledger
+            .pause(&rid(1), hashu_core::redemption::Pauser::Operator)
+            .unwrap();
+        assert_eq!(router.reconcile(), 1);
+        let back = switch_target(&a);
+        assert_eq!(back.redemption_id(), None);
+        router.switched(a.conn, back);
+        assert_eq!(router.reconcile(), 0);
+        // A new rig isn't placed on it either.
+        let b = router.assign(ConnectionId::next());
+        assert_eq!(b.route.redemption_id(), None);
+
+        // Resumed: the rigs come back.
+        ledger
+            .resume(&rid(1), hashu_core::redemption::Pauser::Operator)
+            .unwrap();
+        assert!(router.reconcile() >= 1);
+        assert_eq!(switch_target(&a).redemption_id(), Some(rid(1)));
     }
 
     #[test]

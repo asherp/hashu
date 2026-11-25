@@ -105,6 +105,27 @@ impl RedemptionState {
     }
 }
 
+/// Who paused a redemption.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pauser {
+    /// The holder of its stop key (the wallet that opened it).
+    #[default]
+    Redeemer,
+    /// The mint operator.
+    Operator,
+}
+
+impl Pauser {
+    /// Lowercase name for status APIs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Redeemer => "redeemer",
+            Self::Operator => "operator",
+        }
+    }
+}
+
 /// Most fallback pools a redemption may list after its primary pool.
 pub const MAX_FALLBACK_POOLS: usize = 3;
 
@@ -160,6 +181,38 @@ pub struct Redemption {
     /// e.g. `alice` for `alice.<domain>`). `None` = the operator's
     /// own mint: filled by the operator's rigs.
     pub supplier: Option<String>,
+    /// Hex SHA-256 of the redeemer's stop secret, from the melt request.
+    /// Whoever shows the secret may stop, pause and resume this
+    /// redemption (see [`Self::stop_key_matches`]). `None`: only the
+    /// operator can.
+    pub stop_hash: Option<String>,
+    /// Who paused delivery, if it is paused: routing skips it until
+    /// resumed. It stays owed (and in [`RedemptionLedger::active`])
+    /// meanwhile.
+    pub paused_by: Option<Pauser>,
+    /// Bumped each time the redeemer changes pools
+    /// ([`RedemptionLedger::change_pools`]), so the router can forget what
+    /// it learned about the old ones. Not journaled.
+    pub pools_rev: u32,
+    /// Hashes credited per pool (by URL and worker), in the order each
+    /// pool first got work. Sums to [`Self::accumulated_hashes`].
+    pub pool_hashes: Vec<PoolHashes>,
+}
+
+/// Work one pool received for a redemption.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PoolHashes {
+    pub pool_url: String,
+    pub worker_name: String,
+    pub hashes: u128,
+}
+
+impl PoolHashes {
+    /// Whole `TiH` received, rounded down. See [`Redemption::pool_tih`]
+    /// for figures that add up to the redemption's total.
+    pub fn tih_floor(&self) -> u64 {
+        u64::try_from(self.hashes / HASHES_PER_TIH).unwrap_or(u64::MAX)
+    }
 }
 
 impl Redemption {
@@ -171,6 +224,10 @@ impl Redemption {
             worker_password: None,
             fallbacks: Vec::new(),
             supplier: None,
+            stop_hash: None,
+            paused_by: None,
+            pools_rev: 0,
+            pool_hashes: Vec::new(),
             amount_tih,
             floor_tih: amount_tih,
             target_hashes: u128::from(amount_tih) * HASHES_PER_TIH,
@@ -216,6 +273,40 @@ impl Redemption {
         self
     }
 
+    /// Set the redeemer's stop key (see [`Redemption::stop_hash`]).
+    pub fn with_stop_hash(mut self, stop_hash: Option<String>) -> Self {
+        self.stop_hash = stop_hash.filter(|h| !h.is_empty());
+        self
+    }
+
+    /// Whether `secret` is the redeemer's stop secret: its SHA-256 is
+    /// [`Self::stop_hash`]. Compares digests in constant time. False when
+    /// the redemption has no stop key.
+    pub fn stop_key_matches(&self, secret: &[u8]) -> bool {
+        let Some(want) = &self.stop_hash else {
+            return false;
+        };
+        stop_hash_matches(want, secret)
+    }
+
+    /// Point it at `primary` then `fallbacks` (same cleanup as
+    /// [`Self::with_password`] and [`Self::with_fallbacks`]).
+    fn set_pools(&mut self, primary: PoolTarget, fallbacks: Vec<PoolTarget>) {
+        let next = Redemption::new(self.id, 0, primary.pool_url, primary.worker_name)
+            .with_password(primary.worker_password)
+            .with_fallbacks(fallbacks);
+        self.pool_url = next.pool_url;
+        self.worker_name = next.worker_name;
+        self.worker_password = next.worker_password;
+        self.fallbacks = next.fallbacks;
+        self.pools_rev = self.pools_rev.wrapping_add(1);
+    }
+
+    /// Whether delivery is paused (by anyone).
+    pub fn is_paused(&self) -> bool {
+        self.paused_by.is_some()
+    }
+
     /// Set the non-refundable part (clamped to `amount_tih`).
     pub fn with_floor(mut self, floor_tih: u64) -> Self {
         self.floor_tih = floor_tih.min(self.amount_tih);
@@ -237,16 +328,76 @@ impl Redemption {
     /// Credit `hashes` directly. Same rules as [`Self::credit_share`];
     /// settled redemptions ignore credits too.
     pub fn credit_hashes(&mut self, hashes: u128) -> RedemptionState {
+        self.credit_hashes_on(hashes, 0)
+    }
+
+    /// Credit `hashes` mined for pool `pool` (index into [`Self::pools`];
+    /// out of range counts as the primary).
+    pub fn credit_hashes_on(&mut self, hashes: u128, pool: usize) -> RedemptionState {
         if self.state.is_finished() {
             return self.state;
         }
+        let target = self.pools().into_iter().nth(pool).unwrap_or_else(|| PoolTarget {
+            pool_url: self.pool_url.clone(),
+            worker_name: self.worker_name.clone(),
+            worker_password: None,
+        });
+        self.add_pool_hashes(&target.pool_url, &target.worker_name, hashes);
         self.accumulated_hashes = self.accumulated_hashes.saturating_add(hashes);
+        self.refresh_state();
+        self.state
+    }
+
+    /// Add to one pool's tally only.
+    fn add_pool_hashes(&mut self, pool_url: &str, worker_name: &str, hashes: u128) {
+        if hashes == 0 {
+            return;
+        }
+        match self
+            .pool_hashes
+            .iter_mut()
+            .find(|p| p.pool_url == pool_url && p.worker_name == worker_name)
+        {
+            Some(p) => p.hashes = p.hashes.saturating_add(hashes),
+            None => self.pool_hashes.push(PoolHashes {
+                pool_url: pool_url.to_string(),
+                worker_name: worker_name.to_string(),
+                hashes,
+            }),
+        }
+    }
+
+    fn refresh_state(&mut self) {
+        if self.state.is_finished() {
+            return;
+        }
         self.state = if self.accumulated_hashes >= self.target_hashes {
             RedemptionState::Completed
         } else {
             RedemptionState::Active
         };
-        self.state
+    }
+
+    /// Whole `TiH` per pool, in [`Self::pool_hashes`] order, adding up to
+    /// exactly [`Self::delivered_tih`]: each pool's share rounded down,
+    /// then the units rounding leaves over go to the largest remainders.
+    pub fn pool_tih(&self) -> Vec<(&PoolHashes, u64)> {
+        let mut out: Vec<(&PoolHashes, u64)> =
+            self.pool_hashes.iter().map(|p| (p, p.tih_floor())).collect();
+        let sum: u64 = out.iter().map(|(_, t)| *t).sum();
+        let mut left = self.delivered_tih().saturating_sub(sum);
+        let mut by_rem: Vec<usize> = (0..out.len()).collect();
+        by_rem.sort_by_key(|&i| std::cmp::Reverse(out[i].0.hashes % HASHES_PER_TIH));
+        for i in by_rem {
+            if left == 0 {
+                break;
+            }
+            if out[i].0.hashes % HASHES_PER_TIH > 0 {
+                out[i].1 += 1;
+                left -= 1;
+            }
+        }
+        out
     }
 
     pub fn is_complete(&self) -> bool {
@@ -304,6 +455,19 @@ impl Redemption {
     }
 }
 
+/// Whether hex `want` is the SHA-256 of `secret`, compared in constant
+/// time so the timing says nothing about the secret.
+pub fn stop_hash_matches(want: &str, secret: &[u8]) -> bool {
+    use sha2::{Digest, Sha256};
+    let got = hex::encode(Sha256::digest(secret));
+    got.len() == want.len()
+        && got
+            .bytes()
+            .zip(want.bytes())
+            .fold(0, |a, (x, y)| a | (x ^ y))
+            == 0
+}
+
 /// Expected hashes behind one accepted share at bdiff `difficulty`.
 /// Non-finite or non-positive difficulties contribute nothing.
 pub fn hashes_for_difficulty(difficulty: f64) -> u128 {
@@ -330,6 +494,8 @@ pub enum LedgerError {
     Duplicate(RedemptionId),
     #[error("unknown redemption {0}")]
     Unknown(RedemptionId),
+    #[error("the mint operator paused redemption {0}; only the operator can resume it")]
+    PausedByOperator(RedemptionId),
 }
 
 /// Result of [`RedemptionLedger::settle`].
@@ -365,14 +531,52 @@ enum LedgerRecord {
         /// Absent in journals from before supplier mints: the operator's.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         supplier: Option<String>,
+        /// Absent in journals from before redeemer stop keys: none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop_hash: Option<String>,
     },
     Credit {
         id: RedemptionId,
         /// Decimal string: u128 does not fit a JSON number portably.
         hashes: String,
+        /// Which of the redemption's pools (index into
+        /// [`Redemption::pools`] as they stood then) got the share.
+        /// Absent in journals from before per-pool totals: the primary.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        pool: usize,
+    },
+    /// Hashes one pool got, written by compaction in place of the credits
+    /// it sums. Counts toward the total like a credit.
+    PoolCredit {
+        id: RedemptionId,
+        pool_url: String,
+        worker_name: String,
+        hashes: String,
     },
     /// Frozen at the hashes credited before this record.
     Settle { id: RedemptionId },
+    /// Delivery paused, by the redeemer unless `by` says otherwise.
+    Pause {
+        id: RedemptionId,
+        #[serde(default)]
+        by: Pauser,
+    },
+    /// Delivery resumed.
+    Resume { id: RedemptionId },
+    /// The redeemer sent its hashrate to other pools.
+    Pools {
+        id: RedemptionId,
+        pool_url: String,
+        worker_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_password: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        fallbacks: Vec<PoolTarget>,
+    },
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// Store of redemptions, shared between the melt method (which opens
@@ -417,6 +621,7 @@ impl RedemptionLedger {
                     fallbacks,
                     floor_tih,
                     supplier,
+                    stop_hash,
                 } => {
                     // A duplicate open can only come from a hand-edited
                     // file; keep the first.
@@ -425,20 +630,67 @@ impl RedemptionLedger {
                             .with_password(worker_password)
                             .with_fallbacks(fallbacks)
                             .with_supplier(supplier)
+                            .with_stop_hash(stop_hash)
                             .with_floor(floor_tih.unwrap_or(amount_tih)),
                     );
+                }
+                LedgerRecord::Pause { id, by } => {
+                    if let Some(r) = ledger.lock().get_mut(&id) {
+                        r.paused_by = Some(by);
+                    }
+                }
+                LedgerRecord::Resume { id } => {
+                    if let Some(r) = ledger.lock().get_mut(&id) {
+                        r.paused_by = None;
+                    }
+                }
+                LedgerRecord::Pools {
+                    id,
+                    pool_url,
+                    worker_name,
+                    worker_password,
+                    fallbacks,
+                } => {
+                    if let Some(r) = ledger.lock().get_mut(&id) {
+                        r.set_pools(
+                            PoolTarget {
+                                pool_url,
+                                worker_name,
+                                worker_password,
+                            },
+                            fallbacks,
+                        );
+                    }
                 }
                 LedgerRecord::Settle { id } => {
                     if let Some(r) = ledger.lock().get_mut(&id) {
                         r.settle();
                     }
                 }
-                LedgerRecord::Credit { id, hashes } => {
+                LedgerRecord::Credit { id, hashes, pool } => {
                     let Ok(hashes) = hashes.parse::<u128>() else {
                         continue;
                     };
                     if let Some(r) = ledger.lock().get_mut(&id) {
-                        r.credit_hashes(hashes);
+                        r.credit_hashes_on(hashes, pool);
+                    }
+                }
+                LedgerRecord::PoolCredit {
+                    id,
+                    pool_url,
+                    worker_name,
+                    hashes,
+                } => {
+                    let Ok(hashes) = hashes.parse::<u128>() else {
+                        continue;
+                    };
+                    // Compaction writes these before any settle record,
+                    // and their sum is what was credited, so add them
+                    // whole even past the target.
+                    if let Some(r) = ledger.lock().get_mut(&id) {
+                        r.add_pool_hashes(&pool_url, &worker_name, hashes);
+                        r.accumulated_hashes = r.accumulated_hashes.saturating_add(hashes);
+                        r.refresh_state();
                     }
                 }
             }
@@ -456,14 +708,21 @@ impl RedemptionLedger {
                     fallbacks: r.fallbacks.clone(),
                     floor_tih: Some(r.floor_tih),
                     supplier: r.supplier.clone(),
+                    stop_hash: r.stop_hash.clone(),
                 };
-                let credit = (r.accumulated_hashes > 0).then(|| LedgerRecord::Credit {
+                let credits = r.pool_hashes.iter().map(|p| LedgerRecord::PoolCredit {
                     id: r.id,
-                    hashes: r.accumulated_hashes.to_string(),
+                    pool_url: p.pool_url.clone(),
+                    worker_name: p.worker_name.clone(),
+                    hashes: p.hashes.to_string(),
                 });
                 let settle = (r.state == RedemptionState::Settled)
                     .then_some(LedgerRecord::Settle { id: r.id });
-                std::iter::once(open).chain(credit).chain(settle)
+                let pause = r.paused_by.map(|by| LedgerRecord::Pause { id: r.id, by });
+                std::iter::once(open)
+                    .chain(credits)
+                    .chain(settle)
+                    .chain(pause)
             })
             .collect();
         journal.rewrite(&compact)?;
@@ -501,6 +760,7 @@ impl RedemptionLedger {
             fallbacks: redemption.fallbacks.clone(),
             floor_tih: Some(redemption.floor_tih),
             supplier: redemption.supplier.clone(),
+            stop_hash: redemption.stop_hash.clone(),
         });
         map.insert(id, redemption);
         // Take `order` while still holding `inner` so the two never
@@ -551,15 +811,29 @@ impl RedemptionLedger {
         id: &RedemptionId,
         difficulty: f64,
     ) -> Result<CreditOutcome, LedgerError> {
+        self.credit_share_on(id, difficulty, None)
+    }
+
+    /// Like [`Self::credit_share_outcome`], for a share sent to pool
+    /// `pool` (index into [`Redemption::pools`]). `None`: the pool the
+    /// router last reported serving it, else the primary.
+    pub fn credit_share_on(
+        &self,
+        id: &RedemptionId,
+        difficulty: f64,
+        pool: Option<usize>,
+    ) -> Result<CreditOutcome, LedgerError> {
+        let pool = pool.or_else(|| self.serving_pool(id)).unwrap_or(0);
         let mut map = self.lock();
         let redemption = map.get_mut(id).ok_or(LedgerError::Unknown(*id))?;
         let was_finished = redemption.is_finished();
         let hashes = hashes_for_difficulty(difficulty);
-        let state = redemption.credit_hashes(hashes);
+        let state = redemption.credit_hashes_on(hashes, pool);
         if !was_finished && hashes > 0 {
             self.record(&LedgerRecord::Credit {
                 id: *id,
                 hashes: hashes.to_string(),
+                pool,
             });
         }
         Ok(CreditOutcome {
@@ -592,6 +866,72 @@ impl RedemptionLedger {
             spent_tih: redemption.spent_tih(),
             change_tih: redemption.change_tih(),
         })
+    }
+
+    /// Pause delivery to `id`, as `by`. A paused redemption keeps its
+    /// place and what it is owed, but the router sends it no hashrate
+    /// until it is resumed. An operator's pause takes over a redeemer's;
+    /// a redeemer's pause leaves an operator's in place. Returns whether
+    /// this call changed anything; finished redemptions are left as they
+    /// are.
+    pub fn pause(&self, id: &RedemptionId, by: Pauser) -> Result<bool, LedgerError> {
+        let mut map = self.lock();
+        let redemption = map.get_mut(id).ok_or(LedgerError::Unknown(*id))?;
+        if redemption.is_finished()
+            || redemption.paused_by == Some(by)
+            || (by == Pauser::Redeemer && redemption.paused_by == Some(Pauser::Operator))
+        {
+            return Ok(false);
+        }
+        redemption.paused_by = Some(by);
+        self.record(&LedgerRecord::Pause { id: *id, by });
+        tracing::info!(redemption = %id, by = by.as_str(), "redemption paused");
+        Ok(true)
+    }
+
+    /// Resume delivery to `id`, as `by`. The operator may resume any pause;
+    /// the redeemer only their own ([`LedgerError::PausedByOperator`]
+    /// otherwise). Returns whether this call changed anything.
+    pub fn resume(&self, id: &RedemptionId, by: Pauser) -> Result<bool, LedgerError> {
+        let mut map = self.lock();
+        let redemption = map.get_mut(id).ok_or(LedgerError::Unknown(*id))?;
+        match redemption.paused_by {
+            None => return Ok(false),
+            Some(Pauser::Operator) if by == Pauser::Redeemer => {
+                return Err(LedgerError::PausedByOperator(*id))
+            }
+            Some(_) => {}
+        }
+        redemption.paused_by = None;
+        self.record(&LedgerRecord::Resume { id: *id });
+        tracing::info!(redemption = %id, by = by.as_str(), "redemption resumed");
+        Ok(true)
+    }
+
+    /// Send `id`'s hashrate to `primary` (then `fallbacks`) from now on.
+    /// Work already delivered stays credited; the router moves its rigs on
+    /// its next pass. Returns false if it had finished.
+    pub fn change_pools(
+        &self,
+        id: &RedemptionId,
+        primary: PoolTarget,
+        fallbacks: Vec<PoolTarget>,
+    ) -> Result<bool, LedgerError> {
+        let mut map = self.lock();
+        let redemption = map.get_mut(id).ok_or(LedgerError::Unknown(*id))?;
+        if redemption.is_finished() {
+            return Ok(false);
+        }
+        redemption.set_pools(primary, fallbacks);
+        self.record(&LedgerRecord::Pools {
+            id: *id,
+            pool_url: redemption.pool_url.clone(),
+            worker_name: redemption.worker_name.clone(),
+            worker_password: redemption.worker_password.clone(),
+            fallbacks: redemption.fallbacks.clone(),
+        });
+        tracing::info!(redemption = %id, pool_url = %redemption.pool_url, "redemption pools changed");
+        Ok(true)
     }
 
     /// Record which pool each redemption's rigs are on (index into
@@ -750,6 +1090,159 @@ mod tests {
         ledger.credit_share(&id(2), 1e9).unwrap();
         let ids: Vec<_> = ledger.active().iter().map(|r| r.id).collect();
         assert_eq!(ids, vec![id(5), id(9)]);
+    }
+
+    #[test]
+    fn stop_key_and_pause_survive_reopen() {
+        use sha2::{Digest, Sha256};
+        let secret = [9u8; 32];
+        let hash = hex::encode(Sha256::digest(secret));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("redemptions.jsonl");
+        {
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            ledger
+                .open(
+                    Redemption::new(id(1), 4, "stratum+tcp://p:1".into(), "w".into())
+                        .with_stop_hash(Some(hash.clone())),
+                )
+                .unwrap();
+            assert_eq!(ledger.pause(&id(1), Pauser::Redeemer), Ok(true));
+            assert_eq!(ledger.pause(&id(1), Pauser::Redeemer), Ok(false));
+            // Paused redemptions are still owed.
+            assert_eq!(ledger.active().len(), 1);
+        }
+        {
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            let r = ledger.get(&id(1)).unwrap();
+            assert_eq!(r.paused_by, Some(Pauser::Redeemer));
+            assert!(r.stop_key_matches(&secret));
+            assert!(!r.stop_key_matches(&[8u8; 32]));
+            // The operator's pause takes over; the redeemer can't lift it
+            // and their own pause doesn't replace it.
+            assert_eq!(ledger.pause(&id(1), Pauser::Operator), Ok(true));
+            assert_eq!(ledger.pause(&id(1), Pauser::Redeemer), Ok(false));
+            assert_eq!(
+                ledger.resume(&id(1), Pauser::Redeemer),
+                Err(LedgerError::PausedByOperator(id(1)))
+            );
+        }
+        {
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            let r = ledger.get(&id(1)).unwrap();
+            assert_eq!(r.paused_by, Some(Pauser::Operator));
+            assert_eq!(ledger.resume(&id(1), Pauser::Operator), Ok(true));
+            assert_eq!(ledger.resume(&id(1), Pauser::Operator), Ok(false));
+        }
+        let ledger = RedemptionLedger::persistent(&path).unwrap();
+        assert!(!ledger.get(&id(1)).unwrap().is_paused());
+        // New pools survive a reopen too (compaction folds them into the
+        // open record).
+        ledger
+            .change_pools(
+                &id(1),
+                PoolTarget {
+                    pool_url: "stratum+tcp://q:2".into(),
+                    worker_name: "w2".into(),
+                    worker_password: Some("".into()),
+                },
+                vec![],
+            )
+            .unwrap();
+        drop(ledger);
+        let ledger = RedemptionLedger::persistent(&path).unwrap();
+        let r = ledger.get(&id(1)).unwrap();
+        assert_eq!(
+            (r.pool_url.as_str(), r.worker_name.as_str()),
+            ("stratum+tcp://q:2", "w2")
+        );
+        assert_eq!(r.worker_password, None);
+        // A finished redemption can't be paused.
+        ledger.settle(&id(1)).unwrap();
+        assert_eq!(ledger.pause(&id(1), Pauser::Operator), Ok(false));
+        // No stop key: no secret matches.
+        assert!(!Redemption::new(id(2), 1, "p".into(), "w".into()).stop_key_matches(&secret));
+    }
+
+    #[test]
+    fn hashes_are_totalled_per_pool_across_changes_and_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("redemptions.jsonl");
+        let tih = HASHES_PER_TIH as f64 / HASHES_PER_DIFF_ONE as f64;
+        let backup = PoolTarget {
+            pool_url: "stratum+tcp://b:2".into(),
+            worker_name: "wb".into(),
+            worker_password: None,
+        };
+        {
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            ledger
+                .open(
+                    Redemption::new(id(1), 100, "stratum+tcp://a:1".into(), "wa".into())
+                        .with_fallbacks(vec![backup.clone()]),
+                )
+                .unwrap();
+            // 3 TiH on the primary, 2.5 on its fallback.
+            ledger.credit_share_on(&id(1), 3.0 * tih, Some(0)).unwrap();
+            ledger.credit_share_on(&id(1), 2.5 * tih, Some(1)).unwrap();
+            // The redeemer moves to pool c; 4 more TiH there.
+            ledger
+                .change_pools(
+                    &id(1),
+                    PoolTarget {
+                        pool_url: "stratum+tcp://c:3".into(),
+                        worker_name: "wc".into(),
+                        worker_password: None,
+                    },
+                    vec![backup.clone()],
+                )
+                .unwrap();
+            ledger.credit_share_on(&id(1), 4.0 * tih, Some(0)).unwrap();
+            // Unknown pool index: the router's serving pool (none
+            // reported here), else the primary.
+            ledger.credit_share_on(&id(1), 0.5 * tih, None).unwrap();
+        }
+        let want = |r: &Redemption| {
+            r.pool_tih()
+                .iter()
+                .map(|(p, t)| (p.pool_url.clone(), p.worker_name.clone(), *t))
+                .collect::<Vec<_>>()
+        };
+        let expect = vec![
+            ("stratum+tcp://a:1".to_string(), "wa".to_string(), 3),
+            ("stratum+tcp://b:2".to_string(), "wb".to_string(), 3),
+            ("stratum+tcp://c:3".to_string(), "wc".to_string(), 4),
+        ];
+        // Replayed from the full journal, then again from the compacted one.
+        for _ in 0..2 {
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            let r = ledger.get(&id(1)).unwrap();
+            assert_eq!(r.delivered_tih(), 10);
+            assert_eq!(want(&r), expect);
+            let sum: u128 = r.pool_hashes.iter().map(|p| p.hashes).sum();
+            assert_eq!(sum, r.accumulated_hashes);
+        }
+    }
+
+    #[test]
+    fn journal_from_before_pool_totals_credits_the_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("redemptions.jsonl");
+        let rid = id(1).to_string();
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"op\":\"open\",\"id\":\"{rid}\",\"amount_tih\":4,\"pool_url\":\"p\",\"worker_name\":\"w\"}}\n\
+                 {{\"op\":\"credit\",\"id\":\"{rid}\",\"hashes\":\"{}\"}}\n",
+                2 * HASHES_PER_TIH
+            ),
+        )
+        .unwrap();
+        let ledger = RedemptionLedger::persistent(&path).unwrap();
+        let r = ledger.get(&id(1)).unwrap();
+        assert_eq!(r.pool_tih().len(), 1);
+        assert_eq!(r.pool_tih()[0].1, 2);
+        assert_eq!(r.pool_tih()[0].0.pool_url, "p");
     }
 
     #[test]

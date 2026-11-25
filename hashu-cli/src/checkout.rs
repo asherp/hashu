@@ -53,14 +53,13 @@ use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, State as ProofSpent
 use cdk::wallet::{KeysetFilter, Wallet};
 use cdk::Amount;
 use hashu_core::availability::RigsDown;
-use hashu_core::redemption::{RedemptionId, RedemptionLedger, HASHES_PER_TIH};
+use hashu_core::redemption::{Pauser, RedemptionId, RedemptionLedger, HASHES_PER_TIH};
 use hashu_mint::capacity::{LiveView, MIN_PURCHASE_TIH};
 use hashu_mint::melt::{redemption_id_for, METHOD as HASHRATE};
 use hashu_mint::tether::{METHOD as USDT, USDC_METHOD as USDC};
 use hashu_proxy::meter::HashrateMeter;
 use hashu_proxy::router::upstream_for_pool_url;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::operator::{ControlledPricer, MintControls};
@@ -327,6 +326,13 @@ impl CheckoutState {
         self.rigs.as_ref()?.down_since(r.supplier.as_deref())
     }
 
+    /// Whether nothing is being delivered to `r` through no fault of the
+    /// redeemer: its rigs are down, or the operator paused it. Then the
+    /// redeemer may stop before the floor is delivered.
+    fn stop_waived(&self, r: &hashu_core::redemption::Redemption) -> bool {
+        self.rigs_down_since(r).is_some() || r.paused_by == Some(Pauser::Operator)
+    }
+
     /// The public Stratum address shown in `/checkout/api/info`.
     pub fn with_stratum(mut self, stratum: crate::stratum_addr::StratumAddr) -> Self {
         self.stratum = Some(stratum);
@@ -363,6 +369,12 @@ pub fn router(state: Arc<CheckoutState>) -> axum::Router {
             "/checkout/api/redemption/{id}",
             get(redemption).layer(from_fn(allow_any_origin)),
         )
+        .route(
+            "/checkout/api/redemption/{id}/{action}",
+            post(redeemer_action)
+                .options(preflight)
+                .layer(from_fn(allow_any_origin)),
+        )
         .route("/api/redeem", post(paid_redeem))
         .route("/checkout/order/{id}", get(page))
         .route("/checkout/api/order/{id}", get(order))
@@ -381,6 +393,21 @@ async fn allow_any_origin(req: axum::extract::Request, next: Next) -> Response {
         header::HeaderValue::from_static("*"),
     );
     res
+}
+
+/// CORS preflight for the redeemer's stop, pause and resume: a wallet on
+/// another origin posts JSON there. Anyone may ask; only the holder of the
+/// stop secret gets anything done.
+async fn preflight() -> Response {
+    (
+        StatusCode::NO_CONTENT,
+        [
+            (header::ACCESS_CONTROL_ALLOW_METHODS, "POST, OPTIONS"),
+            (header::ACCESS_CONTROL_ALLOW_HEADERS, "content-type"),
+            (header::ACCESS_CONTROL_MAX_AGE, "86400"),
+        ],
+    )
+        .into_response()
 }
 
 async fn page() -> Html<&'static str> {
@@ -503,6 +530,10 @@ async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
         // Backup pools a redemption may list after its own (melt request
         // field `fallback_pools`).
         "max_fallback_pools": hashu_core::redemption::MAX_FALLBACK_POOLS,
+        // Melt requests may carry `stop_hash`; its secret stops, pauses
+        // and resumes the redemption at
+        // `POST /checkout/api/redemption/{id}/{stop,pause,resume}`.
+        "redeemer_controls": true,
         "max_tih": s.max_tih,
         "mint_url": s.public_url,
         // The operator's Hashu wallet; null when it runs none.
@@ -1431,15 +1462,7 @@ async fn stop_order(
     let Some(secret) = secret else {
         return err(StatusCode::BAD_REQUEST, "stop_secret (hex) is required");
     };
-    let got = hex::encode(Sha256::digest(&secret));
-    // Compare digests, so timing says nothing about the secret.
-    if got.len() != want.len()
-        || got
-            .bytes()
-            .zip(want.bytes())
-            .fold(0, |a, (x, y)| a | (x ^ y))
-            != 0
-    {
+    if !hashu_core::redemption::stop_hash_matches(want, &secret) {
         return err(StatusCode::FORBIDDEN, "wrong stop key for this order");
     }
     // A stop that returns nothing only burns the rest of the token (#83):
@@ -1447,7 +1470,7 @@ async fn stop_order(
     // already rounds up to the full amount. The operator's settle can still
     // clear such a redemption.
     if let Some(r) = s.ledger.get(&o.redemption_id) {
-        let down = s.rigs_down_since(&r).is_some();
+        let down = s.stop_waived(&r);
         if let Some(why) = stop_refusal(&r, down) {
             return err(StatusCode::CONFLICT, why);
         }
@@ -1467,6 +1490,142 @@ async fn stop_order(
         }
     }
     order(State(s), Path(order_id)).await
+}
+
+/// `POST /checkout/api/redemption/{id}/{stop|pause|resume}` with
+/// `{ "stop_secret": hex }`: the redeemer's controls for a redemption a
+/// wallet opened by melting with `stop_hash` in its request.
+///
+/// - `stop` settles it like [`stop_order`]: charged for the work delivered
+///   (never below the floor), the rest returned as change on the wallet's
+///   blanks when it next checks the melt. Same rules as the checkout's
+///   stop ([`stop_refusal`]).
+/// - `pool` with `pool_url`, `worker_name`, optional `worker_password`
+///   and optional `fallback_pools` sends its hashrate there from now on
+///   (any time, paused or not, before the floor too: it changes nothing
+///   charged). The router switches its rigs in place.
+/// - `pause` sends its hashrate elsewhere until `resume`. Nothing is
+///   charged or returned; it keeps its place and stays owed. The redeemer
+///   can't resume a pause the operator set (409); while the operator has
+///   it paused the redeemer may stop it before the floor, like downtime.
+///
+/// Answers like `GET /checkout/api/redemption/{id}`.
+async fn redeemer_action(
+    State(s): State<Arc<CheckoutState>>,
+    Path((id, action)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    let Some(rid) = parse_id(&id) else {
+        return err(StatusCode::BAD_REQUEST, "bad redemption id");
+    };
+    if !matches!(action.as_str(), "stop" | "pause" | "resume" | "pool") {
+        return err(StatusCode::NOT_FOUND, "unknown action");
+    }
+    let Some(r) = s.ledger.get(&rid) else {
+        return err(StatusCode::NOT_FOUND, "unknown redemption");
+    };
+    if r.stop_hash.is_none() {
+        return err(
+            StatusCode::FORBIDDEN,
+            "this redemption was opened without a stop key, so only the operator can stop it",
+        );
+    }
+    let v = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+    let secret = v["stop_secret"].as_str().and_then(|h| hex::decode(h).ok());
+    let Some(secret) = secret else {
+        return err(StatusCode::BAD_REQUEST, "stop_secret (hex) is required");
+    };
+    if !r.stop_key_matches(&secret) {
+        return err(StatusCode::FORBIDDEN, "wrong stop key for this redemption");
+    }
+    if r.is_finished() {
+        return err(StatusCode::CONFLICT, "this redemption has already ended");
+    }
+    match action.as_str() {
+        "stop" => {
+            let down = s.stop_waived(&r);
+            if let Some(why) = stop_refusal(&r, down) {
+                return err(StatusCode::CONFLICT, why);
+            }
+            if let Ok(out) = s.ledger.settle(&rid) {
+                if out.newly_settled {
+                    tracing::info!(redemption = %rid, change_tih = out.change_tih, "redeemer stopped the redemption");
+                }
+            }
+        }
+        "pause" => {
+            let _ = s.ledger.pause(&rid, Pauser::Redeemer);
+        }
+        "pool" => {
+            let (primary, fallbacks) = match new_pools(&v, &r) {
+                Ok(p) => p,
+                Err(why) => return err(StatusCode::BAD_REQUEST, why),
+            };
+            let _ = s.ledger.change_pools(&rid, primary, fallbacks);
+        }
+        _ => {
+            if let Err(e) = s.ledger.resume(&rid, Pauser::Redeemer) {
+                return err(StatusCode::CONFLICT, e);
+            }
+        }
+    }
+    match redemption_json(&s, &rid) {
+        Some(v) => ([(header::CACHE_CONTROL, "no-store")], Json(v)).into_response(),
+        None => err(StatusCode::NOT_FOUND, "unknown redemption"),
+    }
+}
+
+/// The pools a `pool` action asks for: `pool_url`, `worker_name`,
+/// optional `worker_password`, and optional `fallback_pools` (left as they
+/// were when absent). Same checks as a melt request.
+fn new_pools(
+    v: &Value,
+    r: &hashu_core::redemption::Redemption,
+) -> Result<
+    (
+        hashu_core::redemption::PoolTarget,
+        Vec<hashu_core::redemption::PoolTarget>,
+    ),
+    String,
+> {
+    use hashu_core::redemption::{PoolTarget, MAX_FALLBACK_POOLS};
+    use hashu_mint::melt::is_routable_pool_url;
+    let primary = PoolTarget {
+        pool_url: v["pool_url"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        worker_name: v["worker_name"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        worker_password: v["worker_password"].as_str().map(str::to_string),
+    };
+    let fallbacks: Vec<PoolTarget> = match v.get("fallback_pools") {
+        None | Some(Value::Null) => r.fallbacks.clone(),
+        Some(f) => {
+            serde_json::from_value(f.clone()).map_err(|e| format!("invalid fallback_pools: {e}"))?
+        }
+    };
+    if fallbacks.len() > MAX_FALLBACK_POOLS {
+        return Err(format!("at most {MAX_FALLBACK_POOLS} fallback_pools"));
+    }
+    for (i, p) in std::iter::once(&primary).chain(&fallbacks).enumerate() {
+        let what = if i == 0 {
+            "pool_url".to_string()
+        } else {
+            format!("fallback_pools[{}].pool_url", i - 1)
+        };
+        if !is_routable_pool_url(&p.pool_url) {
+            return Err(format!("{what} must be stratum+tcp://host:port, stratum+ssl://host:port or stratum2+tcp://host[:port]/<authority key>"));
+        }
+        if p.worker_name.is_empty() {
+            return Err(format!("a worker name is required for {what}"));
+        }
+    }
+    Ok((primary, fallbacks))
 }
 
 /// Why the redeemer may not stop `r` now, if they may not. `down`: the
@@ -1555,6 +1714,12 @@ fn redemption_json(s: &CheckoutState, rid: &RedemptionId) -> Option<Value> {
                 "worker_name": p.worker_name,
             })).collect::<Vec<_>>(),
             "serving_pool": serving,
+            // Whole TiH each pool got, adding up to the delivered total.
+            "pool_tih": r.pool_tih().iter().map(|(p, tih)| json!({
+                "pool_url": p.pool_url,
+                "worker_name": p.worker_name,
+                "tih": tih,
+            })).collect::<Vec<_>>(),
             "serving_pool_url": serving.map(|i| pools[i].pool_url.clone()),
             "amount_tih": r.amount_tih,
             "floor_tih": r.floor_tih,
@@ -1562,6 +1727,15 @@ fn redemption_json(s: &CheckoutState, rid: &RedemptionId) -> Option<Value> {
             // What a stop right now would charge and return; null once finished.
             "stop_charge_tih": r.settle_preview().map(|(c, _)| c),
             "stop_change_tih": r.settle_preview().map(|(_, m)| m),
+            // The wallet that opened it holds a stop key (melt request
+            // `stop_hash`): it may stop, pause and resume it.
+            "can_stop": r.stop_hash.is_some(),
+            "paused": r.is_paused(),
+            // "redeemer" or "operator" while paused, else null.
+            "paused_by": r.paused_by.map(|p| p.as_str()),
+            // Why a stop now would be refused; null when it would go
+            // through (or the redemption has ended).
+            "stop_refusal": (!r.is_finished()).then(|| stop_refusal(&r, s.stop_waived(&r))).flatten(),
             "progress": if r.target_hashes == 0 { 1.0 } else { (r.accumulated_hashes as f64 / r.target_hashes as f64).min(1.0) },
             "state": r.state.as_str(),
             "spent_tih": r.is_finished().then(|| r.spent_tih()),

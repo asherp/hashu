@@ -83,6 +83,13 @@ pub struct HashrateRequest {
     /// same amount to the same pool and worker twice sets a fresh nonce.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
+    /// Hex SHA-256 (64 lowercase hex characters) of a 32-byte secret the
+    /// wallet keeps. Showing the secret to
+    /// `POST /checkout/api/redemption/{id}/{stop,pause,resume}` lets the
+    /// redeemer stop or pause the redemption. Without it only the operator
+    /// can.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_hash: Option<String>,
 }
 
 impl HashrateRequest {
@@ -104,6 +111,13 @@ impl HashrateRequest {
                 "at most {MAX_FALLBACK_POOLS} fallback_pools"
             )));
         }
+        if let Some(h) = &parsed.stop_hash {
+            if !is_stop_hash(h) {
+                return Err(Error::Custom(
+                    "stop_hash must be 64 lowercase hex characters".into(),
+                ));
+            }
+        }
         for (i, p) in parsed.fallback_pools.iter().enumerate() {
             if !is_routable_pool_url(&p.pool_url) {
                 return Err(Error::Custom(format!(
@@ -124,7 +138,13 @@ impl HashrateRequest {
         Redemption::new(id, self.amount_tih, self.pool_url, self.worker_name)
             .with_password(self.worker_password)
             .with_fallbacks(self.fallback_pools)
+            .with_stop_hash(self.stop_hash)
     }
+}
+
+/// 64 lowercase hex characters: a SHA-256 in hex.
+pub fn is_stop_hash(h: &str) -> bool {
+    h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Whether the proxy can dial `pool_url`: `stratum+tcp://host:port` or
@@ -133,7 +153,7 @@ impl HashrateRequest {
 /// wallet can't pay for a redemption the router would skip. Mirrors
 /// `hashu_proxy::upstream::normalize_upstream`, which this crate can't
 /// depend on.
-fn is_routable_pool_url(pool_url: &str) -> bool {
+pub fn is_routable_pool_url(pool_url: &str) -> bool {
     if let Some(rest) = pool_url.strip_prefix("stratum2+tcp://") {
         return is_routable_sv2(rest);
     }

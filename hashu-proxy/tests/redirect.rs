@@ -308,7 +308,15 @@ async fn unreachable_primary_fails_over_to_the_redeemers_backup_pool() {
         seen.recv().await.unwrap(),
         ("backup", "mining.submit".into(), "alice.backup".into())
     );
-    assert_eq!(ledger.get(&id).unwrap().delivered_tih(), 1);
+    let r = ledger.get(&id).unwrap();
+    assert_eq!(r.delivered_tih(), 1);
+    // And count for the backup pool, not the dead primary.
+    let per_pool: Vec<_> = r
+        .pool_tih()
+        .iter()
+        .map(|(p, t)| (p.worker_name.clone(), *t))
+        .collect();
+    assert_eq!(per_pool, vec![("alice.backup".to_string(), 1)]);
 }
 
 #[tokio::test]

@@ -156,7 +156,20 @@ impl ShareCrediter {
         difficulty: f64,
         evidence: ShareEvidence,
     ) -> Result<CreditOutcome, LedgerError> {
-        let outcome = self.credit(id, difficulty)?;
+        self.credit_with_evidence_on(id, None, difficulty, evidence)
+    }
+
+    /// Like [`Self::credit_with_evidence`], for a share sent to pool
+    /// `pool` of the redemption (index into its pools; `None`: the one it
+    /// is being served on).
+    pub fn credit_with_evidence_on(
+        &self,
+        id: &RedemptionId,
+        pool: Option<usize>,
+        difficulty: f64,
+        evidence: ShareEvidence,
+    ) -> Result<CreditOutcome, LedgerError> {
+        let outcome = self.credit_on(id, pool, difficulty)?;
         let ignored = outcome.state.is_finished() && !outcome.newly_completed;
         if !ignored {
             if let Some(r) = &self.reliability {
@@ -184,7 +197,17 @@ impl ShareCrediter {
 
     /// Credit one accepted share at bdiff `difficulty` to `id`.
     pub fn credit(&self, id: &RedemptionId, difficulty: f64) -> Result<CreditOutcome, LedgerError> {
-        let outcome = self.ledger.credit_share_outcome(id, difficulty)?;
+        self.credit_on(id, None, difficulty)
+    }
+
+    /// Credit one accepted share sent to pool `pool` of `id`.
+    pub fn credit_on(
+        &self,
+        id: &RedemptionId,
+        pool: Option<usize>,
+        difficulty: f64,
+    ) -> Result<CreditOutcome, LedgerError> {
+        let outcome = self.ledger.credit_share_on(id, difficulty, pool)?;
         if outcome.newly_completed {
             tracing::info!(redemption = %id, hashes = %outcome.accumulated_hashes, "redemption completed");
             // No subscribers is fine: the ledger still records completion
@@ -210,10 +233,26 @@ impl CreditContext {
     /// Credit an accepted share that was submitted while `bound_to` was
     /// the connection's redemption. Updates metrics; never fails the
     /// connection.
+    #[cfg(test)]
     pub(crate) fn credit_accepted(
         &self,
         conn: ConnectionId,
         bound_to: Option<RedemptionId>,
+        difficulty: Option<f64>,
+        evidence: ShareEvidence,
+        metrics: &ProxyMetrics,
+    ) {
+        self.credit_accepted_on(conn, bound_to, None, difficulty, evidence, metrics)
+    }
+
+    /// Like [`Self::credit_accepted`], for a share sent to pool `pool`
+    /// (index into the redemption's pools; `None`: whichever it is being
+    /// served on).
+    pub(crate) fn credit_accepted_on(
+        &self,
+        conn: ConnectionId,
+        bound_to: Option<RedemptionId>,
+        pool: Option<usize>,
         difficulty: Option<f64>,
         evidence: ShareEvidence,
         metrics: &ProxyMetrics,
@@ -225,7 +264,7 @@ impl CreditContext {
         };
         match self
             .crediter
-            .credit_with_evidence(&id, difficulty, evidence)
+            .credit_with_evidence_on(&id, pool, difficulty, evidence)
         {
             Ok(outcome) => {
                 metrics.shares_credited.fetch_add(1, Ordering::Relaxed);
@@ -297,6 +336,38 @@ mod tests {
         let r = ctx.crediter.ledger().get(&id(1)).unwrap();
         assert_eq!(r.accumulated_hashes, 8 * HASHES_PER_DIFF_ONE);
         assert_eq!(r.state, RedemptionState::Active);
+    }
+
+    #[test]
+    fn share_counts_for_the_pool_its_leg_was_on() {
+        use hashu_core::redemption::PoolTarget;
+        let ledger = Arc::new(RedemptionLedger::new());
+        ledger
+            .open(
+                Redemption::new(id(1), 1, "p".into(), "w".into()).with_fallbacks(vec![PoolTarget {
+                    pool_url: "q".into(),
+                    worker_name: "v".into(),
+                    worker_password: None,
+                }]),
+            )
+            .unwrap();
+        let ctx = CreditContext::new(
+            Arc::new(ShareCrediter::new(ledger)),
+            Arc::new(StaticBinding::default()),
+        );
+        let m = ProxyMetrics::default();
+        ctx.credit_accepted_on(ConnectionId(1), Some(id(1)), Some(1), Some(8.0), ev(), &m);
+        ctx.credit_accepted_on(ConnectionId(1), Some(id(1)), Some(0), Some(2.0), ev(), &m);
+        let r = ctx.crediter.ledger().get(&id(1)).unwrap();
+        let got: Vec<_> = r
+            .pool_hashes
+            .iter()
+            .map(|p| (p.pool_url.as_str(), p.hashes))
+            .collect();
+        assert_eq!(
+            got,
+            vec![("q", 8 * HASHES_PER_DIFF_ONE), ("p", 2 * HASHES_PER_DIFF_ONE)]
+        );
     }
 
     #[test]

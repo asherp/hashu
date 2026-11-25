@@ -213,7 +213,7 @@ td.num, th.num { text-align: right; }
   <section class="card" aria-labelledby="h-red">
     <div class="card-head">
       <h2 id="h-red">Hashrate delivered to the redemption</h2>
-      <div class="row"><button class="act" id="btn-settle" hidden title="Stop this redemption and return the undelivered TiH to the redeemer as change">Settle, return change</button><span class="pill rail" id="red-state">—</span></div>
+      <div class="row"><button class="act" id="btn-pause" hidden title="Hold this redemption's hashrate; it keeps its place in line and nothing is charged">Pause</button><button class="act" id="btn-settle" hidden title="Stop this redemption and return the undelivered TiH to the redeemer as change">Settle, return change</button><span class="pill rail" id="red-state">—</span></div>
     </div>
     <div class="row sub" id="red-meta">No redemption yet. A holder redeems by melting TiH with the <span class="mono">hashrate</span> method.</div>
     <div class="bar"><div id="red-bar" style="width:0%"></div></div>
@@ -844,7 +844,9 @@ function drawRedemption () {
   // Projected finish at the rate of the last minute.
   const rate = trackRate(t)
   const done = pts.length ? pts[pts.length - 1][1] : 0
-  const projection = !t.completed_ms && rate > 0 && done < t.amount_tih
+  // None while paused: it gets no hashrate until resumed.
+  const sel = state.op && state.op.redemptions.find((r) => r.id === state.selected)
+  const projection = !t.completed_ms && !(sel && sel.paused_by) && rate > 0 && done < t.amount_tih
     ? etaProjection(end, done, t.amount_tih, rate)
     : null
   drawChart($('c-red'), {
@@ -867,6 +869,9 @@ function etaProjection (nowMs, doneTih, targetTih, rate) {
 }
 
 // Rate into one redemption over its last minute of points.
+// Paused redemptions: who holds them.
+const pausedLabel = (by) => by === 'operator' ? 'Paused by operator' : 'Paused by redeemer'
+const stateLabel = (r) => r.paused_by && r.state !== 'completed' && r.state !== 'settled' ? pausedLabel(r.paused_by) : r.state
 function trackRate (t) {
   if (!t || t.points.length < 2) return 0
   const last = t.points[t.points.length - 1]
@@ -1039,18 +1044,21 @@ function render () {
       <td><span class="mono">${esc(hostOf(r.pool_url))}</span><br><span class="sub">${esc(r.worker_name)}</span></td>
       <td>${fmtTih(r.filled_tih)} / ${r.amount_tih}</td>
       <td><div class="bar"><div style="width:${(r.progress * 100).toFixed(1)}%"></div></div></td>
-      <td><span class="pill ${r.state === 'completed' ? 'on' : 'rail'}">${r.state}</span></td>
+      <td><span class="pill ${r.state === 'completed' ? 'on' : r.paused_by ? 'off' : 'rail'}">${stateLabel(r)}</span></td>
     </tr>`).join('') : '<tr><td colspan="5" class="sub">None yet. Holders redeem by melting TiH with the hashrate method.</td></tr>'
 
   const sel = op.redemptions.find((r) => r.id === state.selected)
   if (sel) {
     const tr = trackRate(state.track)
-    const eta = sel.state === 'completed' ? 'done' : sel.state === 'settled' ? `settled: charged ${sel.spent_tih} TiH, ${sel.change_tih} TiH returned as change` : tr > 0 ? `ETA ${fmtDur((sel.remaining_tih * HASHES_PER_TIH) / tr)}` : 'waiting for shares'
+    const eta = sel.state === 'completed' ? 'done' : sel.state === 'settled' ? `settled: charged ${sel.spent_tih} TiH, ${sel.change_tih} TiH returned as change` : sel.paused_by ? `${pausedLabel(sel.paused_by).toLowerCase()}: no hashrate until resumed` : tr > 0 ? `ETA ${fmtDur((sel.remaining_tih * HASHES_PER_TIH) / tr)}` : 'waiting for shares'
     $('red-meta').innerHTML = `<span class="mono">${esc(shortId(sel.id))}</span> → <span class="mono">${esc(hostOf(sel.pool_url))}</span> as <b>${esc(sel.worker_name)}</b> · <b>${fmtTih(sel.filled_tih)}</b> of ${sel.amount_tih} TiH (${(sel.progress * 100).toFixed(1)}%) · ${fmtRate(tr)} · ${eta}`
+      + ((sel.pool_tih || []).length > 1 ? `<br><span class="sub">By pool: ${sel.pool_tih.map((p) => `<span class="mono">${esc(hostOf(p.pool_url))}</span> as ${esc(p.worker_name)} ${p.tih} TiH`).join(' · ')}</span>` : '')
     $('red-bar').style.width = `${(sel.progress * 100).toFixed(1)}%`
-    $('red-state').textContent = sel.state
-    $('red-state').className = `pill ${sel.state === 'completed' ? 'on' : 'rail'}`
+    $('red-state').textContent = stateLabel(sel)
+    $('red-state').className = `pill ${sel.state === 'completed' ? 'on' : sel.paused_by ? 'off' : 'rail'}`
     $('btn-settle').hidden = sel.state === 'completed' || sel.state === 'settled'
+    $('btn-pause').hidden = sel.state === 'completed' || sel.state === 'settled'
+    $('btn-pause').textContent = sel.paused_by ? 'Resume' : 'Pause'
   }
 }
 
@@ -1218,6 +1226,16 @@ $('btn-test-redeem').addEventListener('click', async () => {
     state.selected = r.redemption_id; state.pinned = true
     alertMsg('')
   } catch (e) { if (e.body && e.body.refund_token) $('test-token').value = e.body.refund_token; alertMsg(e.message) } finally { b.disabled = false; poll() }
+})
+$('btn-pause').addEventListener('click', async () => {
+  const id = state.selected
+  const r = (state.op && state.op.redemptions || []).find((x) => x.id === id)
+  if (!id || !r) return
+  const b = $('btn-pause'); b.disabled = true
+  try {
+    await api(`redemptions/${encodeURIComponent(id)}/${r.paused_by ? 'resume' : 'pause'}`, { method: 'POST' })
+    alertMsg('')
+  } catch (e) { alertMsg(e.message) } finally { b.disabled = false; poll() }
 })
 $('btn-settle').addEventListener('click', async () => {
   const id = state.selected

@@ -162,12 +162,25 @@ async fn redeem_all(
     h: &Harness,
     amount_tih: u64,
 ) -> (String, hashu_core::redemption::RedemptionId) {
-    let request = serde_json::json!({
+    redeem_all_with(h, amount_tih, None).await
+}
+
+/// [`redeem_all`] with a `stop_hash` in the melt request, as the Hashu
+/// wallet sends it.
+async fn redeem_all_with(
+    h: &Harness,
+    amount_tih: u64,
+    stop_hash: Option<String>,
+) -> (String, hashu_core::redemption::RedemptionId) {
+    let mut request = serde_json::json!({
         "pool_url": "stratum+tcp://pool.example:3333",
         "worker_name": "bob.rig1",
         "amount_tih": amount_tih,
-    })
-    .to_string();
+    });
+    if let Some(sh) = stop_hash {
+        request["stop_hash"] = sh.into();
+    }
+    let request = request.to_string();
     let rid = redemption_id_for(&request);
     let quote = h
         .wallet
@@ -722,4 +735,125 @@ async fn redeemer_cannot_stop_before_the_floor() {
     assert_eq!(code, 409, "{body}");
     assert!(body.to_string().contains("operator"), "{body}");
     assert!(!h.ledger.get(&rid).unwrap().is_finished());
+}
+
+/// A wallet that melted with `stop_hash` pauses, resumes and stops its
+/// redemption at `/checkout/api/redemption/{id}/...` with the secret, and
+/// its own melt flow picks up the change.
+#[tokio::test(flavor = "multi_thread")]
+async fn wallet_pauses_resumes_and_stops_with_its_stop_key() {
+    use sha2::{Digest, Sha256};
+    let h = harness(10).await;
+    let checkout = serve_checkout(&h, Arc::new(OrderBook::new())).await;
+    let secret = [5u8; 32];
+    let (quote_id, rid) = redeem_all_with(&h, 10, Some(hex::encode(Sha256::digest(secret)))).await;
+    let base = format!("{checkout}/checkout/api/redemption/{rid}");
+    let info = get_json(&format!("{checkout}/checkout/api/info")).await;
+    assert_eq!(info["redeemer_controls"], true);
+    let status = get_json(&base).await;
+    assert_eq!(status["can_stop"], true);
+    assert_eq!(status["paused"], false);
+    let key = serde_json::json!({ "stop_secret": hex::encode(secret) });
+
+    // A wrong key or a bad action does nothing.
+    let (code, _) = post_status(
+        &format!("{base}/pause"),
+        serde_json::json!({ "stop_secret": hex::encode([6u8; 32]) }),
+    )
+    .await;
+    assert_eq!(code, 403);
+    let (code, _) = post_status(&format!("{base}/melt"), key.clone()).await;
+    assert_eq!(code, 404);
+    assert!(!h.ledger.get(&rid).unwrap().is_paused());
+
+    let v = post_json(&format!("{base}/pause"), key.clone()).await;
+    assert_eq!(v["paused"], true);
+    assert_eq!(v["paused_by"], "redeemer");
+    assert!(h.ledger.get(&rid).unwrap().is_paused());
+    let v = post_json(&format!("{base}/resume"), key.clone()).await;
+    assert_eq!(v["paused"], false);
+
+    // 1.5 TiH to the first pool, then change pools: same redemption, new
+    // pool from now on.
+    let tih = HASHES_PER_TIH as f64 / (1u64 << 32) as f64;
+    h.ledger.credit_share(&rid, 1.5 * tih).unwrap();
+    let mut body = key.clone();
+    body["pool_url"] = "stratum+tcp://other.example:3333".into();
+    body["worker_name"] = "carol.rig".into();
+    let v = post_json(&format!("{base}/pool"), body.clone()).await;
+    assert_eq!(v["pool_url"], "stratum+tcp://other.example:3333");
+    assert_eq!(v["worker_name"], "carol.rig");
+    body["pool_url"] = "http://nope".into();
+    let (code, _) = post_status(&format!("{base}/pool"), body).await;
+    assert_eq!(code, 400);
+
+    // 2 TiH more on the new pool (3.5 delivered), then the redeemer
+    // stops: 4 charged, 6 back.
+    h.ledger.credit_share(&rid, 2.0 * tih).unwrap();
+    let per_pool = get_json(&base).await["pool_tih"].clone();
+    assert_eq!(
+        per_pool,
+        serde_json::json!([
+            { "pool_url": "stratum+tcp://pool.example:3333", "worker_name": "bob.rig1", "tih": 2 },
+            { "pool_url": "stratum+tcp://other.example:3333", "worker_name": "carol.rig", "tih": 2 },
+        ])
+    );
+    assert_eq!(
+        get_json(&base).await["stop_refusal"],
+        serde_json::Value::Null
+    );
+    let v = post_json(&format!("{base}/stop"), key.clone()).await;
+    assert_eq!(v["state"], "settled");
+    assert_eq!(v["change_tih"], 6);
+    assert_eq!(paid_state(&h, &quote_id).await, MeltQuoteState::Paid);
+    assert_eq!(u64::from(h.wallet.total_balance().await.unwrap()), 6);
+    // Ended: nothing more to do.
+    let (code, _) = post_status(&format!("{base}/pause"), key).await;
+    assert_eq!(code, 409);
+}
+
+/// Without a stop key in the melt request, the wallet's redemption can
+/// only be stopped by the operator.
+#[tokio::test(flavor = "multi_thread")]
+async fn wallet_redemption_without_stop_key_cannot_be_paused() {
+    let h = harness(4).await;
+    let checkout = serve_checkout(&h, Arc::new(OrderBook::new())).await;
+    let (_, rid) = redeem_all(&h, 4).await;
+    let base = format!("{checkout}/checkout/api/redemption/{rid}");
+    assert_eq!(get_json(&base).await["can_stop"], false);
+    let (code, _) = post_status(
+        &format!("{base}/pause"),
+        serde_json::json!({ "stop_secret": hex::encode([5u8; 32]) }),
+    )
+    .await;
+    assert_eq!(code, 403);
+}
+
+/// While the operator has a redemption paused, the redeemer can't resume
+/// it, but may stop it before the floor (nothing is being delivered, as in
+/// downtime) and gets everything back.
+#[tokio::test(flavor = "multi_thread")]
+async fn operator_pause_blocks_resume_and_waives_the_floor() {
+    use hashu_core::redemption::Pauser;
+    use sha2::{Digest, Sha256};
+    let h = harness(4).await;
+    let checkout = serve_checkout(&h, Arc::new(OrderBook::new())).await;
+    let secret = [5u8; 32];
+    let (quote_id, rid) = redeem_all_with(&h, 4, Some(hex::encode(Sha256::digest(secret)))).await;
+    let base = format!("{checkout}/checkout/api/redemption/{rid}");
+    let key = serde_json::json!({ "stop_secret": hex::encode(secret) });
+    // Floor is 1 TiH and nothing is delivered: no stop yet.
+    assert!(get_json(&base).await["stop_refusal"].is_string());
+    h.ledger.pause(&rid, Pauser::Operator).unwrap();
+    let v = get_json(&base).await;
+    assert_eq!(v["paused_by"], "operator");
+    assert_eq!(v["stop_refusal"], serde_json::Value::Null);
+    let (code, _) = post_status(&format!("{base}/resume"), key.clone()).await;
+    assert_eq!(code, 409);
+    // Pausing again as the redeemer leaves the operator's pause in place.
+    let v = post_json(&format!("{base}/pause"), key.clone()).await;
+    assert_eq!(v["paused_by"], "operator");
+    let v = post_json(&format!("{base}/stop"), key).await;
+    assert_eq!(v["state"], "settled");
+    assert_eq!(paid_state(&h, &quote_id).await, MeltQuoteState::Paid);
 }
