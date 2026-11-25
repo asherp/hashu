@@ -160,6 +160,14 @@ pub struct Redemption {
     /// e.g. `alice` for `alice.<domain>`). `None` = the operator's
     /// own mint: filled by the operator's rigs.
     pub supplier: Option<String>,
+    /// Hex SHA-256 of the redeemer's stop secret, from the melt request.
+    /// Whoever shows the secret may stop, pause and resume this
+    /// redemption (see [`Self::stop_key_matches`]). `None`: only the
+    /// operator can.
+    pub stop_hash: Option<String>,
+    /// The redeemer paused delivery: routing skips it until resumed. It
+    /// stays owed (and in [`RedemptionLedger::active`]) meanwhile.
+    pub paused: bool,
 }
 
 impl Redemption {
@@ -171,6 +179,8 @@ impl Redemption {
             worker_password: None,
             fallbacks: Vec::new(),
             supplier: None,
+            stop_hash: None,
+            paused: false,
             amount_tih,
             floor_tih: amount_tih,
             target_hashes: u128::from(amount_tih) * HASHES_PER_TIH,
@@ -214,6 +224,22 @@ impl Redemption {
     pub fn with_supplier(mut self, supplier: Option<String>) -> Self {
         self.supplier = supplier.filter(|s| !s.is_empty());
         self
+    }
+
+    /// Set the redeemer's stop key (see [`Redemption::stop_hash`]).
+    pub fn with_stop_hash(mut self, stop_hash: Option<String>) -> Self {
+        self.stop_hash = stop_hash.filter(|h| !h.is_empty());
+        self
+    }
+
+    /// Whether `secret` is the redeemer's stop secret: its SHA-256 is
+    /// [`Self::stop_hash`]. Compares digests in constant time. False when
+    /// the redemption has no stop key.
+    pub fn stop_key_matches(&self, secret: &[u8]) -> bool {
+        let Some(want) = &self.stop_hash else {
+            return false;
+        };
+        stop_hash_matches(want, secret)
     }
 
     /// Set the non-refundable part (clamped to `amount_tih`).
@@ -304,6 +330,19 @@ impl Redemption {
     }
 }
 
+/// Whether hex `want` is the SHA-256 of `secret`, compared in constant
+/// time so the timing says nothing about the secret.
+pub fn stop_hash_matches(want: &str, secret: &[u8]) -> bool {
+    use sha2::{Digest, Sha256};
+    let got = hex::encode(Sha256::digest(secret));
+    got.len() == want.len()
+        && got
+            .bytes()
+            .zip(want.bytes())
+            .fold(0, |a, (x, y)| a | (x ^ y))
+            == 0
+}
+
 /// Expected hashes behind one accepted share at bdiff `difficulty`.
 /// Non-finite or non-positive difficulties contribute nothing.
 pub fn hashes_for_difficulty(difficulty: f64) -> u128 {
@@ -365,6 +404,9 @@ enum LedgerRecord {
         /// Absent in journals from before supplier mints: the operator's.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         supplier: Option<String>,
+        /// Absent in journals from before redeemer stop keys: none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop_hash: Option<String>,
     },
     Credit {
         id: RedemptionId,
@@ -373,6 +415,10 @@ enum LedgerRecord {
     },
     /// Frozen at the hashes credited before this record.
     Settle { id: RedemptionId },
+    /// The redeemer paused delivery.
+    Pause { id: RedemptionId },
+    /// The redeemer resumed delivery.
+    Resume { id: RedemptionId },
 }
 
 /// Store of redemptions, shared between the melt method (which opens
@@ -417,6 +463,7 @@ impl RedemptionLedger {
                     fallbacks,
                     floor_tih,
                     supplier,
+                    stop_hash,
                 } => {
                     // A duplicate open can only come from a hand-edited
                     // file; keep the first.
@@ -425,8 +472,15 @@ impl RedemptionLedger {
                             .with_password(worker_password)
                             .with_fallbacks(fallbacks)
                             .with_supplier(supplier)
+                            .with_stop_hash(stop_hash)
                             .with_floor(floor_tih.unwrap_or(amount_tih)),
                     );
+                }
+                LedgerRecord::Pause { id } | LedgerRecord::Resume { id } => {
+                    let paused = matches!(record, LedgerRecord::Pause { .. });
+                    if let Some(r) = ledger.lock().get_mut(&id) {
+                        r.paused = paused;
+                    }
                 }
                 LedgerRecord::Settle { id } => {
                     if let Some(r) = ledger.lock().get_mut(&id) {
@@ -456,6 +510,7 @@ impl RedemptionLedger {
                     fallbacks: r.fallbacks.clone(),
                     floor_tih: Some(r.floor_tih),
                     supplier: r.supplier.clone(),
+                    stop_hash: r.stop_hash.clone(),
                 };
                 let credit = (r.accumulated_hashes > 0).then(|| LedgerRecord::Credit {
                     id: r.id,
@@ -463,7 +518,11 @@ impl RedemptionLedger {
                 });
                 let settle = (r.state == RedemptionState::Settled)
                     .then_some(LedgerRecord::Settle { id: r.id });
-                std::iter::once(open).chain(credit).chain(settle)
+                let pause = r.paused.then_some(LedgerRecord::Pause { id: r.id });
+                std::iter::once(open)
+                    .chain(credit)
+                    .chain(settle)
+                    .chain(pause)
             })
             .collect();
         journal.rewrite(&compact)?;
@@ -501,6 +560,7 @@ impl RedemptionLedger {
             fallbacks: redemption.fallbacks.clone(),
             floor_tih: Some(redemption.floor_tih),
             supplier: redemption.supplier.clone(),
+            stop_hash: redemption.stop_hash.clone(),
         });
         map.insert(id, redemption);
         // Take `order` while still holding `inner` so the two never
@@ -592,6 +652,26 @@ impl RedemptionLedger {
             spent_tih: redemption.spent_tih(),
             change_tih: redemption.change_tih(),
         })
+    }
+
+    /// Pause (`true`) or resume (`false`) delivery to `id`. A paused
+    /// redemption keeps its place and what it is owed, but the router
+    /// sends it no hashrate until it is resumed. Returns whether this call
+    /// changed anything; finished redemptions are left as they are.
+    pub fn set_paused(&self, id: &RedemptionId, paused: bool) -> Result<bool, LedgerError> {
+        let mut map = self.lock();
+        let redemption = map.get_mut(id).ok_or(LedgerError::Unknown(*id))?;
+        if redemption.is_finished() || redemption.paused == paused {
+            return Ok(false);
+        }
+        redemption.paused = paused;
+        self.record(&if paused {
+            LedgerRecord::Pause { id: *id }
+        } else {
+            LedgerRecord::Resume { id: *id }
+        });
+        tracing::info!(redemption = %id, paused, "redemption pause changed");
+        Ok(true)
     }
 
     /// Record which pool each redemption's rigs are on (index into
@@ -750,6 +830,43 @@ mod tests {
         ledger.credit_share(&id(2), 1e9).unwrap();
         let ids: Vec<_> = ledger.active().iter().map(|r| r.id).collect();
         assert_eq!(ids, vec![id(5), id(9)]);
+    }
+
+    #[test]
+    fn stop_key_and_pause_survive_reopen() {
+        use sha2::{Digest, Sha256};
+        let secret = [9u8; 32];
+        let hash = hex::encode(Sha256::digest(secret));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("redemptions.jsonl");
+        {
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            ledger
+                .open(
+                    Redemption::new(id(1), 4, "stratum+tcp://p:1".into(), "w".into())
+                        .with_stop_hash(Some(hash.clone())),
+                )
+                .unwrap();
+            assert_eq!(ledger.set_paused(&id(1), true), Ok(true));
+            assert_eq!(ledger.set_paused(&id(1), true), Ok(false));
+            // Paused redemptions are still owed.
+            assert_eq!(ledger.active().len(), 1);
+        }
+        {
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            let r = ledger.get(&id(1)).unwrap();
+            assert!(r.paused);
+            assert!(r.stop_key_matches(&secret));
+            assert!(!r.stop_key_matches(&[8u8; 32]));
+            assert_eq!(ledger.set_paused(&id(1), false), Ok(true));
+        }
+        let ledger = RedemptionLedger::persistent(&path).unwrap();
+        assert!(!ledger.get(&id(1)).unwrap().paused);
+        // A finished redemption can't be paused.
+        ledger.settle(&id(1)).unwrap();
+        assert_eq!(ledger.set_paused(&id(1), true), Ok(false));
+        // No stop key: no secret matches.
+        assert!(!Redemption::new(id(2), 1, "p".into(), "w".into()).stop_key_matches(&secret));
     }
 
     #[test]

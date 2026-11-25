@@ -60,7 +60,6 @@ use hashu_mint::tether::{METHOD as USDT, USDC_METHOD as USDC};
 use hashu_proxy::meter::HashrateMeter;
 use hashu_proxy::router::upstream_for_pool_url;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::operator::{ControlledPricer, MintControls};
@@ -363,6 +362,12 @@ pub fn router(state: Arc<CheckoutState>) -> axum::Router {
             "/checkout/api/redemption/{id}",
             get(redemption).layer(from_fn(allow_any_origin)),
         )
+        .route(
+            "/checkout/api/redemption/{id}/{action}",
+            post(redeemer_action)
+                .options(preflight)
+                .layer(from_fn(allow_any_origin)),
+        )
         .route("/api/redeem", post(paid_redeem))
         .route("/checkout/order/{id}", get(page))
         .route("/checkout/api/order/{id}", get(order))
@@ -381,6 +386,21 @@ async fn allow_any_origin(req: axum::extract::Request, next: Next) -> Response {
         header::HeaderValue::from_static("*"),
     );
     res
+}
+
+/// CORS preflight for the redeemer's stop, pause and resume: a wallet on
+/// another origin posts JSON there. Anyone may ask; only the holder of the
+/// stop secret gets anything done.
+async fn preflight() -> Response {
+    (
+        StatusCode::NO_CONTENT,
+        [
+            (header::ACCESS_CONTROL_ALLOW_METHODS, "POST, OPTIONS"),
+            (header::ACCESS_CONTROL_ALLOW_HEADERS, "content-type"),
+            (header::ACCESS_CONTROL_MAX_AGE, "86400"),
+        ],
+    )
+        .into_response()
 }
 
 async fn page() -> Html<&'static str> {
@@ -503,6 +523,10 @@ async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
         // Backup pools a redemption may list after its own (melt request
         // field `fallback_pools`).
         "max_fallback_pools": hashu_core::redemption::MAX_FALLBACK_POOLS,
+        // Melt requests may carry `stop_hash`; its secret stops, pauses
+        // and resumes the redemption at
+        // `POST /checkout/api/redemption/{id}/{stop,pause,resume}`.
+        "redeemer_controls": true,
         "max_tih": s.max_tih,
         "mint_url": s.public_url,
         // The operator's Hashu wallet; null when it runs none.
@@ -1420,15 +1444,7 @@ async fn stop_order(
     let Some(secret) = secret else {
         return err(StatusCode::BAD_REQUEST, "stop_secret (hex) is required");
     };
-    let got = hex::encode(Sha256::digest(&secret));
-    // Compare digests, so timing says nothing about the secret.
-    if got.len() != want.len()
-        || got
-            .bytes()
-            .zip(want.bytes())
-            .fold(0, |a, (x, y)| a | (x ^ y))
-            != 0
-    {
+    if !hashu_core::redemption::stop_hash_matches(want, &secret) {
         return err(StatusCode::FORBIDDEN, "wrong stop key for this order");
     }
     // A stop that returns nothing only burns the rest of the token (#83):
@@ -1456,6 +1472,75 @@ async fn stop_order(
         }
     }
     order(State(s), Path(order_id)).await
+}
+
+/// `POST /checkout/api/redemption/{id}/{stop|pause|resume}` with
+/// `{ "stop_secret": hex }`: the redeemer's controls for a redemption a
+/// wallet opened by melting with `stop_hash` in its request.
+///
+/// - `stop` settles it like [`stop_order`]: charged for the work delivered
+///   (never below the floor), the rest returned as change on the wallet's
+///   blanks when it next checks the melt. Same rules as the checkout's
+///   stop ([`stop_refusal`]).
+/// - `pause` sends its hashrate elsewhere until `resume`. Nothing is
+///   charged or returned; it keeps its place and stays owed.
+///
+/// Answers like `GET /checkout/api/redemption/{id}`.
+async fn redeemer_action(
+    State(s): State<Arc<CheckoutState>>,
+    Path((id, action)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    let Some(rid) = parse_id(&id) else {
+        return err(StatusCode::BAD_REQUEST, "bad redemption id");
+    };
+    if !matches!(action.as_str(), "stop" | "pause" | "resume") {
+        return err(StatusCode::NOT_FOUND, "unknown action");
+    }
+    let Some(r) = s.ledger.get(&rid) else {
+        return err(StatusCode::NOT_FOUND, "unknown redemption");
+    };
+    if r.stop_hash.is_none() {
+        return err(
+            StatusCode::FORBIDDEN,
+            "this redemption was opened without a stop key, so only the operator can stop it",
+        );
+    }
+    let secret = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|v| v["stop_secret"].as_str().and_then(|h| hex::decode(h).ok()));
+    let Some(secret) = secret else {
+        return err(StatusCode::BAD_REQUEST, "stop_secret (hex) is required");
+    };
+    if !r.stop_key_matches(&secret) {
+        return err(StatusCode::FORBIDDEN, "wrong stop key for this redemption");
+    }
+    if r.is_finished() {
+        return err(StatusCode::CONFLICT, "this redemption has already ended");
+    }
+    match action.as_str() {
+        "stop" => {
+            let down = s.rigs_down_since(&r).is_some();
+            if let Some(why) = stop_refusal(&r, down) {
+                return err(StatusCode::CONFLICT, why);
+            }
+            if let Ok(out) = s.ledger.settle(&rid) {
+                if out.newly_settled {
+                    tracing::info!(redemption = %rid, change_tih = out.change_tih, "redeemer stopped the redemption");
+                }
+            }
+        }
+        a => {
+            let paused = a == "pause";
+            if let Ok(true) = s.ledger.set_paused(&rid, paused) {
+                tracing::info!(redemption = %rid, paused, "redeemer paused or resumed the redemption");
+            }
+        }
+    }
+    match redemption_json(&s, &rid) {
+        Some(v) => ([(header::CACHE_CONTROL, "no-store")], Json(v)).into_response(),
+        None => err(StatusCode::NOT_FOUND, "unknown redemption"),
+    }
 }
 
 /// Why the redeemer may not stop `r` now, if they may not. `down`: the
@@ -1551,6 +1636,13 @@ fn redemption_json(s: &CheckoutState, rid: &RedemptionId) -> Option<Value> {
             // What a stop right now would charge and return; null once finished.
             "stop_charge_tih": r.settle_preview().map(|(c, _)| c),
             "stop_change_tih": r.settle_preview().map(|(_, m)| m),
+            // The wallet that opened it holds a stop key (melt request
+            // `stop_hash`): it may stop, pause and resume it.
+            "can_stop": r.stop_hash.is_some(),
+            "paused": r.paused,
+            // Why a stop now would be refused; null when it would go
+            // through (or the redemption has ended).
+            "stop_refusal": (!r.is_finished()).then(|| stop_refusal(&r, s.rigs_down_since(&r).is_some())).flatten(),
             "progress": if r.target_hashes == 0 { 1.0 } else { (r.accumulated_hashes as f64 / r.target_hashes as f64).min(1.0) },
             "state": r.state.as_str(),
             "spent_tih": r.is_finished().then(|| r.spent_tih()),

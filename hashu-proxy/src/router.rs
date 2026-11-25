@@ -1246,11 +1246,12 @@ impl Router {
     }
 
     /// Active redemptions with at least one pool the proxy can dial,
-    /// oldest first.
+    /// oldest first. Paused ones get no hashrate until resumed.
     fn routable_active(&self) -> Vec<Redemption> {
         self.ledger
             .active()
             .into_iter()
+            .filter(|r| !r.paused)
             .filter(|r| {
                 let ok = r
                     .pools()
@@ -1823,6 +1824,34 @@ mod tests {
         router.switched(a.conn, back);
         assert_eq!(router.current(a.conn), None);
         assert_eq!(router.reconcile(), 0);
+    }
+
+    #[test]
+    fn paused_redemption_gets_no_hashrate_until_resumed() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let a = router.assign(ConnectionId::next());
+        open(&ledger, 1, "stratum+tcp://alice:3333", "alice.w");
+        assert_eq!(router.reconcile(), 1);
+        let target = switch_target(&a);
+        router.switched(a.conn, target);
+        assert_eq!(router.current(a.conn), Some(rid(1)));
+
+        // Paused: the rig goes back to the default pool.
+        ledger.set_paused(&rid(1), true).unwrap();
+        assert_eq!(router.reconcile(), 1);
+        let back = switch_target(&a);
+        assert_eq!(back.redemption_id(), None);
+        router.switched(a.conn, back);
+        assert_eq!(router.reconcile(), 0);
+        // A new rig isn't placed on it either.
+        let b = router.assign(ConnectionId::next());
+        assert_eq!(b.route.redemption_id(), None);
+
+        // Resumed: the rigs come back.
+        ledger.set_paused(&rid(1), false).unwrap();
+        assert!(router.reconcile() >= 1);
+        assert_eq!(switch_target(&a).redemption_id(), Some(rid(1)));
     }
 
     #[test]
