@@ -698,12 +698,13 @@ async fn relay(
                         break format!("miner side error: {e}");
                     }
                 }
+                // An ordinary disconnect: retried (see Router::pool_dropped).
                 Some(Ev::Closed(r)) => {
-                    c.report_pool_failed(&format!("pool {r}"));
+                    c.report_pool_dropped(&format!("pool {r}"));
                     break format!("pool {r}");
                 }
                 None => {
-                    c.report_pool_failed("pool closed");
+                    c.report_pool_dropped("pool closed");
                     break "pool closed".into();
                 }
             },
@@ -775,6 +776,14 @@ impl Conn {
     fn report_pool_failed(&self, why: &str) {
         if let Some(r) = &self.ctx.router {
             r.pool_failed(self.ctx.conn, &self.cur.route, why);
+        }
+    }
+
+    /// The current pool closed the session: retried before it is marked
+    /// down (see [`Router::pool_dropped`]).
+    fn report_pool_dropped(&self, why: &str) {
+        if let Some(r) = &self.ctx.router {
+            r.pool_dropped(self.ctx.conn, &self.cur.route, why);
         }
     }
 
