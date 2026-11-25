@@ -40,8 +40,10 @@
 //! - `POST /api/capacity`: `{ "rentals": [{ "ths", "hours" | "end_ms",
 //!   "label"?, "id"? }], "limit": bool | null, "live_horizon_hours":
 //!   hours | null }`, every field optional. `rentals` replaces the
-//!   operator's manual list (MRR rentals sync on their own; the GUI no
-//!   longer adds manual ones); `limit: null` goes back to automatic.
+//!   operator's time-limited hashrate (the GUI's list on the capacity card;
+//!   MRR rentals sync on their own): its TH/s come out of the live average
+//!   at once and it sells only until it ends; `limit: null` goes back to
+//!   automatic.
 //!   `live_horizon_hours` sells a stock backed by the connected rigs
 //!   (above what rentals declare): topped up every hour to their
 //!   EWMA hashrate (half-life horizon / 2) × the horizon, drawn down by
