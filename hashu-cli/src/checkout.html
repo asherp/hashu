@@ -779,6 +779,12 @@ async function pollRedemption () {
       }
       drawChart($('c-red'), pts, t.opened_ms, Math.max(end, t.opened_ms + 60000), r.amount_tih, pj)
     }
+    // Every rig is busy with earlier redemptions: say so, and when one
+    // should take this one.
+    if (r.waiting_for_rig && r.state !== 'completed' && r.state !== 'settled') {
+      $('p-state').textContent = 'waiting for a rig'
+      $('p-rate').textContent = r.start_in_s != null ? `starts in about ${fmtDur(Math.max(60, Math.round(r.start_in_s / 60) * 60))}, once a rig frees up` : 'starts once a rig frees up'
+    }
     if (ORDER) showStop(r)
     if (ORDER) { if (showChange(r)) return } else if (r.state === 'completed' || r.state === 'settled') return
   } catch (e) { alertMsg(e.message) }

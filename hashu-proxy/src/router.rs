@@ -1084,6 +1084,45 @@ impl Router {
         out
     }
 
+    /// When each open order of a mint (`None` = the operator's) should
+    /// start getting hashrate, and when a new one would. See
+    /// [`RigQueue`].
+    pub fn rig_queue(&self, mint: Option<&str>) -> RigQueue {
+        self.rig_queue_at(mint, Instant::now())
+    }
+
+    fn rig_queue_at(&self, mint: Option<&str>, now: Instant) -> RigQueue {
+        let want = Some(mint.map(str::to_string));
+        let serves = |b: &Binding| b.serves.mint() == want;
+        let active: Vec<Redemption> = self
+            .routable_active()
+            .into_iter()
+            .filter(|r| r.supplier.as_deref() == mint)
+            .collect();
+        let inner = self.lock();
+        let rigs: Vec<(Option<RedemptionId>, Option<f64>)> = inner
+            .conns
+            .values()
+            .filter(|b| serves(b))
+            .map(|b| (b.effective().redemption_id(), b.rate.rate(now)))
+            .collect();
+        let orders: Vec<QueuedOrder> = active
+            .iter()
+            .map(|r| QueuedOrder {
+                id: r.id,
+                remaining: r.target_hashes.saturating_sub(r.accumulated_hashes) as f64,
+                waited: inner
+                    .unserved_since
+                    .get(&r.id)
+                    .map(|t| now.saturating_duration_since(*t))
+                    .unwrap_or_default(),
+                routable: redemption_route(r, &inner, now).is_some(),
+            })
+            .collect();
+        drop(inner);
+        estimate_starts(&orders, &rigs)
+    }
+
     /// Current route of a live connection.
     pub fn route_of(&self, conn: ConnectionId) -> Option<Route> {
         self.lock().conns.get(&conn).map(|b| b.route.clone())
@@ -1412,6 +1451,147 @@ fn rescue(
                 .is_some_and(|t| now.saturating_duration_since(*t) >= STARVE_AFTER)
         })
         .find_map(|r| redemption_route(r, inner, now))
+}
+
+/// When a mint's open orders should start getting hashrate: an estimate
+/// from the rigs' measured rates and the dedicated-assignment rules (a rig
+/// stays on its order until it is filled; an order waiting
+/// [`STARVE_AFTER`] takes a spare rig from an order that has two or more;
+/// otherwise waiting orders get rigs oldest first as they free up).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RigQueue {
+    /// Rigs that fill this mint's orders.
+    pub rigs: usize,
+    /// Per open (unpaused) order.
+    pub orders: HashMap<RedemptionId, OrderStart>,
+    /// Seconds until a redemption opened now would get its first rig:
+    /// 0 when a rig would take it right away; `None` when there is no
+    /// estimate (no rigs, or none with a measured rate).
+    pub new_order_start_s: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OrderStart {
+    /// Rigs on (or switching to) the order now.
+    pub rigs: usize,
+    /// Seconds until its first rig: 0 while it has one; `None` when
+    /// there is no estimate (no rigs, none rated, or every pool of it is
+    /// down).
+    pub start_s: Option<f64>,
+}
+
+/// An open order as [`estimate_starts`] sees it, oldest first.
+struct QueuedOrder {
+    id: RedemptionId,
+    /// Hashes still owed.
+    remaining: f64,
+    /// How long it has had no rig (zero while it has one).
+    waited: Duration,
+    /// Has a pool the proxy can dial and that is not marked down.
+    routable: bool,
+}
+
+/// Simulate rigs freeing up and taking waiting orders. `rigs` lists each
+/// rig of the mint as (order it is on, hashrate estimate in H/s).
+fn estimate_starts(
+    orders: &[QueuedOrder],
+    rigs: &[(Option<RedemptionId>, Option<f64>)],
+) -> RigQueue {
+    let mut out = RigQueue {
+        rigs: rigs.len(),
+        ..Default::default()
+    };
+    // A rig with no estimate yet counts at the others' average.
+    let rated: Vec<f64> = rigs
+        .iter()
+        .filter_map(|r| r.1)
+        .filter(|h| *h > 0.0)
+        .collect();
+    let avg = (!rated.is_empty()).then(|| rated.iter().sum::<f64>() / rated.len() as f64);
+    let rate_of = |h: Option<f64>| h.filter(|h| *h > 0.0).or(avg);
+
+    struct Slot {
+        /// Seconds from now until it is free.
+        free_at: f64,
+        rate: f64,
+        /// Shares its order with another rig, so a starving order may
+        /// take it before that order is filled.
+        spare: bool,
+    }
+    let mut slots: Vec<Slot> = Vec::new();
+    for o in orders {
+        let on: Vec<f64> = rigs
+            .iter()
+            .filter(|r| r.0 == Some(o.id))
+            .filter_map(|r| rate_of(r.1))
+            .collect();
+        let count = rigs.iter().filter(|r| r.0 == Some(o.id)).count();
+        out.orders.insert(
+            o.id,
+            OrderStart {
+                rigs: count,
+                start_s: (count > 0).then_some(0.0),
+            },
+        );
+        let total: f64 = on.iter().sum();
+        if total <= 0.0 {
+            continue;
+        }
+        let done = o.remaining / total;
+        for (i, rate) in on.into_iter().enumerate() {
+            slots.push(Slot {
+                free_at: done,
+                rate,
+                spare: i > 0,
+            });
+        }
+    }
+    // Rigs not on an open order are free now.
+    for r in rigs {
+        if r.0.is_none_or(|id| !orders.iter().any(|o| o.id == id)) {
+            if let Some(rate) = rate_of(r.1) {
+                slots.push(Slot {
+                    free_at: 0.0,
+                    rate,
+                    spare: false,
+                });
+            }
+        }
+    }
+    // Waiting orders take the first rig to free up, oldest first; a
+    // spare rig comes free once the order has starved.
+    let starve = STARVE_AFTER.as_secs_f64();
+    let mut take = |remaining: f64, waited: f64| -> Option<f64> {
+        let rescue_at = (starve - waited).max(0.0);
+        let at = |s: &Slot| {
+            if s.spare {
+                s.free_at.min(rescue_at)
+            } else {
+                s.free_at
+            }
+        };
+        let i = (0..slots.len()).min_by(|a, b| at(&slots[*a]).total_cmp(&at(&slots[*b])))?;
+        let start = at(&slots[i]);
+        let s = &mut slots[i];
+        s.free_at = start + remaining / s.rate;
+        s.spare = false;
+        Some(start)
+    };
+    for o in orders {
+        if out.orders[&o.id].rigs > 0 {
+            continue;
+        }
+        let start = if o.routable {
+            take(o.remaining, o.waited.as_secs_f64())
+        } else {
+            None
+        };
+        if let Some(e) = out.orders.get_mut(&o.id) {
+            e.start_s = start;
+        }
+    }
+    out.new_order_start_s = take(0.0, 0.0);
+    out
 }
 
 /// The route to `r`'s first pool that the proxy can dial and that is not
@@ -2380,6 +2560,58 @@ mod tests {
         assert_eq!(router.reconcile_at(t0), 0);
         // One miner: melt order, no flip-flopping.
         assert_eq!(router.reconcile_at(t0 + STARVE_AFTER), 0);
+    }
+
+    #[test]
+    fn a_lone_rig_queues_orders_in_melt_order() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let t0 = Instant::now();
+        open_thh(&ledger, 1, 10);
+        let a = router.assign(ConnectionId::next());
+        warm(&router, a.conn, 10.0, t0);
+        open_thh(&ledger, 2, 5);
+        router.reconcile_at(t0);
+        let q = router.rig_queue_at(None, t0);
+        assert_eq!(q.rigs, 1);
+        assert_eq!(q.orders[&rid(1)].rigs, 1);
+        assert_eq!(q.orders[&rid(1)].start_s, Some(0.0));
+        // 10 THh at 10 TH/s: about an hour, then order 2 (half an hour).
+        let s2 = q.orders[&rid(2)].start_s.unwrap();
+        assert!((s2 - 3600.0).abs() < 120.0, "{s2}");
+        let new = q.new_order_start_s.unwrap();
+        assert!((new - 5400.0).abs() < 180.0, "{new}");
+    }
+
+    #[test]
+    fn a_waiting_order_expects_a_spare_rig_once_it_starves() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let t0 = Instant::now();
+        open_thh(&ledger, 1, 1000);
+        let a = router.assign(ConnectionId::next());
+        let b = router.assign(ConnectionId::next());
+        warm(&router, a.conn, 8.0, t0);
+        warm(&router, b.conn, 6.0, t0);
+        open_thh(&ledger, 2, 1000);
+        router.reconcile_at(t0);
+        let q = router.rig_queue_at(None, t0);
+        assert_eq!(q.orders[&rid(1)].rigs, 2);
+        assert_eq!(q.orders[&rid(2)].rigs, 0);
+        assert_eq!(q.orders[&rid(2)].start_s, Some(STARVE_AFTER.as_secs_f64()));
+    }
+
+    #[test]
+    fn a_free_rig_starts_a_new_order_now_and_no_rigs_means_no_estimate() {
+        let ledger = Arc::new(RedemptionLedger::new());
+        let router = Router::new("default:3333", ledger.clone());
+        let t0 = Instant::now();
+        assert_eq!(router.rig_queue_at(None, t0).new_order_start_s, None);
+        let a = router.assign(ConnectionId::next());
+        warm(&router, a.conn, 10.0, t0);
+        let q = router.rig_queue_at(None, t0);
+        assert_eq!(q.rigs, 1);
+        assert_eq!(q.new_order_start_s, Some(0.0));
     }
 
     const ADDR: &str = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";

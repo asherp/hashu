@@ -1033,6 +1033,8 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         let r = router.clone();
         capacity.set_live_source(Arc::new(move || r.operator_hashrate() / 1e12));
     }
+    // When waiting redemptions should get a rig, for the wallet.
+    let _ = checkout.router.set(router.clone());
     // Whether each mint's rigs are down, for pausing its redemptions.
     {
         let r = router.clone();
