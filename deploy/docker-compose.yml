@@ -127,6 +127,8 @@ services:
       HASHU_HOME_SOLO_UPSTREAM: ${HASHU_HOME_SOLO_UPSTREAM:-solo.ckpool.org:3333}
       HASHU_HOME_POOLS: ${HASHU_HOME_POOLS:-solo.ckpool.org,eusolo.ckpool.org,ausolo.ckpool.org,public-pool.io,stratum.braiins.com,mine.ocean.xyz}
       HASHU_HOME_POOLS_OFF: ${HASHU_HOME_POOLS_OFF:-false}
+      # true: redeem only to stratum+ssl:// or stratum2+tcp:// pools.
+      HASHU_ENCRYPTED_POOLS_ONLY: ${HASHU_ENCRYPTED_POOLS_ONLY:-false}
       # The operator's own rigs: SHA-256 of the secret they send as pw= in
       # their password, whatever their user. Set it and only those rigs fill
       # this mint's orders; other miners stay where they idle (pool=, their

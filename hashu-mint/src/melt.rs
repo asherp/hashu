@@ -203,6 +203,9 @@ pub struct HashrateMelter {
     supplier: Option<String>,
     /// Whether this mint's rigs are down: then it quotes no redemptions.
     rigs: Option<Arc<RigsDown>>,
+    /// Refuse pools reached over plain `stratum+tcp://` (see
+    /// [`is_encrypted_pool_url`]).
+    encrypted_only: bool,
 }
 
 impl HashrateMelter {
@@ -213,7 +216,16 @@ impl HashrateMelter {
             max_tih: None,
             supplier: None,
             rigs: None,
+            encrypted_only: false,
         }
+    }
+
+    /// Refuse redemptions whose pool or backup pools are plain
+    /// `stratum+tcp://`: on that link anyone in the path can read the
+    /// worker name and redirect the shares (see [`is_encrypted_pool_url`]).
+    pub fn with_encrypted_pools_only(mut self, on: bool) -> Self {
+        self.encrypted_only = on;
+        self
     }
 
     /// Refuse to quote redemptions while this mint's rigs are down (see
@@ -285,8 +297,32 @@ impl HashrateMelter {
                 req.amount_tih
             )));
         }
+        if self.encrypted_only {
+            let urls = std::iter::once(&req.pool_url)
+                .chain(req.fallback_pools.iter().map(|p| &p.pool_url));
+            if let Some(u) = urls.into_iter().find(|u| !is_encrypted_pool_url(u)) {
+                return Err(Error::Custom(unencrypted_refusal(u)));
+            }
+        }
         Ok(req)
     }
+}
+
+/// Whether the proxy's link to `pool_url` is encrypted and checks who the
+/// pool is: `stratum+ssl://` (TLS, certificate checked against the public
+/// CA roots) or Stratum V2's `stratum2+tcp://` (Noise, pinned to the
+/// authority key in the URL). Plain `stratum+tcp://` is neither, so
+/// anyone on the path can pose as the pool and take the shares.
+pub fn is_encrypted_pool_url(pool_url: &str) -> bool {
+    is_routable_pool_url(pool_url)
+        && (pool_url.starts_with("stratum+ssl://") || pool_url.starts_with("stratum2+tcp://"))
+}
+
+/// Why a mint that takes only encrypted pools refuses `pool_url`.
+pub fn unencrypted_refusal(pool_url: &str) -> String {
+    format!(
+        "this mint only redeems to encrypted pools: use a stratum+ssl:// (TLS) or stratum2+tcp:// (Stratum V2) URL, not {pool_url}"
+    )
 }
 
 /// Redemption id for a melt request: the first 16 bytes of the SHA-256 of
@@ -540,6 +576,34 @@ mod tests {
         let ledger = Arc::new(RedemptionLedger::new());
         // Small amounts keep the tests readable: floor 1 TiH, as before #90.
         (HashrateMelter::new(ledger.clone()).with_min_tih(1), ledger)
+    }
+
+    #[test]
+    fn encrypted_pools_only_refuses_plain_tcp() {
+        const KEY: &str = "9awtMD5KQgvRUh2yFbjVeT7b6hjipWcAsQHd6wEhgtDT9soosna";
+        assert!(is_encrypted_pool_url(
+            "stratum+ssl://stratum.braiins.com:3443"
+        ));
+        assert!(is_encrypted_pool_url(&format!(
+            "stratum2+tcp://stratum.braiins.com:3333/{KEY}"
+        )));
+        assert!(!is_encrypted_pool_url(POOL));
+        assert!(!is_encrypted_pool_url("stratum+ssl://no-port"));
+
+        let req = |pool: &str, backup: &str| {
+            format!(
+                r#"{{"pool_url":"{pool}","worker_name":"w","amount_tih":1,"fallback_pools":[{{"pool_url":"{backup}","worker_name":"w"}}]}}"#
+            )
+        };
+        let tls = "stratum+ssl://stratum.braiins.com:3443";
+        let (open, _) = melter();
+        assert!(open.validated(&req(POOL, POOL)).is_ok());
+        let strict = open.with_encrypted_pools_only(true);
+        assert!(strict.validated(&req(tls, tls)).is_ok());
+        let e = strict.validated(&req(POOL, tls)).unwrap_err().to_string();
+        assert!(e.contains("encrypted"), "{e}");
+        // A plain backup pool is refused too: the shares can go there.
+        assert!(strict.validated(&req(tls, POOL)).is_err());
     }
 
     #[test]

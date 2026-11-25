@@ -9,6 +9,7 @@ pub mod control;
 pub mod credit;
 pub mod home;
 pub mod meter;
+pub mod pool_check;
 pub mod reliability;
 pub mod router;
 pub mod sessions;

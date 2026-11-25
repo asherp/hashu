@@ -104,6 +104,8 @@ pub struct TenantConfig {
     pub ledger: Arc<RedemptionLedger>,
     pub min_redeem_tih: u64,
     pub max_tih: u64,
+    /// Refuse plain `stratum+tcp://` redemption pools (`HASHU_ENCRYPTED_POOLS_ONLY`).
+    pub encrypted_pools_only: bool,
     /// Sell over cdk's fake wallet when a supplier has no address (testing).
     pub fake_lightning: bool,
     /// Live hashrate of a supplier's verified rigs (the proxy router).
@@ -359,7 +361,8 @@ impl Tenants {
                     let m = HashrateMelter::new(self.cfg.ledger.clone())
                         .with_supplier(name)
                         .with_min_tih(self.cfg.min_redeem_tih)
-                        .with_max_tih(self.cfg.max_tih);
+                        .with_max_tih(self.cfg.max_tih)
+                        .with_encrypted_pools_only(self.cfg.encrypted_pools_only);
                     match &self.cfg.rigs {
                         Some(r) => m.with_rigs(r.clone()),
                         None => m,
@@ -960,6 +963,7 @@ mod tests {
                 ledger: Arc::new(RedemptionLedger::new()),
                 min_redeem_tih: 1,
                 max_tih: 1 << 20,
+                encrypted_pools_only: false,
                 fake_lightning: fake,
                 hashrate: Arc::new(move |n: &str| if n == "alice" { ths * 1e12 } else { 0.0 }),
                 stratum: crate::stratum_addr::StratumAddr::parse(

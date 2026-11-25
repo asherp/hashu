@@ -5,12 +5,21 @@ note your username.
 
 | Field | Value |
 |---|---|
-| Pool URL | `stratum+tcp://stratum.braiins.com:3333` (backup `:443`, also plain TCP) |
+| Pool URL | `stratum+ssl://stratum.braiins.com:3443` (TLS; backup `stratum+ssl://stratum.braiins.com:33443`) |
 | Worker name | `<your username>.hashu` |
 | Worker password | anything, or blank |
 
-Source: Braiins Academy, "BTC mining setup". Braiins also runs Stratum V2
-(`stratum2+tcp://…`); Hashu's proxy speaks V1 only, so use the URL above.
+Source: Braiins Academy, "Connection security" (the certificate is from a
+public CA, so the proxy's certificate check passes). Plain
+`stratum+tcp://stratum.braiins.com:3333` still works but is not encrypted:
+on 2026-11-25 Braiins [reported attackers hijacking plain Stratum V1
+connections](https://braiins.com/blog/bitcoin-hashrate-hijacking-unencrypted-stratum-v1)
+to take miners' shares, so prefer TLS.
+
+Stratum V2 also works:
+`stratum2+tcp://stratum.braiins.com:3333/9awtMD5KQgvRUh2yFbjVeT7b6hjipWcAsQHd6wEhgtDT9soosna`
+(the last part is Braiins' authority key, which pins the pool's identity).
+Hashu's Stratum V2 upstream is newer and less tested than TLS.
 
 ## Check it arrived
 
