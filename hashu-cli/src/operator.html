@@ -157,6 +157,14 @@ td.num, th.num { text-align: right; }
 .bubble { max-width: 85%; padding: 7px 10px; border-radius: 10px; background: var(--grid); white-space: pre-wrap; overflow-wrap: anywhere; }
 .bubble.out { align-self: flex-end; background: var(--brand-fill); }
 .bubble small { display: block; color: var(--ink-3); font-size: 11px; margin-top: 2px; }
+.new-dm input { flex: 1 1 220px; min-width: 0; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; font-size: 12.5px; }
+.live { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; }
+.live.on { background: #2e9e5b; box-shadow: 0 0 0 3px rgba(46,158,91,.18); }
+.send-hashes { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+.send-hashes summary { cursor: pointer; font-weight: 600; }
+.send-hashes[open] { display: flex; flex-direction: column; gap: 8px; }
+.send-hashes input[type=text] { width: 100%; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; }
+.bubble .tok { display: block; margin-top: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--ink-2); }
 .thread textarea { width: 100%; min-height: 64px; padding: 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; resize: vertical; }
 @media (max-width: 640px) { .plan-wide { display: none; } #plan-rows input[type=number] { width: 80px; } #plan-rows .src { display: none; } }
 </style>
@@ -230,14 +238,24 @@ td.num, th.num { text-align: right; }
       <h2 id="h-inbox">Messages <span class="unread" id="inbox-unread" hidden></span></h2>
       <span class="sub mono" id="inbox-npub"></span>
     </div>
-    <p class="note" id="inbox-note">Private Nostr messages (NIP-17) sent to this mint's key from wallets. Replies are signed by the mint.</p>
+    <p class="note" id="inbox-note">Private Nostr messages (NIP-17) sent to this mint's key from wallets, live. Replies are signed by the mint.</p>
+    <div class="row new-dm"><input type="text" id="inbox-to" class="mono" placeholder="npub1… to message someone new" autocomplete="off" spellcheck="false"><button class="act" id="inbox-new">New message</button><span class="live" id="inbox-live" title="Live: new messages show up as they arrive"></span></div>
     <div class="inbox">
       <ul class="convs" id="inbox-convs"><li class="sub">No messages yet.</li></ul>
       <div class="thread" id="inbox-thread" hidden>
         <div class="row" style="justify-content:space-between"><b class="mono" id="inbox-peer"></b><a id="inbox-open" target="_blank" rel="noopener" class="sub">Open in Nostr</a></div>
         <div class="bubbles" id="inbox-bubbles"></div>
-        <textarea id="inbox-text" maxlength="4000" placeholder="Reply as the mint"></textarea>
+        <textarea id="inbox-text" maxlength="16000" placeholder="Reply as the mint"></textarea>
         <div class="row"><button class="act primary" id="inbox-send">Send reply</button><span class="note" id="inbox-msg"></span></div>
+        <details class="send-hashes" id="dm-hashes">
+          <summary>Send hashes</summary>
+          <div class="row"><span class="ctl"><span class="note">Count in</span><span class="seg" id="dm-units"><button type="button" data-u="hash" class="on">PiH</button><button type="button" data-u="rate">TH/s/Day</button></span></span></div>
+          <div class="row chips" id="dm-chips"></div>
+          <div class="row"><input type="number" id="dm-amt" min="0" step="any" inputmode="decimal" value="1" aria-labelledby="dm-amt-label"> <span id="dm-amt-label">Pebihashes (PiH)</span></div>
+          <input type="text" id="dm-note" maxlength="1000" placeholder="Note (optional), e.g. Thanks for testing!" autocomplete="off">
+          <div class="row"><button class="act primary" id="dm-send-hashes">Send hashes</button><span class="note" id="dm-hashes-msg"></span></div>
+          <textarea id="dm-token" class="mono" rows="3" readonly hidden></textarea>
+        </details>
       </div>
     </div>
   </section>
@@ -1432,13 +1450,36 @@ pollPlan()
 setInterval(pollPlan, 15000)
 
 // ---- direct messages (NIP-17) ------------------------------------------
-const inbox = { data: null, peer: null }
+const inbox = { data: null, peer: null, draftNpub: '' }
 const shortNpub = (n) => n ? n.slice(0, 12) + '…' + n.slice(-6) : ''
 const fmtWhen = (s) => new Date(s * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+// A Cashu token in a message is long: show it shortened, with its size.
+const TOKEN_RE = /cashu[AB][A-Za-z0-9_\-+/=]{20,}/g
+// Hashes sent as a NUT-18 payment payload: {mint, unit, memo, proofs}.
+function payment (t) {
+  if (!t.startsWith('{')) return null
+  try {
+    const p = JSON.parse(t)
+    if (!p || !Array.isArray(p.proofs) || !p.mint) return null
+    const n = p.proofs.reduce((a, x) => a + Number(x.amount || 0), 0)
+    const amt = p.unit === 'tih' ? `${HashuAmount.fmtHashes(n)} (${n.toLocaleString()} TiH)` : `${n.toLocaleString()} ${p.unit || 'sat'}`
+    return { memo: p.memo || '', amt }
+  } catch { return null }
+}
+function previewText (t) {
+  const p = payment(t)
+  return p ? `${p.memo ? p.memo + ' · ' : ''}${p.amt} of hashes` : t
+}
+function bubbleText (t) {
+  const p = payment(t)
+  if (p) return esc(p.memo) + `<span class="tok" title="Cashu payment (NUT-18)">${esc(p.amt)} of hashes · Cashu payment</span>`
+  return esc(t).replace(TOKEN_RE, (tok) => `<span class="tok" title="Cashu token">${tok.slice(0, 18)}…${tok.slice(-6)} · Cashu token</span>`)
+}
 async function pollInbox () {
   try { inbox.data = await api('api/inbox') } catch (e) { return }
   $('inbox-card').hidden = false
   renderInbox()
+  try { updateDmHashes() } catch {}
 }
 function renderInbox () {
   const d = inbox.data
@@ -1453,9 +1494,11 @@ function renderInbox () {
     const last = c.messages[c.messages.length - 1] || {}
     return `<li data-peer="${esc(c.peer)}" class="${c.peer === inbox.peer ? 'sel' : ''}">
       <div class="who"><span class="mono">${esc(shortNpub(c.npub))}</span>${c.unread ? `<span class="unread">${c.unread}</span>` : `<small class="muted">${esc(fmtWhen(c.last_at))}</small>`}</div>
-      <div class="prev">${last.outgoing ? 'You: ' : ''}${esc(last.text)}</div></li>`
+      <div class="prev">${last.outgoing ? 'You: ' : ''}${esc(previewText(last.text || ''))}</div></li>`
   }).join('') : '<li class="sub">No messages yet.</li>'
-  const c = convs.find((x) => x.peer === inbox.peer)
+  // A new conversation (typed npub) shows as an empty thread until sent.
+  const c = convs.find((x) => x.peer === inbox.peer) ||
+    (inbox.draftNpub && inbox.peer === inbox.draftNpub ? { peer: inbox.peer, npub: inbox.draftNpub, messages: [] } : null)
   $('inbox-thread').hidden = !c
   if (!c) return
   $('inbox-peer').textContent = shortNpub(c.npub)
@@ -1463,7 +1506,8 @@ function renderInbox () {
   $('inbox-open').href = 'https://njump.me/' + c.npub
   const box = $('inbox-bubbles')
   const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 8
-  box.innerHTML = c.messages.map((m) => `<div class="bubble ${m.outgoing ? 'out' : ''}">${esc(m.text)}<small>${esc(fmtWhen(m.created_at))}</small></div>`).join('')
+  box.innerHTML = c.messages.length ? c.messages.map((m) => `<div class="bubble ${m.outgoing ? 'out' : ''}">${bubbleText(m.text)}<small>${esc(fmtWhen(m.created_at))}</small></div>`).join('')
+    : '<p class="sub">New conversation. Write a message or send hashes below.</p>'
   if (atEnd || box._peer !== c.peer) box.scrollTop = box.scrollHeight
   box._peer = c.peer
 }
@@ -1481,14 +1525,79 @@ $('inbox-send').addEventListener('click', async () => {
   $('inbox-send').disabled = true
   $('inbox-msg').textContent = 'Sending…'
   try {
-    await postJson('api/inbox/reply', { peer: inbox.peer, text })
+    const m = await postJson('api/inbox/reply', { peer: inbox.peer, text })
     $('inbox-text').value = ''
     $('inbox-msg').textContent = 'Sent.'
+    inbox.peer = m.peer; inbox.draftNpub = ''
     await pollInbox()
   } catch (e) { $('inbox-msg').textContent = e.message } finally { $('inbox-send').disabled = false }
 })
+$('inbox-new').addEventListener('click', () => {
+  const v = $('inbox-to').value.trim()
+  if (!/^npub1[02-9ac-hj-np-z]{58}$/.test(v) && !/^[0-9a-f]{64}$/i.test(v)) { $('inbox-msg').textContent = ''; $('inbox-to').setCustomValidity('Enter an npub or a hex public key'); $('inbox-to').reportValidity(); return }
+  $('inbox-to').setCustomValidity('')
+  // An existing conversation opens as is.
+  const hit = (inbox.data && inbox.data.conversations || []).find((c) => c.npub === v || c.peer === v.toLowerCase())
+  inbox.peer = hit ? hit.peer : v; inbox.draftNpub = hit ? '' : v
+  $('inbox-to').value = ''; $('inbox-msg').textContent = ''
+  renderInbox(); $('inbox-text').focus()
+})
+$('inbox-to').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('inbox-new').click() })
+
+// Hashes over DM: the test mint's picker (assets/amount.js), sent as a token.
+const dmAmt = HashuAmount.create({
+  box: $('dm-amt'), label: $('dm-amt-label'), chips: $('dm-chips'), units: $('dm-units'),
+  tih: TIH_PER_PIH, storageKey: 'hashu.operator.dmUnit',
+  limits: () => {
+    const op = state.op; if (!op) return null
+    const cap = op.capacity || {}
+    // At least one redemption's worth: less could never be redeemed alone.
+    return { min: op.mint.min_redeem_tih || TIH_PER_PIH, available: cap.available_tih != null ? cap.available_tih : null, max: Math.min(MAX_TEST_MINT_TIH, op.mint.max_tih || Infinity) }
+  },
+  onChange: () => updateDmHashes()
+})
+function updateDmHashes () {
+  const l = dmAmt.sellCap(); const n = Math.floor(dmAmt.tih)
+  const av = state.op && state.op.capacity ? state.op.capacity.available_tih : null
+  $('dm-send-hashes').disabled = av === 0 || n < 1 || n > (l || Infinity) || !(inbox.data && inbox.data.on)
+  $('dm-send-hashes').textContent = n >= 1 ? `Send ${HashuAmount.fmtHashes(n)}` : 'Send hashes'
+}
+$('dm-hashes').addEventListener('toggle', () => {
+  if (!$('dm-hashes').open) return
+  if (!dmAmt.loaded) { dmAmt.loaded = true; dmAmt.clamp() }
+  dmAmt.renderUnit(); dmAmt.renderChips(); updateDmHashes()
+})
+$('dm-send-hashes').addEventListener('click', async () => {
+  const b = $('dm-send-hashes'); const n = Math.floor(dmAmt.tih)
+  if (!inbox.peer || n < 1) return
+  b.disabled = true
+  $('dm-hashes-msg').textContent = 'Minting and sending…'
+  $('dm-token').hidden = true
+  try {
+    const r = await postJson('api/inbox/send-hashes', { peer: inbox.peer, amount_tih: n, note: $('dm-note').value.trim() })
+    $('dm-hashes-msg').textContent = `Sent ${HashuAmount.fmtHashes(r.amount_tih)} (${r.amount_tih.toLocaleString()} TiH).`
+    $('dm-note').value = ''
+    inbox.peer = r.message.peer; inbox.draftNpub = ''
+    await pollInbox(); poll()
+  } catch (e) {
+    $('dm-hashes-msg').textContent = e.message
+    // Minted but not delivered: keep the token on screen.
+    if (e.body && e.body.token) { $('dm-token').value = e.body.token; $('dm-token').hidden = false }
+  } finally { updateDmHashes() }
+})
+
+// Live: the daemon pushes "changed" over server-sent events (it holds a
+// standing relay subscription), so the page refetches at once. The slow
+// poll is only a fallback for proxies that cut the stream.
+function liveInbox () {
+  if (!window.EventSource) return
+  const es = new EventSource('api/inbox/events')
+  es.addEventListener('changed', () => { $('inbox-live').classList.add('on'); pollInbox() })
+  es.onerror = () => { $('inbox-live').classList.remove('on') }
+}
 pollInbox()
-setInterval(pollInbox, 15000)
+liveInbox()
+setInterval(pollInbox, 120000)
 window.addEventListener('resize', () => { drawRate(); drawRedemption(); drawPlan() })
 
 poll()
