@@ -338,6 +338,8 @@ pub struct OperatorState {
     pub planner: Option<Arc<crate::planner::Planner>>,
     /// The operator mint's record, for its direct messages (`/api/inbox`).
     pub reliability: Option<Arc<crate::reliability::Reliability>>,
+    /// Hourly supply rows for the dashboard's supply charts.
+    pub supply: Option<Arc<crate::supply::SupplyHistory>>,
 }
 
 /// Largest test mint in one go: 2^22 TiH (≈ 1,281 THH).
@@ -366,6 +368,7 @@ pub fn router(state: Arc<OperatorState>) -> axum::Router {
         .route("/api/capacity", get(capacity).post(set_capacity))
         .route("/api/mrr", get(mrr_status).post(set_mrr))
         .route("/api/plan", get(plan_status).post(set_plan))
+        .route("/api/supply", get(supply_status))
         .fallback(proxy_control)
         .with_state(state)
         .layer(axum::middleware::from_fn_with_state(
@@ -991,21 +994,100 @@ pub async fn obligations_for(
     })
 }
 
+/// What the supply rows need from the obligations and the ledger.
+pub fn supply_counts(o: &Obligations, ledger: &RedemptionLedger) -> crate::supply::Counts {
+    let delivered: f64 = ledger
+        .all()
+        .iter()
+        .filter(|r| r.supplier.is_none())
+        .map(|r| (r.accumulated_hashes as f64 / HASHES_PER_TIH as f64).min(r.amount_tih as f64))
+        .sum();
+    crate::supply::Counts {
+        redeeming_tih: o.open_remaining_tih,
+        open_redemptions: o.open_count,
+        sold_total_tih: o.sold.values().sum::<u64>() as f64,
+        delivered_total_tih: delivered,
+    }
+}
+
+/// `GET /api/supply`: the dashboard's supply charts. Rows are unfiltered
+/// (redeeming split out at any count, delivered every hour) and a live
+/// row for right now is added; future epochs on sale come from the epoch
+/// plan, mined work from the reliability record.
+async fn supply_status(State(s): State<Arc<OperatorState>>) -> Response {
+    let Some(h) = s.supply.clone() else {
+        return bad("supply history is off".into());
+    };
+    let now = now_ms();
+    let live = match obligations(&s.mint, &s.control.ledger).await {
+        Ok(o) => crate::supply::row_from(
+            &s.controls.capacity.snapshot(now),
+            supply_counts(&o, &s.control.ledger),
+            now,
+        ),
+        Err(e) => return bad(e.to_string()),
+    };
+    let epochs = crate::epochs::operator().and_then(|e| {
+        let clock = e.clock()?;
+        let rows = e.plan()?;
+        let now_s = now / 1000;
+        Some(
+            rows.iter()
+                .filter(|r| r.epoch != clock.current())
+                .map(|r| {
+                    json!({
+                        "epoch": r.epoch,
+                        "starts_at": now_s + (clock.hours_until(r.epoch) * 3600.0) as u64,
+                        "hours_in_window": r.hours_in_window,
+                        "capacity_tih": r.capacity_tih,
+                        "owed_tih": r.owed_tih,
+                        "free_tih": r.free_tih,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+    });
+    let mined: Vec<Value> = s
+        .reliability
+        .as_ref()
+        .and_then(|r| r.store(OPERATOR_MINT))
+        .map(|st| {
+            st.summaries(crate::supply::KEEP_ROWS)
+                .into_iter()
+                .map(|h| json!({ "hour": h.hour, "work_tih": h.work_tih }))
+                .collect()
+        })
+        .unwrap_or_default();
+    Json(json!({
+        "tih_per_thh": hashu_core::denom::TIH_PER_THH,
+        "rows": h.rows(),
+        "live": live,
+        "epochs": epochs.unwrap_or_default(),
+        "mined": mined,
+    }))
+    .into_response()
+}
+
 /// Keep the capacity book's "owed" current so quotes are capped against it.
 pub async fn run_owed_refresher(
     mint: Arc<Mint>,
     ledger: Arc<RedemptionLedger>,
     capacity: Arc<CapacityBook>,
     every: std::time::Duration,
+    supply: Option<Arc<crate::supply::SupplyHistory>>,
 ) {
     let mut tick = tokio::time::interval(every);
     loop {
         tick.tick().await;
         match obligations(&mint, &ledger).await {
             Ok(o) => {
-                capacity.set_owed(o.total_owed(), now_ms());
+                let now = now_ms();
+                capacity.set_owed(o.total_owed(), now);
                 capacity.set_sold(o.stock_sold as f64);
-                capacity.refresh_live(now_ms());
+                capacity.refresh_live(now);
+                if let Some(h) = &supply {
+                    h.observe(&capacity.snapshot(now), supply_counts(&o, &ledger), now);
+                }
             }
             Err(e) => tracing::warn!(error = %e, "could not count obligations"),
         }

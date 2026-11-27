@@ -76,6 +76,17 @@ h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacin
 .chart .band { stroke: var(--surface); stroke-width: 1.5; stroke-linejoin: round; }
 .chart .series.total { stroke: var(--ink); stroke-width: 1.5; }
 .chart .dot.total { fill: var(--ink); }
+.sup-legend { display: flex; gap: 4px 14px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); }
+.sup-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.sup-chart { display: block; width: 100%; height: 240px; touch-action: pan-y; }
+.sup-chart text { fill: var(--ink-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.sup-chart .grid { stroke: var(--grid); }
+.sup-chart .now { stroke: var(--ink-3); stroke-dasharray: 3 3; }
+.sup-chart .cursor { stroke: var(--ink-2); }
+.sup-readout { font-size: 13px; color: var(--ink-2); min-height: 2.9em; font-variant-numeric: tabular-nums; }
+.sup-readout b { color: var(--ink); font-weight: 600; }
+:root { --c-redeem: #e8850c; --c-held: rgba(232,133,12,0.42); --c-avail: rgba(47,138,87,0.30); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --c-redeem: #f7931a; --c-held: rgba(247,147,26,0.45); --c-avail: rgba(92,194,138,0.32); } }
 details.how { margin-top: 8px; }
 details.how summary { cursor: pointer; list-style-position: inside; }
 details.how p { margin: 6px 0 0; }
@@ -298,6 +309,31 @@ td.num, th.num { text-align: right; }
       </table>
     </div>
     <p class="note">Enter the hashrate you plan to run in each coming difficulty epoch (2,016 blocks, about two weeks): a build-out, rigs coming online or going away. Pick the unit above: a rate (TH/s, PH/s) or the work of a whole epoch (THh, PHh, THd, PHd, TiH; 1 THd is 1 TH/s for a day). Each epoch starts out filled with your live average × two weeks; only the epochs you change are saved. Future epochs then sell against the plan × the part of the epoch your horizon covers, less what is already sold into them. Epochs without a plan sell on the live average. The current epoch always sells on what your rigs measure, and a plan freezes when its epoch starts. A cut is refused if the epoch would owe more than it can deliver. The plan is public at <a href="v1/hashu/plan" class="mono" id="plan-link">/v1/hashu/plan</a>, next to what each epoch delivered according to your <a href="reliability/" id="plan-rec">hourly reliability record</a>: buyers price the promise by how well you keep it.</p>
+  </section>
+
+  <section class="card" aria-labelledby="h-supply" id="supply-card" hidden>
+    <div class="card-head">
+      <h2 id="h-supply">Supply</h2>
+      <div class="sup-legend">
+        <span><i style="background:var(--c-redeem)"></i>Redeeming</span>
+        <span><i style="background:var(--c-held)"></i>Held</span>
+        <span><i style="background:var(--c-avail)"></i>Available</span>
+        <span><i style="background:var(--ink);height:2px;vertical-align:3px"></i>Supply</span>
+      </div>
+    </div>
+    <svg class="sup-chart" id="supply-chart" role="img" aria-label="Hourly supply: redeeming, held and available, stacked under total supply"></svg>
+    <div class="sup-readout" id="supply-readout"></div>
+    <div class="card-head">
+      <h2>Hashes over time</h2>
+      <div class="sup-legend">
+        <span><i style="background:var(--ink)"></i>Mined</span>
+        <span><i style="background:var(--c-redeem)"></i>Sold</span>
+        <span><i style="background:var(--good)"></i>Delivered</span>
+      </div>
+    </div>
+    <svg class="sup-chart" id="totals-chart" role="img" aria-label="Running totals of hashes mined, sold and delivered"></svg>
+    <div class="sup-readout" id="totals-readout"></div>
+    <p class="note">Supply: an hourly snapshot taken right after each stock top-up, then live now. Each band is its TiH over the hours it covers, shown as TH/s, so a day's stock and a two-week epoch share one scale. At a top-up the bands add up to the supply line; above it means oversold (a top-up never takes back stock already listed). Right of now: the current stock (faded), then future epochs on sale. Hashes over time: running totals since the chart's first hour. Mined is all work your rigs did, from the hourly reliability record. Operator only, unfiltered: nothing here is public yet.</p>
   </section>
 
   <div class="cols">
@@ -1647,6 +1683,205 @@ window.addEventListener('resize', () => { drawRate(); drawRedemption(); drawPlan
 
 poll()
 setInterval(poll, 2000)
+// ---- Supply charts (GET api/supply) ------------------------------------
+// Hourly rows plus a live row now, the epoch plan's future epochs, and
+// the reliability record's hourly work. Operator only, unfiltered.
+;(() => {
+  const g = (id) => document.getElementById(id)
+  const TIH_PER_THH = 3274.18
+  const NS = 'http://www.w3.org/2000/svg'
+  const H_UNITS = ['TiH', 'PiH', 'EiH']
+  const nf = (n, d = 0) => Number(n).toLocaleString(undefined, { maximumFractionDigits: d })
+  const hUnit = (tih) => { let k = 0; while (k < H_UNITS.length - 1 && Math.abs(tih) >= 1024 ** (k + 1)) k++; return k }
+  const inU = (tih, k) => { const v = tih / 1024 ** k; return nf(v, k === 0 || Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 10 ? 1 : 2) }
+  const fH = (tih, k = hUnit(tih)) => inU(tih, k) + ' ' + H_UNITS[k]
+  const R_UNITS = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s', 'EH/s']
+  const fThs = (ths) => {
+    const hs = ths * 1e12
+    if (!(hs > 0)) return '0 TH/s'
+    let k = 4
+    while (k < R_UNITS.length - 1 && hs >= 1000 ** (k + 1)) k++
+    while (k > 0 && hs < 1000 ** k) k--
+    const v = hs / 1000 ** k
+    return nf(v, v >= 100 ? 0 : v >= 10 ? 1 : 2) + ' ' + R_UNITS[k]
+  }
+  const when = (ms) => new Date(ms).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+  const thsOf = (tih, hours) => (hours > 0 ? tih / (hours * TIH_PER_THH) : 0)
+  function el (tag, attrs, parent) {
+    const e = document.createElementNS(NS, tag)
+    for (const k in attrs) e.setAttribute(k, attrs[k])
+    if (parent) parent.appendChild(e)
+    return e
+  }
+  function frame (svg, x0, x1, top, yLabel, yFmt) {
+    const W = Math.max(280, svg.clientWidth || 600), H = 240
+    const pad = { l: 52, r: 8, t: 10, b: 22 }
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`)
+    svg.replaceChildren()
+    const X = (t) => pad.l + ((t - x0) / Math.max(1, x1 - x0)) * (W - pad.l - pad.r)
+    const Y = (v) => H - pad.b - (v / top) * (H - pad.t - pad.b)
+    for (let i = 0; i <= 4; i++) {
+      const v = (top / 1.1) * i / 4, y = Y(v)
+      el('line', { x1: pad.l, x2: W - pad.r, y1: y, y2: y, class: 'grid' }, svg)
+      el('text', { x: pad.l - 6, y: y + 4, 'text-anchor': 'end' }, svg).textContent = i ? yFmt(v) : '0'
+    }
+    el('text', { x: 2, y: pad.t + 10 }, svg).textContent = yLabel
+    const day = 86400e3, stepD = Math.max(1, Math.ceil(((x1 - x0) / day) / Math.max(2, Math.floor(W / 90))))
+    for (let t = Math.ceil(x0 / day) * day; t <= x1; t += stepD * day) {
+      const x = X(t)
+      el('line', { x1: x, x2: x, y1: pad.t, y2: H - pad.b, class: 'grid' }, svg)
+      el('text', { x, y: H - 6, 'text-anchor': 'middle' }, svg).textContent = new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    }
+    const timeAt = (ev) => {
+      const box = svg.getBoundingClientRect()
+      const px = ((ev.clientX - box.left) / box.width) * W
+      return x0 + ((px - pad.l) / (W - pad.l - pad.r)) * (x1 - x0)
+    }
+    const cursor = () => el('line', { x1: -10, x2: -10, y1: pad.t, y2: H - pad.b, class: 'cursor' }, svg)
+    return { X, Y, W, H, pad, timeAt, cursor }
+  }
+
+  let data = null
+  async function load () {
+    try { data = await api('api/supply') } catch { data = null }
+    const has = data && ((data.rows || []).length || data.live)
+    g('supply-card').hidden = !has
+    if (has) { drawSupply(); drawTotals() }
+  }
+
+  // Segments: each hourly row holds until the next (the last until now),
+  // the live row's stock runs from now to the end of its hours, then the
+  // future epochs.
+  function segments () {
+    const now = Date.now()
+    const rows = (data.rows || []).slice()
+    const segs = rows.map((r, n) => ({
+      kind: 'hour', start: r.at_ms, end: n + 1 < rows.length ? rows[n + 1].at_ms : now, hours: r.window_hours,
+      supply: r.supply_tih, redeem: r.redeeming_tih, held: r.held_tih, avail: r.available_tih,
+    })).filter((s) => s.end > s.start)
+    const lv = data.live
+    if (lv) {
+      const end = now + Math.max(0, lv.window_hours) * 3600e3
+      segs.push({ kind: 'stock', start: now, end, hours: lv.window_hours, supply: lv.supply_tih, redeem: lv.redeeming_tih, held: lv.held_tih, avail: lv.available_tih })
+    }
+    for (const f of data.epochs || []) {
+      if (!(f.hours_in_window > 0)) continue
+      const start = f.starts_at * 1000
+      segs.push({ kind: 'epoch', epoch: f.epoch, start, end: start + f.hours_in_window * 3600e3, hours: f.hours_in_window, supply: f.capacity_tih, redeem: 0, held: f.owed_tih, avail: f.free_tih })
+    }
+    return { segs, now }
+  }
+
+  function drawSupply () {
+    const svg = g('supply-chart')
+    const { segs, now } = segments()
+    if (!segs.length) return
+    const vals = segs.map((s) => ({ ...s, r: thsOf(s.redeem || 0, s.hours), h: thsOf(s.held, s.hours), a: thsOf(s.avail, s.hours), s: thsOf(s.supply, s.hours) }))
+    const x0 = Math.min(...vals.map((s) => s.start)), x1 = Math.max(now, ...vals.map((s) => s.end))
+    const top = Math.max(1e-9, ...vals.map((v) => Math.max(v.s, v.r + v.h + v.a))) * 1.1
+    const f = frame(svg, x0, x1, top, 'TH/s', (v) => fThs(v).replace(/ ?TH\/s$/, ''))
+    const { X, Y } = f
+    // One stepped shape per band per run of touching segments, so the
+    // translucent fills don't double up where hours meet.
+    const runs = []
+    for (const v of vals) {
+      const run = runs[runs.length - 1]
+      if (run && run[0].kind === v.kind && Math.abs(X(run[run.length - 1].end) - X(v.start)) < 1) run.push(v)
+      else runs.push([v])
+    }
+    const BANDS = [['r', 'var(--c-redeem)'], ['h', 'var(--c-held)'], ['a', 'var(--c-avail)']]
+    for (const run of runs) {
+      const op = run[0].kind === 'stock' ? 0.55 : 1
+      BANDS.forEach(([key, fill], bi) => {
+        const lo = (v) => BANDS.slice(0, bi).reduce((t, [k]) => t + Math.max(0, v[k]), 0)
+        const hi = (v) => lo(v) + Math.max(0, v[key])
+        if (!run.some((v) => v[key] > 0)) return
+        let d = ''
+        run.forEach((v, n) => { d += `${n ? 'L' : 'M'}${X(v.start)},${Y(hi(v))} L${X(v.end)},${Y(hi(v))} ` })
+        for (let n = run.length - 1; n >= 0; n--) d += `L${X(run[n].end)},${Y(lo(run[n]))} L${X(run[n].start)},${Y(lo(run[n]))} `
+        el('path', { d: d + 'Z', fill, 'fill-opacity': op }, svg)
+      })
+    }
+    let d = '', last = null
+    for (const v of vals) {
+      const xa = X(v.start), xb = X(v.end), y = Y(v.s)
+      d += (last !== null && Math.abs(last - xa) < 1 ? ` L${xa},${y}` : ` M${xa},${y}`) + ` L${xb},${y}`
+      last = xb
+    }
+    el('path', { d, fill: 'none', stroke: 'var(--ink)', 'stroke-width': 1.6 }, svg)
+    const xn = X(now)
+    el('line', { x1: xn, x2: xn, y1: f.pad.t, y2: f.H - f.pad.b, class: 'now' }, svg)
+    el('text', { x: xn + 4, y: f.pad.t + 10 }, svg).textContent = 'now'
+    const cur = f.cursor()
+    const show = (v) => {
+      const k = hUnit(Math.max(v.supply, v.held + (v.redeem || 0) + v.avail))
+      const part = (name, tih, ths) => `${name} <b>${fH(tih, k)}</b> (${fThs(ths)})`
+      const head = v.kind === 'epoch' ? `Epoch ${v.epoch}, from ${when(v.start)}, ${nf(v.hours)} h on sale`
+        : v.kind === 'stock' ? `Now: current stock, covering until ${when(v.end)}`
+        : `${when(v.start)}, covering ${nf(v.hours, 1)} h`
+      const parts = []
+      if (v.kind !== 'epoch') parts.push(part('Redeeming', v.redeem || 0, v.r))
+      parts.push(part('Held', v.held, v.h), part('Available', v.avail, v.a), part('Supply', v.supply, v.s))
+      g('supply-readout').innerHTML = `${head}<br>${parts.join(' · ')}`
+    }
+    const pick = (ev) => {
+      const t = f.timeAt(ev)
+      const v = vals.find((s) => t >= s.start && t < s.end)
+      if (!v) return
+      cur.setAttribute('x1', X(t)); cur.setAttribute('x2', X(t))
+      show(v)
+    }
+    svg.onpointermove = pick
+    svg.onpointerdown = pick
+    show(vals.find((s) => s.kind === 'stock') || vals[vals.length - 1])
+  }
+
+  function drawTotals () {
+    const svg = g('totals-chart')
+    const rows = (data.rows || []).slice()
+    const now = Date.now()
+    if (data.live) rows.push({ ...data.live, at_ms: now })
+    if (rows.length < 2) { svg.replaceChildren(); g('totals-readout').textContent = 'Running totals start after the first hourly snapshot.'; return }
+    const t0 = rows[0].at_ms, t1 = Math.max(now, rows[rows.length - 1].at_ms)
+    const sold0 = rows[0].sold_total_tih || 0, del0 = rows[0].delivered_total_tih || 0
+    const pts = rows.map((r) => ({ t: r.at_ms, sold: (r.sold_total_tih || 0) - sold0, delivered: (r.delivered_total_tih || 0) - del0 }))
+    let acc = 0
+    const minedPts = [{ t: t0, v: 0 }]
+    ;(data.mined || []).map((h) => ({ t: (h.hour + 3600) * 1000, w: h.work_tih || 0 }))
+      .filter((h) => h.t > t0).sort((a, b) => a.t - b.t)
+      .forEach((h) => { acc += h.w; minedPts.push({ t: h.t, v: acc }) })
+    const max = Math.max(1, ...minedPts.map((p) => p.v), ...pts.map((p) => Math.max(p.sold, p.delivered)))
+    const k = hUnit(max)
+    const f = frame(svg, t0, t1, max * 1.1, H_UNITS[k], (v) => inU(v, k))
+    const { X, Y } = f
+    const line = (series, key, stroke) => {
+      const d = series.map((p, n) => `${n ? 'L' : 'M'}${X(p.t)},${Y(p[key])}`).join(' ') + ` L${X(t1)},${Y(series[series.length - 1][key])}`
+      el('path', { d, fill: 'none', stroke, 'stroke-width': 1.8, 'stroke-linejoin': 'round' }, svg)
+    }
+    line(minedPts, 'v', 'var(--ink)')
+    line(pts, 'sold', 'var(--c-redeem)')
+    line(pts, 'delivered', 'var(--good)')
+    const at = (series, t, key) => { let v = 0; for (const p of series) { if (p.t <= t) v = p[key]; else break } return v }
+    const cur = f.cursor()
+    const show = (t) => {
+      const m = at(minedPts, t, 'v'), so = at(pts, t, 'sold'), de = at(pts, t, 'delivered')
+      const kk = hUnit(Math.max(m, so, de))
+      g('totals-readout').innerHTML = `${when(t)}<br>Mined <b>${fH(m, kk)}</b> · Sold <b>${fH(so, kk)}</b> · Delivered <b>${fH(de, kk)}</b>`
+    }
+    const pick = (ev) => {
+      const t = Math.min(t1, Math.max(t0, f.timeAt(ev)))
+      cur.setAttribute('x1', X(t)); cur.setAttribute('x2', X(t))
+      show(t)
+    }
+    svg.onpointermove = pick
+    svg.onpointerdown = pick
+    show(t1)
+  }
+
+  load()
+  setInterval(load, 60000)
+  window.addEventListener('resize', () => { if (data) { drawSupply(); drawTotals() } })
+})()
 </script>
 </body>
 </html>

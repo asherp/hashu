@@ -955,11 +955,15 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         }
         Err(e) => tracing::warn!(error = %e, "could not count obligations"),
     }
+    let supply = Arc::new(crate::supply::SupplyHistory::load(
+        args.data_dir.join("supply-history.jsonl"),
+    ));
     tokio::spawn(operator::run_owed_refresher(
         mint.clone(),
         ledger.clone(),
         capacity.clone(),
         Duration::from_secs(5),
+        Some(supply.clone()),
     ));
     let cap = capacity.snapshot(hashu_mint::capacity::now_ms());
     tracing::info!(
@@ -1343,6 +1347,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             auth: Arc::new(auth),
             planner: planner.clone(),
             reliability: Some(reliability.clone()),
+            supply: Some(supply.clone()),
         });
         let listener = tokio::net::TcpListener::bind(bind)
             .await
