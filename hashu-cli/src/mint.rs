@@ -358,6 +358,15 @@ pub struct RunArgs {
     /// it and offer "Open in wallet" for tokens. Unset: no wallet links.
     #[arg(long, env = "HASHU_APP_URL")]
     pub app_url: Option<String>,
+    /// Legal name of whoever sells this mint's vouchers, e.g.
+    /// `Example Mining, LLC`. The checkout names them as the seller.
+    /// Unset: no seller line.
+    #[arg(long, env = "HASHU_SELLER_NAME")]
+    pub seller_name: Option<String>,
+    /// The seller's terms of sale (http(s) URL). With `--seller-name`, the
+    /// checkout links them and asks buyers and redeemers to accept them.
+    #[arg(long, env = "HASHU_TERMS_URL")]
+    pub terms_url: Option<String>,
 
     // ---- capacity ---------------------------------------------------
     /// MiningRigRentals API key. With `--mrr-api-secret`, the mint reads the
@@ -1015,6 +1024,10 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             ),
         )
         .with_app_url(app_url(args.app_url.as_deref())?)
+        .with_seller(seller(
+            args.seller_name.as_deref(),
+            args.terms_url.as_deref(),
+        )?)
         .with_encrypted_pools_only(args.encrypted_pools_only)
         .with_stratum(stratum.clone())
         .with_rigs(rigs.clone()),
@@ -1627,6 +1640,63 @@ fn app_url(raw: Option<&str>) -> Result<Option<String>> {
         bail!("--app-url must be an http(s) URL like https://app.example.com (got {raw})");
     }
     Ok(Some(raw.trim_end_matches('/').to_string()))
+}
+
+/// `--seller-name` and `--terms-url`: the seller shown at checkout. Empty
+/// values count as unset; terms without a seller name are refused.
+fn seller(name: Option<&str>, terms: Option<&str>) -> Result<Option<crate::checkout::Seller>> {
+    let name = name.map(str::trim).filter(|s| !s.is_empty());
+    let terms = terms.map(str::trim).filter(|s| !s.is_empty());
+    let terms_url = match terms {
+        None => None,
+        Some(t) => {
+            let rest = t
+                .strip_prefix("https://")
+                .or_else(|| t.strip_prefix("http://"))
+                .unwrap_or("");
+            if rest.split('/').next().unwrap_or("").is_empty() || t.contains(char::is_whitespace) {
+                bail!(
+                    "--terms-url must be an http(s) URL like https://example.com/terms (got {t})"
+                );
+            }
+            Some(t.to_string())
+        }
+    };
+    match (name, terms_url) {
+        (None, None) => Ok(None),
+        (None, Some(_)) => {
+            bail!("--terms-url needs --seller-name: the checkout names who the terms are with")
+        }
+        (Some(n), terms_url) => Ok(Some(crate::checkout::Seller {
+            name: n.to_string(),
+            terms_url,
+        })),
+    }
+}
+
+#[cfg(test)]
+mod seller_tests {
+    use super::seller;
+
+    #[test]
+    fn seller_is_optional_and_checked() {
+        assert_eq!(seller(None, None).unwrap(), None);
+        assert_eq!(seller(Some(" "), Some("")).unwrap(), None);
+        let s = seller(
+            Some("Example Mining, LLC"),
+            Some("https://example.com/terms"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(s.name, "Example Mining, LLC");
+        assert_eq!(s.terms_url.as_deref(), Some("https://example.com/terms"));
+        assert_eq!(
+            seller(Some("Example"), None).unwrap().unwrap().terms_url,
+            None
+        );
+        assert!(seller(None, Some("https://example.com/terms")).is_err());
+        assert!(seller(Some("Example"), Some("example.com/terms")).is_err());
+    }
 }
 
 #[cfg(test)]
