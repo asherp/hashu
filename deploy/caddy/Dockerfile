@@ -33,6 +33,13 @@ RUN git init -q . \
  && git checkout -q FETCH_HEAD
 RUN npm ci --no-audit --no-fund
 RUN npx quasar build -m pwa
+# Hashu Operator (hashu.me issue #42): the same repo built as a second app
+# (its own manifest and storage) into dist/operator, served at
+# $HASHU_OPERATOR_APP_DOMAIN. A wallet ref from before the operator app
+# builds nothing here, and that host then answers 404.
+RUN if grep -q HASHU_APP quasar.config.js; then \
+      HASHU_APP=operator npx quasar build -m pwa; \
+    else mkdir -p dist/operator; fi
 
 FROM caddy:2
 # The routes ship with the image, so the Caddyfile always matches the site,
@@ -46,6 +53,7 @@ COPY --chmod=0755 deploy/caddy/entrypoint.sh /usr/local/bin/hashu-caddy-entrypoi
 ENTRYPOINT ["hashu-caddy-entrypoint"]
 CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
 COPY --from=wallet /wallet/dist/pwa /srv/app
+COPY --from=wallet /wallet/dist/operator /srv/operator
 COPY --from=slides /out /srv/slides
 # Project splash page (site/), served at / on HASHU_EXTRA_DOMAINS only (see Caddyfile).
 COPY site/ /srv/site/

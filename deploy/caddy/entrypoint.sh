@@ -53,6 +53,29 @@ else
   echo "# hashu.me wallet off (HASHU_APP_DOMAIN unset)" > "$GEN/app-site.caddy"
 fi
 
+if [ -n "${HASHU_OPERATOR_APP_DOMAIN:-}" ]; then
+  case "$HASHU_OPERATOR_APP_DOMAIN" in
+    *://*|*/*) fail "HASHU_OPERATOR_APP_DOMAIN must be a bare host name like operator.example.com (got $HASHU_OPERATOR_APP_DOMAIN)" ;;
+  esac
+  # Hashu Operator PWA (hashu.me built with HASHU_APP=operator), at
+  # /srv/operator. Its own origin keeps operator sign-ins apart from the
+  # wallet's vouchers; it calls each mint's /operator/api with a bearer
+  # token. Cached like the wallet.
+  cat > "$GEN/operator-app-site.caddy" <<SITE
+{\$HASHU_OPERATOR_APP_DOMAIN} {
+	import security_headers
+	encode gzip
+	root * /srv/operator
+	@fresh path /sw.js /manifest.json /index.html /
+	header @fresh Cache-Control "no-cache"
+	try_files {path} /index.html
+	file_server
+}
+SITE
+else
+  echo "# Hashu Operator app off (HASHU_OPERATOR_APP_DOMAIN unset)" > "$GEN/operator-app-site.caddy"
+fi
+
 if [ -n "${HASHU_SUPPLIER_DOMAIN:-}" ]; then
   case "$HASHU_SUPPLIER_DOMAIN" in
     *://*|*/*|\**) fail "HASHU_SUPPLIER_DOMAIN must be a bare domain like example.com (got $HASHU_SUPPLIER_DOMAIN)" ;;

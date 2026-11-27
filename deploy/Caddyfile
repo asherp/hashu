@@ -153,6 +153,11 @@ import /etc/caddy/generated/mdk-site.caddy
 # checkout router) answer it cross-origin.
 import /etc/caddy/generated/app-site.caddy
 
+# Hashu Operator app (optional, HASHU_OPERATOR_APP_DOMAIN): hashu.me built
+# as its second app. It signs into this mint's /operator/ API (and supplier
+# mints' /api/) cross-origin with bearer tokens / dashboard keys.
+import /etc/caddy/generated/operator-app-site.caddy
+
 # Supplier mints on HASHU_SUPPLIER_DOMAIN (optional): written by the
 # entrypoint, or nothing.
 import /etc/caddy/generated/supplier-site.caddy
