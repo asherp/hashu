@@ -63,8 +63,8 @@ class: text-left
 **Hashu's answer**
 
 - **Mining is Layer-0 privacy**: a freshly mined coin has no history at all
-- Miners run a self-hosted proxy that mints **hashrate-backed Cashu tokens (THH)**, 1 THH = 1 TH/s × 1 h
-- Pay with **USDT or Lightning**, even with KYC'd sats. Redeem THH and the hashrate is pointed at **your** pool, which pays you freshly mined coins
+- Miners run a self-hosted proxy that mints **hashrate-backed Cashu tokens** ~~(THH), 1 THH = 1 TH/s × 1 h~~ <span class="text-amber-500">**Update:** the unit is now TiH (2⁴⁰ SHA-256 hashes); 1 TH/s for 1 h ≈ 3,274 TiH. Tokens are Chaumian hashrate vouchers</span>
+- Pay with **~~USDT or Lightning~~** <span class="text-amber-500">**Update:** Lightning, USDT or USDC</span>, even with KYC'd sats. Redeem ~~THH~~ TiH and the hashrate is pointed at **your** pool, which pays you freshly mined coins
 - No exchange, and the mint never touches your bitcoin: it **sells computation**, not money
 
 </div>
@@ -105,15 +105,17 @@ sequenceDiagram
   P-->>M: accepted shares credited + Merkle-committed
 ```
 
+<div class="text-xs text-amber-500 mt-1"><b>Update:</b> the unit is now TiH, not THH; checkout also takes USDC. Share Merkle trees are visible to the operator only, not yet to buyers (asherp/hashu.me#63).</div>
+
 <div class="grid grid-cols-3 gap-6 text-xs mt-1">
 <div>
 
-**In: sats or dollars** · mainnet Lightning via phoenixd, tested live. The USDT rail is built but not yet tested live
+**In: sats or dollars** · mainnet Lightning via phoenixd, tested live. ~~The USDT rail is built but not yet tested live~~ <span class="text-amber-500">**Update:** USDT and USDC rails are in checkout</span>
 
 </div>
 <div>
 
-**Middle: computation** · THH is a bearer Cashu token for hashing work, private by blind signatures. Sales are capped at rented capacity
+**Middle: computation** · ~~THH~~ TiH is a bearer Cashu token for hashing work, private by blind signatures. Sales are capped at rented capacity
 
 </div>
 <div>
@@ -137,7 +139,7 @@ per-redemption RFC 6962 Merkle tree (signed nostr receipts are roadmap).
 
 # Share accounting: how work is counted
 
-<div class="grid grid-cols-2 gap-8 text-sm mt-2">
+<div class="grid grid-cols-2 gap-8 text-xs mt-0">
 <div>
 
 **Exact integer math, in hashes**
@@ -148,9 +150,11 @@ per-redemption RFC 6962 Merkle tree (signed nostr receipts are roadmap).
 melt N   → target = N × 3.6 × 10¹⁵ hashes
 ```
 
+<div class="text-xs"><s class="opacity-60">1 THH = 3.6 × 10¹⁵ hashes</s> <span class="text-amber-500"><b>Update:</b> 1 TiH = 2⁴⁰ hashes, so melt N → target = N × 2⁴⁰ hashes, and a share is difficulty ÷ 256 TiH.</span></div>
+
 <div class="text-xs opacity-80 mt-1">
 
-At difficulty 65,536, 1 THH ≈ 12.8 shares. A 40 TH/s heater fills 1 THH in 90 s.
+~~At difficulty 65,536, 1 THH ≈ 12.8 shares. A 40 TH/s heater fills 1 THH in 90 s.~~ <span class="text-amber-500">**Update:** at difficulty 65,536, 1 PiH (the minimum) = 4 shares; 40 TH/s fills it in ~28 s.</span>
 
 </div>
 
@@ -179,9 +183,9 @@ Completion is broadcast once: the router sends hashrate back to the default pool
 **Proof of work routed**
 
 - Each accepted share is rebuilt into its 80-byte block header and appended to a per-redemption **RFC 6962 Merkle tree**
-- The audit API serves the root and an inclusion proof per share: `/redemptions/{id}/root`, `/proof/{n}`
+- ~~The audit API serves the root and an inclusion proof per share: `/redemptions/{id}/root`, `/proof/{n}`~~ <span class="text-amber-500">**Update:** operator-only (private control API). Holders can't fetch proofs yet (hashu.me#63)</span>
 - Redemptions persist across restarts (journaled ledger + share trees)
-- Roadmap: publish roots as signed nostr receipts
+- ~~Roadmap: publish roots as signed nostr receipts~~ <span class="text-amber-500">**Update:** live: hourly reliability record of top shares on Nostr + OpenTimestamps. Per-redemption roots not yet</span>
 
 </div>
 </div>
@@ -205,9 +209,9 @@ from the melt request, so cdk can look it up and nobody pays twice).
 <div class="grid grid-cols-[1.05fr_1fr] gap-6 text-sm mt-1">
 <div>
 
-**A home heater that sells its hashrate as THH**
+**A home heater that sells its hashrate as ~~THH~~ TiH**
 
-1. Someone redeems THH; the proxy opens a redemption
+1. Someone redeems ~~THH~~ TiH; the proxy opens a redemption
 2. The **Hashu Heater app** sees it on the proxy's control API and sends `setupPools` through the MDK Kernel: home pool → Hashu proxy
 3. Shares go to the redeemer's pool and are credited
 4. Filled → `setupPools` back to the home pool
@@ -253,13 +257,13 @@ thermostat with hysteresis plus a ceiling; manual override per heater.
 
 **Live on mainnet at mint.hashu.io**
 
-- ✅ CDK mint, unit **THH**, works in the **Cashu.me** wallet
+- ✅ CDK mint, unit ~~**THH**~~ **TiH**, works in the **Cashu.me** wallet
 - ✅ Buy with **mainnet Lightning** (phoenixd), tested end to end; the mint absorbs LSP fees on small buys
 - ✅ Tokens move as QR codes, animated for long tokens
 - ✅ Redeem to **any pool + worker**, optional worker password. Redeeming live to our Braiins account now
 - ✅ Hashrate from **MiningRigRentals**: 413 TH/s, 70/70 shares accepted at Braiins
 - ✅ Sales capped at rented capacity; redemptions first come, first served
-- ✅ Redemptions survive restarts; per-redemption Merkle root + inclusion proofs
+- ✅ Redemptions survive restarts; per-redemption Merkle root + inclusion proofs <span class="text-amber-500">**Update:** operator-only for now</span>
 - ✅ Operator page: hashrate graphs, test mint, redeem. Checkout shows delivery time
 
 </div>
@@ -276,7 +280,7 @@ thermostat with hysteresis plus a ceiling; manual override per heater.
 
 **Roadmap**
 
-- 🔜 Nostr-signed Merkle roots and completion certificates
+- 🔜 ~~Nostr-signed Merkle roots and completion certificates~~ <span class="text-amber-500">**Update:** the hourly reliability record is live (Nostr + OpenTimestamps). Per-redemption roots and a wallet audit are next (asherp/hashu.me#63)</span>
 - 🔜 More hashrate sources than one rental market
 
 </div>
@@ -300,7 +304,7 @@ taken a live payment; nostr attestation (attestation.rs) is not built.
 
 **Try it**
 
-- Buy THH: **[mint.hashu.io/checkout/](https://mint.hashu.io/checkout/)**
+- Buy ~~THH~~ TiH: **[mint.hashu.io/checkout/](https://mint.hashu.io/checkout/)**
 - Mint URL for Cashu.me: `https://mint.hashu.io`
 - Code: **[github.com/asherp/hashu](https://github.com/asherp/hashu)** (Rust, MIT / Apache-2.0)
 - These slides: hashu.io/slides
@@ -310,7 +314,7 @@ taken a live payment; nostr attestation (attestation.rs) is not built.
 
 **What we'll show**
 
-1. Pay a Lightning invoice, get a THH token as a QR
+1. Pay a Lightning invoice, get a ~~THH~~ TiH token as a QR
 2. Scan it into Cashu.me
 3. Redeem to a Braiins worker
 4. Watch the rented hashrate move on the operator graph
