@@ -997,15 +997,35 @@ pub async fn run_owed_refresher(
     ledger: Arc<RedemptionLedger>,
     capacity: Arc<CapacityBook>,
     every: std::time::Duration,
+    supply: Option<Arc<crate::supply::SupplyHistory>>,
 ) {
     let mut tick = tokio::time::interval(every);
     loop {
         tick.tick().await;
         match obligations(&mint, &ledger).await {
             Ok(o) => {
-                capacity.set_owed(o.total_owed(), now_ms());
+                let now = now_ms();
+                capacity.set_owed(o.total_owed(), now);
                 capacity.set_sold(o.stock_sold as f64);
-                capacity.refresh_live(now_ms());
+                capacity.refresh_live(now);
+                if let Some(h) = &supply {
+                    let delivered: f64 = ledger
+                        .all()
+                        .iter()
+                        .filter(|r| r.supplier.is_none())
+                        .map(|r| {
+                            (r.accumulated_hashes as f64 / HASHES_PER_TIH as f64)
+                                .min(r.amount_tih as f64)
+                        })
+                        .sum();
+                    let counts = crate::supply::Counts {
+                        redeeming_tih: o.open_remaining_tih,
+                        open_redemptions: o.open_count,
+                        sold_total_tih: o.sold.values().sum::<u64>() as f64,
+                        delivered_total_tih: delivered,
+                    };
+                    h.observe(&capacity.snapshot(now), counts, now);
+                }
             }
             Err(e) => tracing::warn!(error = %e, "could not count obligations"),
         }

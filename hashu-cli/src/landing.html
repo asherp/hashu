@@ -70,6 +70,22 @@ pre { margin: 10px 0 0; background: var(--bg); border: 1px solid var(--line); bo
 dl { margin: 12px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 14px; }
 dt { color: var(--ink-3); }
 dd { margin: 0; overflow-wrap: anywhere; }
+.supply { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 12px 0 8px; }
+.supply .head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px 16px; flex-wrap: wrap; }
+.supply .k { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); }
+.supply .legend { display: flex; gap: 6px 14px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); }
+.supply .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.supply .legend i.line { height: 2px; border-radius: 1px; vertical-align: 3px; background: var(--ink); }
+.supply svg { display: block; width: 100%; height: 220px; margin-top: 10px; touch-action: pan-y; }
+.supply svg text { fill: var(--ink-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.supply .grid { stroke: var(--line); }
+.supply .now { stroke: var(--ink-3); stroke-dasharray: 3 3; }
+.supply .cursor { stroke: var(--ink-2); }
+.supply .readout { font-size: 13px; color: var(--ink-2); min-height: 3.2em; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.supply .readout b { color: var(--ink); font-weight: 600; }
+.supply .note { font-size: 12px; color: var(--ink-3); margin: 4px 0 0; }
+:root { --c-redeem: #e8850c; --c-held: rgba(232,133,12,0.42); --c-avail: rgba(47,138,87,0.30); --c-future: rgba(232,133,12,0.22); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --c-redeem: #f7931a; --c-held: rgba(247,147,26,0.45); --c-avail: rgba(92,194,138,0.32); } }
 footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 14px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 </style>
 </head>
@@ -112,6 +128,34 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       <div class="stat" data-rail="usdt" hidden><div class="k">Pay with USDT</div><div class="v" data-usd-price>—</div></div>
       <div class="stat" data-rail="usdc" hidden><div class="k">Pay with USDC</div><div class="v" data-usd-price>—</div></div>
       <div class="stat"><div class="k">Sales</div><div class="v" id="s-sales">—</div></div>
+    </div>
+
+    <div class="supply" id="supply" hidden>
+      <div class="head">
+        <div class="k">Supply</div>
+        <div class="legend">
+          <span><i style="background:var(--c-redeem)"></i>Redeeming</span>
+          <span><i style="background:var(--c-held)"></i>Held</span>
+          <span><i style="background:var(--c-avail)"></i>Available</span>
+          <span><i class="line"></i>Supply</span>
+        </div>
+      </div>
+      <svg id="supply-chart" role="img" aria-label="Hourly supply: redeeming, held and available hashes, stacked under total supply"></svg>
+      <div class="readout" id="supply-readout"></div>
+      <p class="note" id="supply-note">Hourly snapshots, as TH/s over the hours each sale covers. Right of now: the current stock, then future epochs on sale.</p>
+    </div>
+    <div class="supply" id="totals" hidden>
+      <div class="head">
+        <div class="k">Hashes over time</div>
+        <div class="legend">
+          <span><i style="background:var(--ink)"></i>Mined</span>
+          <span><i style="background:var(--c-redeem)"></i>Sold</span>
+          <span><i style="background:var(--good)"></i>Delivered</span>
+        </div>
+      </div>
+      <svg id="totals-chart" role="img" aria-label="Running totals of hashes mined, sold and delivered"></svg>
+      <div class="readout" id="totals-readout"></div>
+      <p class="note">Running totals since the start of the chart. Mined is all work the mint's rigs did, from its hourly reliability record. Delivered updates once a day, or hourly while three or more redemptions run.</p>
     </div>
   </header>
 
@@ -326,6 +370,231 @@ fetch('/v1/info', { cache: 'no-store' })
     if (first.href) nav.href = first.href;
   })
   .catch(() => {});
+// ---- Supply chart ----------------------------------------------------
+// Hourly rows from /v1/hashu/supply (left of now) and future epochs on
+// sale from /v1/hashu/epochs (right of now), drawn as TH/s: each band's
+// TiH over the hours it covers, so a two-week epoch and a one-day stock
+// share one scale. Hover or tap for the TiH.
+const TIH_PER_THH = 3274.18;
+const SVGNS = 'http://www.w3.org/2000/svg';
+let supplyData = null;
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+const thsOf = (tih, hours) => (hours > 0 ? tih / (hours * TIH_PER_THH) : 0);
+function fmtThs(ths) { const r = fmtRate(ths * 1e12); return r.v + ' ' + r.u; }
+function fmtWhen(ms) {
+  return new Date(ms).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+async function loadSupply() {
+  let hist = [], future = [];
+  try {
+    const r = await fetch('/v1/hashu/supply', { cache: 'no-store' });
+    if (r.ok) hist = (await r.json()).rows || [];
+  } catch {}
+  try {
+    const r = await fetch('/v1/hashu/epochs', { cache: 'no-store' });
+    if (r.ok) {
+      const e = await r.json();
+      future = (e.epochs || []).filter((x) => !x.current && x.hours_in_window > 0 && x.capacity_tih != null)
+        .map((x) => ({ epoch: x.epoch, start: x.starts_at * 1000, hours: x.hours_in_window, supply: x.capacity_tih, held: x.owed_tih || 0, avail: x.free_tih || 0 }));
+    }
+  } catch {}
+  const now = Date.now();
+  // Each hourly row holds until the next one (the last until now).
+  const segs = hist.map((r, n) => ({
+    kind: 'hour', start: r.at_ms, end: n + 1 < hist.length ? hist[n + 1].at_ms : now, hours: r.window_hours,
+    supply: r.supply_tih, redeem: r.redeeming_tih, split: r.redeeming_tih != null, held: r.held_tih, avail: r.available_tih,
+  })).filter((s) => s.end > s.start);
+  // The latest row's stock runs on until the end of the hours it covers.
+  const lastRow = segs[segs.length - 1];
+  if (lastRow) {
+    const end = lastRow.start + lastRow.hours * 3600e3;
+    if (end > now) segs.push({ ...lastRow, kind: 'stock', start: now, end });
+  }
+  for (const f of future) segs.push({ kind: 'epoch', epoch: f.epoch, start: f.start, end: f.start + f.hours * 3600e3, hours: f.hours, supply: f.supply, redeem: 0, split: true, held: f.held, avail: f.avail });
+  supplyData = segs.length ? { segs, now } : null;
+  $('supply').hidden = !supplyData;
+  drawSupply();
+}
+
+function drawSupply() {
+  const svg = $('supply-chart');
+  if (!supplyData) return;
+  const { segs, now } = supplyData;
+  const W = Math.max(280, svg.clientWidth || 600), H = 220;
+  const pad = { l: 46, r: 8, t: 8, b: 22 };
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.replaceChildren();
+  const x0 = Math.min(...segs.map((s) => s.start)), x1 = Math.max(now, ...segs.map((s) => s.end));
+  const vals = segs.map((s) => ({ ...s, r: thsOf(s.redeem || 0, s.hours), h: thsOf(s.held, s.hours), a: thsOf(s.avail, s.hours), s: thsOf(s.supply, s.hours) }));
+  const top = Math.max(1e-9, ...vals.map((v) => Math.max(v.s, v.r + v.h + v.a))) * 1.1;
+  const X = (t) => pad.l + ((t - x0) / Math.max(1, x1 - x0)) * (W - pad.l - pad.r);
+  const Y = (v) => H - pad.b - (v / top) * (H - pad.t - pad.b);
+  // Grid + y labels in TH/s.
+  for (let i = 0; i <= 4; i++) {
+    const v = (top / 1.1) * i / 4, y = Y(v);
+    el('line', { x1: pad.l, x2: W - pad.r, y1: y, y2: y, class: 'grid' }, svg);
+    el('text', { x: pad.l - 6, y: y + 4, 'text-anchor': 'end' }, svg).textContent = i ? fmtThs(v).replace(' TH/s', '').replace(' ', '') : '0';
+  }
+  el('text', { x: 2, y: pad.t + 10 }, svg).textContent = 'TH/s';
+  // Day ticks.
+  const day = 86400e3, first = Math.ceil(x0 / day) * day, stepD = Math.max(1, Math.ceil(((x1 - x0) / day) / Math.max(2, Math.floor(W / 90))));
+  for (let t = first; t <= x1; t += stepD * day) {
+    const x = X(t);
+    el('line', { x1: x, x2: x, y1: pad.t, y2: H - pad.b, class: 'grid' }, svg);
+    el('text', { x, y: H - 6, 'text-anchor': 'middle' }, svg).textContent = new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+  // Stacked bands, bottom up: redeeming, held, available. Touching
+  // segments of one kind are drawn as one stepped shape per band, so
+  // translucent fills don't double up where hours meet.
+  const runs = [];
+  for (const v of vals) {
+    const run = runs[runs.length - 1];
+    if (run && run[0].kind === v.kind && Math.abs(X(run[run.length - 1].end) - X(v.start)) < 1) run.push(v);
+    else runs.push([v]);
+  }
+  const BANDS = [['r', 'var(--c-redeem)'], ['h', 'var(--c-held)'], ['a', 'var(--c-avail)']];
+  for (const run of runs) {
+    const op = run[0].kind === 'stock' ? 0.55 : 1;
+    BANDS.forEach(([key, fill], bi) => {
+      const lo = (v) => BANDS.slice(0, bi).reduce((t, [k]) => t + Math.max(0, v[k]), 0);
+      const hi = (v) => lo(v) + Math.max(0, v[key]);
+      if (!run.some((v) => v[key] > 0)) return;
+      let d = '';
+      run.forEach((v, n) => { d += `${n ? 'L' : 'M'}${X(v.start)},${Y(hi(v))} L${X(v.end)},${Y(hi(v))} `; });
+      for (let n = run.length - 1; n >= 0; n--) d += `L${X(run[n].end)},${Y(lo(run[n]))} L${X(run[n].start)},${Y(lo(run[n]))} `;
+      el('path', { d: d + 'Z', fill, 'fill-opacity': op }, svg);
+    });
+  }
+  // Supply line, stepped.
+  let d = '', last = null;
+  for (const v of vals) {
+    const xa = X(v.start), xb = X(v.end), y = Y(v.s);
+    d += (last && Math.abs(last - xa) < 1 ? ` L${xa},${y}` : ` M${xa},${y}`) + ` L${xb},${y}`;
+    last = xb;
+  }
+  el('path', { d, fill: 'none', stroke: 'var(--ink)', 'stroke-width': 1.6 }, svg);
+  const xn = X(now);
+  el('line', { x1: xn, x2: xn, y1: pad.t, y2: H - pad.b, class: 'now' }, svg);
+  el('text', { x: xn + 4, y: pad.t + 10 }, svg).textContent = 'now';
+  const cursor = el('line', { x1: -10, x2: -10, y1: pad.t, y2: H - pad.b, class: 'cursor' }, svg);
+  const pick = (ev) => {
+    const box = svg.getBoundingClientRect();
+    const px = ((ev.clientX - box.left) / box.width) * W;
+    const t = x0 + ((px - pad.l) / (W - pad.l - pad.r)) * (x1 - x0);
+    const v = vals.find((s) => t >= s.start && t < s.end) || (t >= now ? null : vals.filter((s) => s.kind === 'hour').slice(-1)[0]);
+    if (!v) return;
+    cursor.setAttribute('x1', px); cursor.setAttribute('x2', px);
+    showReadout(v);
+  };
+  svg.onpointermove = pick;
+  svg.onpointerdown = pick;
+  const latest = vals.filter((s) => s.kind === 'hour').slice(-1)[0] || vals[0];
+  showReadout(latest);
+}
+
+function showReadout(v) {
+  const k = hashUnit(Math.max(v.supply, v.held + (v.redeem || 0) + v.avail));
+  const part = (name, tih, ths) => `${name} <b>${fmtHashes(tih, k)}</b> (${fmtThs(ths)})`;
+  const when = v.kind === 'epoch'
+    ? `Epoch ${v.epoch}, from ${fmtWhen(v.start)}, ${fmt(v.hours)} h on sale`
+    : v.kind === 'stock' ? `Current stock, covering until ${fmtWhen(v.end)}`
+    : `${fmtWhen(v.start)}, covering ${fmt(v.hours, 1)} h`;
+  const parts = [];
+  if (v.kind !== 'epoch' && v.split) parts.push(part('Redeeming', v.redeem, v.r));
+  parts.push(part(v.kind !== 'epoch' && !v.split ? 'Held + redeeming' : 'Held', v.held, v.h));
+  parts.push(part('Available', v.avail, v.a));
+  parts.push(part('Supply', v.supply, v.s));
+  $('supply-readout').innerHTML = `${when}<br>${parts.join(' · ')}`;
+}
+
+loadSupply();
+setInterval(loadSupply, 5 * 60e3);
+window.addEventListener('resize', () => drawSupply());
+// ---- Running totals (TiH) ---------------------------------------------
+// The time integral: hashes mined (hourly reliability record), sold and
+// delivered (supply rows), each counted from the chart's first hour.
+let totalsData = null;
+async function loadTotals() {
+  let rows = [], hours = [];
+  try { const r = await fetch('/v1/hashu/supply', { cache: 'no-store' }); if (r.ok) rows = (await r.json()).rows || []; } catch {}
+  try { const r = await fetch('/v1/hashu/reliability?limit=336', { cache: 'no-store' }); if (r.ok) hours = (await r.json()).hours || []; } catch {}
+  if (rows.length < 2) { totalsData = null; $('totals').hidden = true; return; }
+  const t0 = rows[0].at_ms;
+  const pts = [];
+  const sold0 = rows[0].sold_total_tih || 0, del0 = rows[0].delivered_total_tih || 0;
+  for (const r of rows) pts.push({ t: r.at_ms, sold: (r.sold_total_tih || 0) - sold0, delivered: (r.delivered_total_tih || 0) - del0 });
+  // Mined: each published hour adds its work at the hour's end.
+  const mined = hours.map((h) => ({ t: (h.hour + 3600) * 1000, w: h.work_tih || 0 }))
+    .filter((h) => h.t > t0).sort((a, b) => a.t - b.t);
+  let acc = 0;
+  const minedPts = [{ t: t0, v: 0 }];
+  for (const h of mined) { acc += h.w; minedPts.push({ t: h.t, v: acc }); }
+  totalsData = { pts, minedPts, t0, t1: Math.max(Date.now(), pts[pts.length - 1].t) };
+  $('totals').hidden = false;
+  drawTotals();
+}
+function valueAt(series, t, key) {
+  let v = 0;
+  for (const p of series) { if (p.t <= t) v = p[key]; else break; }
+  return v;
+}
+function drawTotals() {
+  if (!totalsData) return;
+  const svg = $('totals-chart');
+  const { pts, minedPts, t0, t1 } = totalsData;
+  const W = Math.max(280, svg.clientWidth || 600), H = 220;
+  const pad = { l: 46, r: 8, t: 8, b: 22 };
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.replaceChildren();
+  const max = Math.max(1, ...minedPts.map((p) => p.v), ...pts.map((p) => Math.max(p.sold, p.delivered)));
+  const k = hashUnit(max), top = max * 1.1;
+  const X = (t) => pad.l + ((t - t0) / Math.max(1, t1 - t0)) * (W - pad.l - pad.r);
+  const Y = (v) => H - pad.b - (v / top) * (H - pad.t - pad.b);
+  for (let i = 0; i <= 4; i++) {
+    const v = max * i / 4, y = Y(v);
+    el('line', { x1: pad.l, x2: W - pad.r, y1: y, y2: y, class: 'grid' }, svg);
+    el('text', { x: pad.l - 6, y: y + 4, 'text-anchor': 'end' }, svg).textContent = i ? inUnit(v, k) : '0';
+  }
+  el('text', { x: 2, y: pad.t + 10 }, svg).textContent = HASH_UNITS[k];
+  const day = 86400e3, stepD = Math.max(1, Math.ceil(((t1 - t0) / day) / Math.max(2, Math.floor(W / 90))));
+  for (let t = Math.ceil(t0 / day) * day; t <= t1; t += stepD * day) {
+    const x = X(t);
+    el('line', { x1: x, x2: x, y1: pad.t, y2: H - pad.b, class: 'grid' }, svg);
+    el('text', { x, y: H - 6, 'text-anchor': 'middle' }, svg).textContent = new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+  const line = (series, key, stroke) => {
+    const d = series.map((p, n) => `${n ? 'L' : 'M'}${X(p.t)},${Y(p[key])}`).join(' ') + ` L${X(t1)},${Y(series[series.length - 1][key])}`;
+    el('path', { d, fill: 'none', stroke, 'stroke-width': 1.8, 'stroke-linejoin': 'round' }, svg);
+  };
+  line(minedPts, 'v', 'var(--ink)');
+  line(pts, 'sold', 'var(--c-redeem)');
+  line(pts, 'delivered', 'var(--good)');
+  const cursor = el('line', { x1: -10, x2: -10, y1: pad.t, y2: H - pad.b, class: 'cursor' }, svg);
+  const show = (t) => {
+    const m = valueAt(minedPts, t, 'v'), so = valueAt(pts, t, 'sold'), de = valueAt(pts, t, 'delivered');
+    const kk = hashUnit(Math.max(m, so, de));
+    $('totals-readout').innerHTML = `${fmtWhen(t)}<br>Mined <b>${fmtHashes(m, kk)}</b> · Sold <b>${fmtHashes(so, kk)}</b> · Delivered <b>${fmtHashes(de, kk)}</b>`;
+  };
+  const pick = (ev) => {
+    const box = svg.getBoundingClientRect();
+    const px = ((ev.clientX - box.left) / box.width) * W;
+    const t = Math.min(t1, Math.max(t0, t0 + ((px - pad.l) / (W - pad.l - pad.r)) * (t1 - t0)));
+    cursor.setAttribute('x1', X(t)); cursor.setAttribute('x2', X(t));
+    show(t);
+  };
+  svg.onpointermove = pick;
+  svg.onpointerdown = pick;
+  show(t1);
+}
+loadTotals();
+setInterval(loadTotals, 5 * 60e3);
+window.addEventListener('resize', () => drawTotals());
 </script>
 </body>
 </html>

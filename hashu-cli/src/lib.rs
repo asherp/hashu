@@ -31,6 +31,7 @@ pub mod proxy;
 pub mod reliability;
 pub mod stratum_addr;
 pub mod supplier;
+pub mod supply;
 pub mod telemetry;
 pub mod tenants;
 pub mod tips;
