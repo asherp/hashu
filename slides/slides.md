@@ -105,12 +105,12 @@ sequenceDiagram
   P-->>M: accepted shares credited + Merkle-committed
 ```
 
-<div class="text-xs text-amber-500 mt-1"><b>Update:</b> the unit is now TiH, not THH; checkout also takes USDC. Share Merkle trees are visible to the operator only, not yet to buyers (asherp/hashu.me#63).</div>
+<div class="text-xs text-amber-500 mt-1"><b>Update:</b> the unit is now TiH, not THH; checkout also offers USDC (stablecoin rails not yet tested live). Share Merkle trees are visible to the operator only, not yet to buyers (asherp/hashu.me#63).</div>
 
 <div class="grid grid-cols-3 gap-6 text-xs mt-1">
 <div>
 
-**In: sats or dollars** · mainnet Lightning via phoenixd, tested live. ~~The USDT rail is built but not yet tested live~~ <span class="text-amber-500">**Update:** USDT and USDC rails are in checkout</span>
+**In: sats or dollars** · mainnet Lightning via phoenixd, tested live. The ~~USDT rail is~~ <span class="text-amber-500">**Update:** USDT and USDC rails are</span> built but not yet tested live
 
 </div>
 <div>
