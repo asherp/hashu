@@ -23,7 +23,7 @@ pub mod upstream;
 ///
 /// `shares_accepted` is what the upstream pool ack'd. `shares_committed`
 /// is the subset for which we successfully reconstructed a share preimage
-/// from session state and appended it to the commitment tree — these can
+/// (block header) from session state — these can
 /// diverge when the proxy missed the relevant `mining.subscribe` /
 /// `mining.notify` (e.g. attaching mid-session). `shares_credited` is the
 /// subset of accepted shares credited to an open redemption in the ledger
