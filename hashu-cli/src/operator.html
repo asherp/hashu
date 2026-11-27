@@ -221,7 +221,7 @@ td.num, th.num { text-align: right; }
     </div>
     <div class="chart" id="c-rate"></div>
     <ul class="legend" id="rate-legend" aria-label="Rigs"></ul>
-    <details class="note how"><summary>From accepted shares, in 30 s slots. Grey = offline.</summary><p>Estimated from accepted shares: each share of difficulty D is D × 2<sup>32</sup> hashes. A rig's total work is exact at each share and grows steadily between shares, so it is read off every 30 s and each slot's rate is the work in it ÷ 30 s; a slot sharing a gap between two shares gets its part of it. A rig does no work while it is disconnected (grey, <i>Offline</i> when no rig is connected) or while the daemon is down (light grey): the first share after a reconnect counts from the reconnect, not across the outage. The 1 and 5 min averages spread each slot's work over a centred triangular window that wide at half height, only onto time the rig was connected, so the area under the line (rate × time) is exactly the work of the shares. The newest slots wait for each connected rig's next share. Each rig name (the Stratum user after its first dot; rigs sharing a name add up) is a band; the bands stack to the total line. Includes hashrate sent to the default pool and to redeemers.</p></details>
+    <details class="note how"><summary>From accepted shares, in 30 s slots. Grey = offline.</summary><p>Estimated from accepted shares: each share of difficulty D is D × 2<sup>32</sup> hashes, counted in the 30 s slot where the pool accepted it, so each slot's rate is the work of its shares ÷ 30 s. Only finished slots are drawn and nothing is spread backwards, so a point never changes once it is on the chart. A rig does no work while it is disconnected (grey, <i>Offline</i> when no rig is connected) or while the daemon is down (light grey). The 1 and 5 min averages are trailing: each point is the work of the shares in the 1 or 5 min ending there, divided by the time the rig was connected in it. Each rig name (the Stratum user after its first dot; rigs sharing a name add up) is a band; the bands stack to the total line. Includes hashrate sent to the default pool and to redeemers.</p></details>
   </section>
 
   <section class="card" aria-labelledby="h-red">
@@ -630,33 +630,25 @@ function drawChart (el, cfg) {
 // to be counted together, so they sum into one band.
 const rigName = (user) => user.includes('.') ? user.slice(user.indexOf('.') + 1) : user
 
-// Hashrate from cumulative work at a fixed 30 s cadence. Each rig's work
-// W(t) (hashes since it was first seen) is known exactly at each share
-// arrival, and the rig works at a steady rate between arrivals, so W is
-// linear from one arrival to the next. Where the rig is known to have
-// done nothing, W is flat: from its last share to a disconnect, while it
-// is disconnected, and while the daemon was down (a gap in the samples);
-// work picks up again from the next connect (or restart), so the first
-// share after one counts over (connect, share], not over the outage.
-// W is interpolated at every slot edge k·30 s and a slot's rate is
-// ΔW / 30 s: an interval crossing a slot edge is split in proportion, and
-// the slots add up to exactly the shares' work. Then each slot's work is
-// spread over its neighbours with a triangular window `smoothS` seconds
-// wide at half height (30 s = none), only onto time the rig was online,
-// weights summing to 1: smoothing moves work but never adds or removes
-// any, and never fills an outage. The chart stops at the newest share of
-// the slowest connected rig (at most LAG_MS back), since work after a
-// rig's last share isn't known yet. Rigs are worked out by Stratum user
-// (`rigs` in the samples) and summed by name. `sessions` are
-// {rig, start_ms, end_ms} (end null while connected), complete from
-// `since` on; before it a rig counts as connected.
+// Hashrate from cumulative work at a fixed 30 s cadence, looking back
+// only: once a slot is drawn it never changes. Each rig's work W(t)
+// (hashes since it was first seen) steps up when a share is accepted, so
+// a slot (k·30 s, (k+1)·30 s] gets exactly the work of the shares
+// accepted in it, and a slot is drawn once it has ended. A later share
+// never reaches back into earlier slots, even after a long gap between
+// shares. The 1 and 5 min averages are trailing: each slot shows the work
+// of the slots in the window ending at it, divided by the time the rig
+// was connected (and the daemon up) in that window, and 0 while it is
+// offline. Rigs are worked out by Stratum user (`rigs` in the samples)
+// and summed by name. `sessions` are {rig, start_ms, end_ms} (end null
+// while connected), complete from `since` on; before it a rig counts as
+// connected.
 // Returns `pts` ([t, H/s], t at the slot's middle), `rigs`
 // ({ t, rigs: {name: H/s}, off: {name: true} } per slot), `bands`
 // ({from, to, cls}: no rig connected, or no data) and `live` (rig names
 // with an open session now).
 const BUCKET_MS = 30000
 const GAP_MS = 5000
-const LAG_MS = 120000
 function workSeries (samples, sessions, since, smoothS) {
   const B = BUCKET_MS
   const empty = { pts: [], rigs: [], bands: [], live: new Set() }
@@ -671,9 +663,8 @@ function workSeries (samples, sessions, since, smoothS) {
   const pts = {} // user -> [[t, W]]
   const raw = {} // user -> last reported value (resets when it drops)
   const cum = {}
-  const lastArr = {}
   const fresh = {}
-  for (const r in samples[0].rigs || {}) { raw[r] = samples[0].rigs[r]; cum[r] = raw[r]; pts[r] = [[t0, cum[r]]]; lastArr[r] = t0 }
+  for (const r in samples[0].rigs || {}) { raw[r] = samples[0].rigs[r]; cum[r] = raw[r]; pts[r] = [[t0, cum[r]]] }
   for (let i = 1; i < samples.length; i++) {
     const s = samples[i], p = samples[i - 1]
     if (!(s.t_ms > p.t_ms)) continue
@@ -694,7 +685,6 @@ function workSeries (samples, sessions, since, smoothS) {
       }
       cum[r] += dw
       pts[r].push([s.t_ms, cum[r]])
-      lastArr[r] = s.t_ms
     }
   }
   const users = Object.keys(pts)
@@ -726,14 +716,13 @@ function workSeries (samples, sessions, since, smoothS) {
     for (const x of all) { if (x[2]) x[1] = w; else w = x[1] }
     series[u] = all.map((x) => [x[0], x[1]])
   }
-  // W at time t: linear between known points, flat outside them.
+  // W at time t: the value at the last known point at or before t (work
+  // counts when its share is accepted).
   const W = (s, t) => {
-    if (t <= s[0][0]) return s[0][1]
-    if (t >= s[s.length - 1][0]) return s[s.length - 1][1]
-    let lo = 0, hi = s.length - 1
+    if (t < s[0][0]) return s[0][1]
+    let lo = 0, hi = s.length
     while (hi - lo > 1) { const m = (lo + hi) >> 1; if (s[m][0] <= t) lo = m; else hi = m }
-    const a = s[lo], b = s[hi]
-    return b[0] > a[0] ? a[1] + (b[1] - a[1]) * (t - a[0]) / (b[0] - a[0]) : b[1]
+    return s[lo][1]
   }
   // Seconds of [a, b) a user was connected (and the daemon up).
   const known = (u) => (sesBy[u] || []).length > 0
@@ -752,11 +741,8 @@ function workSeries (samples, sessions, since, smoothS) {
     }
     return Math.min(b - a, Math.max(0, on))
   }
-  // 2. Where the chart can stop: the newest share of every connected rig.
-  const open = (u) => !known(u) || sesBy[u].some((x) => x.end_ms == null)
-  let end = tN
-  for (const u of users) if (open(u) && lastArr[u] >= tN - LAG_MS) end = Math.min(end, lastArr[u])
-  // 3. Slots (k·B, (k+1)·B] fully inside [t0, end].
+  // 2. Slots (k·B, (k+1)·B] that have ended by the newest sample.
+  const end = tN
   const k0 = Math.ceil(t0 / B), kN = Math.floor(end / B) - 1
   if (kN < k0) return empty
   const n = kN - k0 + 1
@@ -772,15 +758,13 @@ function workSeries (samples, sessions, since, smoothS) {
       work.push(Math.max(0, W(s, b) - W(s, a)))
       on.push(onlineMs(u, a, b))
     }
-    // Smooth onto online time only.
+    // Trailing average over the last hw slots, per connected second.
     const out = new Array(n).fill(0)
-    for (let i = 0; i < n; i++) {
-      if (!work[i]) continue
-      const lo = Math.max(0, i - hw + 1), hi = Math.min(n - 1, i + hw - 1)
-      let wsum = 0
-      for (let j = lo; j <= hi; j++) wsum += (hw - Math.abs(i - j)) * on[j]
-      if (!(wsum > 0)) { out[i] += work[i]; continue }
-      for (let j = lo; j <= hi; j++) out[j] += work[i] * (hw - Math.abs(i - j)) * on[j] / wsum
+    for (let j = 0; j < n; j++) {
+      if (!on[j]) continue
+      let w = 0, t = 0
+      for (let i = Math.max(0, j - hw + 1); i <= j; i++) { w += work[i]; t += on[i] }
+      out[j] = t > 0 ? w * B / t : 0
     }
     const acc = byName[nm] = byName[nm] || { w: new Array(n).fill(0), on: new Array(n).fill(0) }
     for (let j = 0; j < n; j++) { acc.w[j] += out[j]; acc.on[j] = Math.max(acc.on[j], on[j]) }
