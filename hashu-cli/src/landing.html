@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hashu · Chaumian hashrate vouchers</title>
-<meta name="description" content="Hashu sells real mining hashes as Chaumian vouchers on Cashu. Pay with Lightning or USDT, redeem by pointing hashrate at any pool.">
+<meta name="description" content="Hashu sells real mining hashes as Chaumian vouchers on Cashu. Pay with Lightning, USDT or USDC, redeem by pointing hashrate at any pool.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f7931a'/%3E%3Cpath d='M10.5 6V20A5.5 5.5 0 0 0 21.5 20V6' stroke='%23111' stroke-width='3' stroke-linecap='round' fill='none'/%3E%3Cpath d='M5 11.5H27M5 18H27' stroke='%23111' stroke-width='2.6' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
 :root {
@@ -97,7 +97,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
 
   <header class="hero">
     <h1>Chaumian vouchers for <span>hashrate</span>.</h1>
-    <p>Hashu is a Cashu mint fused with a mining proxy. It sells real hashes, counted in <a href="/units/">TiH</a> (tebihash, 2<sup>40</sup> hashes), as Chaumian hashrate vouchers. Pay with Lightning or USDT, hold the tokens in any Cashu wallet, and redeem them whenever you like by pointing hashrate at your own pool.</p>
+    <p>Hashu is a Cashu mint fused with a mining proxy. It sells real hashes, counted in <a href="/units/">TiH</a> (tebihash, 2<sup>40</sup> hashes), as Chaumian hashrate vouchers. Pay with Lightning, USDT or USDC, hold the tokens in any Cashu wallet, and redeem them whenever you like by pointing hashrate at your own pool.</p>
     <div class="cta">
       <a class="btn primary" href="/checkout/" data-buy>Buy hashrate</a>
       <a class="btn" data-app hidden>Open wallet</a>
@@ -118,11 +118,11 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
   <section id="how">
     <h2>How it works</h2>
     <div class="grid3">
-      <div class="card"><div class="num">1</div><h3>Buy</h3><p>Choose how many hashes you want and pay a mainnet Lightning invoice, or send USDT. The mint is priced live from the hashrate rental market.</p></div>
+      <div class="card"><div class="num">1</div><h3>Buy</h3><p>Choose how many hashes you want and pay a mainnet Lightning invoice, or send USDT or USDC. The mint is priced live from the hashrate rental market.</p></div>
       <div class="card"><div class="num">2</div><h3>Hold</h3><p>You receive TiH as Chaumian vouchers: blind-signed Cashu tokens in the <span class="mono">tih</span> unit. Keep them, send them to a friend, or redeem them right away.</p></div>
       <div class="card"><div class="num">3</div><h3>Redeem</h3><p>Redeem the tokens with your pool URL and worker name. The mint's proxy redirects its miners to your pool until the work you paid for has been delivered, share by share.</p></div>
     </div>
-    <p class="unit" style="margin-top:20px"><b>1 TiH</b> (tebihash) = 2<sup>40</sup> hashes = 256 difficulty-1 shares. 1 TH/s for one hour ≈ 3,274 TiH. Prices are per PiH (1,024 TiH). Redeem to any Stratum V1 pool that gives you a worker name. <a href="/units/">Why TiH, and how it converts</a>.</p>
+    <p class="unit" style="margin-top:20px"><b>1 TiH</b> (tebihash) = 2<sup>40</sup> hashes = 256 difficulty-1 shares. 1 TH/s for one hour ≈ 3,274 TiH. Prices are per PiH (1,024 TiH), and purchases and redemptions start at 1 PiH. Redeem to any Stratum V1 or V2 pool that gives you a worker name. <a href="/units/">Why TiH, and how it converts</a>.</p>
   </section>
 
   <section id="why">
@@ -132,10 +132,10 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       <div class="card"><h3>Private by construction</h3><p>Cashu blind signatures mean the mint cannot link the tokens it issued to the tokens it later redeems. Who paid, who holds, and whose pool the hashrate lands on stay separate.</p></div>
       <div class="card">
         <h3>Dollars to bitcoin, no exchange</h3>
-        <p>Pay in USDT, receive hashrate, mine bitcoin into your own pool account.</p>
+        <p>Pay in USDT or USDC, receive hashrate, mine bitcoin into your own pool account.</p>
         <div class="flow" style="margin-top:12px"><span>USD₮</span><i>→</i><span>TiH</span><i>→</i><span>₿</span></div>
       </div>
-      <div class="card"><h3>Verifiable delivery</h3><p>Each redemption gets its own Merkle tree of the shares it was credited, with audit endpoints so a holder can check the work that reached their pool.</p></div>
+      <div class="card"><h3>A public reliability record</h3><p>Every hour the mint signs its hardest shares sent to redeemers' pools, posts them on Nostr and timestamps them on Bitcoin, so anyone can check its <a href="/reliability/">reliability record</a>. Share proofs for your own redemption are on the roadmap.</p></div>
     </div>
   </section>
 
@@ -143,7 +143,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     <h2>Who it's for</h2>
     <div class="grid2">
       <div class="card"><h3>Lightning node runners: free up inbound, get private coins</h3><p>Paying a Hashu mint's Lightning invoice spends outbound liquidity from your channels and frees up inbound capacity, much like a Loop Out. Point the hashrate you bought at your own pool account and the pool pays you on-chain in freshly mined coins with no transaction history. Blind signatures mean the mint can't link the invoice you paid to the pool the work went to, so those coins aren't tied to your public channels.</p></div>
-      <div class="card"><h3>Anyone who wants bitcoin on-chain</h3><p>Cashu mints almost always pay out over Lightning only, and very few support on-chain. A Hashu mint never pays out bitcoin at all. Instead, the hashrate you redeem mines at the pool you choose, and the pool pays your bitcoin address directly. Buy with Lightning or USDT and end up with self-custodied bitcoin on-chain.</p></div>
+      <div class="card"><h3>Anyone who wants bitcoin on-chain</h3><p>Cashu mints almost always pay out over Lightning only, and very few support on-chain. A Hashu mint never pays out bitcoin at all. Instead, the hashrate you redeem mines at the pool you choose, and the pool pays your bitcoin address directly. Buy with Lightning, USDT or USDC and end up with self-custodied bitcoin on-chain.</p></div>
     </div>
     <p class="unit" style="margin-top:20px"><b>Good to know:</b> what your pool pays depends on network difficulty, pool luck and pool fees, so it isn't a fixed rate. How fast the work is delivered depends on the mint, so check the mint's estimated delivery time. Pools pay out once your balance passes their payout threshold. At low volume, a purchase and a redemption close together in time can still hint that they're linked.</p>
   </section>
@@ -154,7 +154,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
       <div class="card">
         <h3>Use any Cashu wallet</h3>
         <p data-app-note hidden>The easiest is <a data-app class="mono" data-app-host></a>, Hashu's own wallet: it shows TiH and redeems straight to your pool.</p>
-        <p>Add this mint and use the <span class="mono">tih</span> unit. Minting is over <span class="mono">bolt11</span> or <span class="mono">usdt</span>; melting is only over the <span class="mono">hashrate</span> method.</p>
+        <p>Add this mint and use the <span class="mono">tih</span> unit. Minting is over <span class="mono">bolt11</span>, <span class="mono">usdt</span> or <span class="mono">usdc</span>. There is no sats melt: redeeming is the <span class="mono">hashrate</span> melt method.</p>
         <div class="copy"><code class="mono" id="mint-url">—</code><button id="copy-url" type="button">Copy</button></div>
       </div>
       <div class="card">
@@ -171,7 +171,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
   </section>
 
   <footer>
-    <span>Hashu · built at bitcoin++ Seoul 2026 on Tether's Mining Development Kit</span>
+    <span>Hashu · honorable mention, bitcoin++ Seoul 2026 privacy hackathon · built on Tether's Mining Development Kit</span>
     <span id="contact" hidden>Operator: <span id="contact-list"></span></span>
     <span>Open source: <a href="https://github.com/asherp/hashu">github.com/asherp/hashu</a> · MIT / Apache-2.0 · <a href="/slides/">Slides</a></span>
   </footer>
