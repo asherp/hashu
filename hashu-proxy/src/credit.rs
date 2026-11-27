@@ -186,8 +186,25 @@ impl ShareCrediter {
             }
             self.audit
                 .append(*id, evidence.preimage, evidence.target_bits, evidence.ntime);
+            if outcome.newly_completed {
+                // No more leaves will come: free its tree (it stays in the
+                // journal).
+                self.audit.evict(id);
+            }
         }
         Ok(outcome)
+    }
+
+    /// Evict the trees of finished (completed or settled) redemptions from
+    /// memory; they are rebuilt from the journal when asked for. Returns
+    /// how many were evicted.
+    pub fn evict_finished(&self) -> usize {
+        self.audit
+            .live_ids()
+            .into_iter()
+            .filter(|id| self.ledger.get(id).is_some_and(|r| r.is_finished()))
+            .filter(|id| self.audit.evict(id))
+            .count()
     }
 
     /// Receive each redemption id once, when its target is reached.

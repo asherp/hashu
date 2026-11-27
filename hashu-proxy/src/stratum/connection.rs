@@ -8,9 +8,8 @@
 //! share commitment).
 //!
 //! On every accepted share, the typed-parse path emits enough info to
-//! reconstruct the 80-byte block header; we append the resulting leaf to a
-//! per-connection [`ShareCommitter`]. When the connection ends we log the
-//! final tree summary (root, leaf count) so an operator can correlate.
+//! reconstruct the 80-byte block header, which becomes the share's
+//! evidence.
 //!
 //! With a [`CreditContext`], each accepted share is also credited to the
 //! redemption the share was sent for (see [`crate::credit`]).
@@ -56,7 +55,6 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
-use super::committer::ShareCommitter;
 use super::compact::target_bits_from_difficulty;
 use super::extranonce::{
     rewrite_subscribe_result, set_extranonce_line, virtual_downstream, Extranonce, ExtranonceMap,
@@ -96,7 +94,7 @@ const _: () = assert!(
 );
 
 /// Run a single miner ⇄ pool proxy until either side disconnects. Shares
-/// are counted and committed but not credited to any redemption.
+/// are counted but not credited to any redemption.
 pub async fn proxy_connection(
     miner_socket: TcpStream,
     upstream_addr: &str,
@@ -463,13 +461,12 @@ impl Leg {
     }
 
     /// Feed a line from this leg's pool to its session; on an accepted
-    /// share, build the leaf, commit it, and credit the redemption the
-    /// share was sent for. Returns an accepted share's difficulty.
+    /// share, rebuild its header and credit the redemption the share was
+    /// sent for (which also appends it to that redemption's tree). Returns an accepted share's difficulty.
     fn ingest_pool(
         &mut self,
         line: &str,
         ctx: &Ctx,
-        committer: &mut ShareCommitter,
     ) -> Option<f64> {
         self.session.try_absorb_subscribe_response(line);
         match self.session.ingest(line, Direction::P2M) {
@@ -495,7 +492,6 @@ impl Leg {
                     Some(d) => target_bits_from_difficulty(d),
                     None => 0x1d00_ffff,
                 };
-                committer.append(header.to_vec(), target_bits, submit.ntime);
                 let evidence = ShareEvidence {
                     preimage: header.to_vec(),
                     target_bits,
@@ -632,7 +628,6 @@ struct Conn {
     switch: Option<Switch>,
     miner: MinerFacts,
     gate: JobGate,
-    committer: ShareCommitter,
     pending: PendingSubmits,
     mw: tokio::net::tcp::OwnedWriteHalf,
     /// The miner's hashrate, from accepted shares on any leg: sizes the
@@ -663,7 +658,6 @@ async fn relay(
         switch: None,
         miner: MinerFacts::default(),
         gate: JobGate::default(),
-        committer: ShareCommitter::default(),
         pending: PendingSubmits::default(),
         mw,
         work: WorkRate::new(Instant::now()),
@@ -759,14 +753,6 @@ async fn relay(
         "connection closing",
     );
 
-    if !c.committer.is_empty() {
-        let root = c.committer.root().map(hex::encode).unwrap_or_default();
-        tracing::info!(
-            committed_leaves = c.committer.len(),
-            root = %root,
-            "share commitment tree finalized for connection",
-        );
-    }
     Ok(())
 }
 
@@ -883,7 +869,7 @@ impl Conn {
 
     async fn on_pool_line(&mut self, line: &str) -> io::Result<()> {
         observe_line(line, Direction::P2M, &self.pending, &self.ctx.metrics);
-        if let Some(d) = self.cur.ingest_pool(line, &self.ctx, &mut self.committer) {
+        if let Some(d) = self.cur.ingest_pool(line, &self.ctx) {
             self.work.accepted(Instant::now(), d);
         }
         if self.cur.reject_streak == REJECT_LIMIT {
@@ -1015,7 +1001,7 @@ impl Conn {
         let Some(d) = self.old.as_mut() else {
             return Ok(());
         };
-        if let Some(diff) = d.leg.ingest_pool(line, &self.ctx, &mut self.committer) {
+        if let Some(diff) = d.leg.ingest_pool(line, &self.ctx) {
             self.work.accepted(Instant::now(), diff);
         }
         // Only answers to submits get through; its work is stale.
@@ -1161,7 +1147,7 @@ impl Conn {
         else {
             return Progress::Pending;
         };
-        if let Some(d) = hs.leg.ingest_pool(line, &self.ctx, &mut self.committer) {
+        if let Some(d) = hs.leg.ingest_pool(line, &self.ctx) {
             self.work.accepted(Instant::now(), d);
         }
         let Some(v) = parse(line) else {

@@ -724,8 +724,12 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     );
     let audit_path = args.data_dir.join("share-audit.jsonl");
     let audit = Arc::new(
-        ShareAudit::persistent(&audit_path)
-            .with_context(|| format!("open share audit {audit_path:?}"))?,
+        // Finished redemptions' trees are restored evicted (count only);
+        // proofs for them are rebuilt from the journal on request.
+        ShareAudit::persistent_evicting(&audit_path, |id| {
+            ledger.get(id).is_some_and(|r| r.is_finished())
+        })
+        .with_context(|| format!("open share audit {audit_path:?}"))?,
     );
     let oracle = build_oracle(&args).await?;
     let limits = MintMeltLimits::new(MIN_PURCHASE_TIH, args.max_tih);
@@ -1242,6 +1246,21 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     );
     tokio::spawn(reliability.clone().run());
     tokio::spawn(reliability.clone().run_inbox());
+    // Free settled (stopped early) redemptions' share trees; completed
+    // ones are freed as they complete.
+    {
+        let crediter = crediter.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(600));
+            loop {
+                tick.tick().await;
+                let n = crediter.evict_finished();
+                if n > 0 {
+                    tracing::debug!(evicted = n, "freed finished share audit trees");
+                }
+            }
+        });
+    }
     let credit = CreditContext::new(crediter, router.clone());
 
     if args.metrics_interval > 0 {
