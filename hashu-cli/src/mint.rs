@@ -1209,7 +1209,6 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         .merge(checkout::router(checkout.clone()))
         .merge(crate::reliability::router(reliability.clone(), ""))
         .merge(tip_routes.unwrap_or_default())
-        .merge(crate::supply::router(supply.clone()))
         .merge(landing::router());
     if let Some(e) = &epochs {
         app = app
@@ -1348,6 +1347,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
             auth: Arc::new(auth),
             planner: planner.clone(),
             reliability: Some(reliability.clone()),
+            supply: Some(supply.clone()),
         });
         let listener = tokio::net::TcpListener::bind(bind)
             .await

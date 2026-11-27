@@ -17,7 +17,12 @@
 //! owed); when hashrate falls the stack can sit above the supply line,
 //! because a restock never takes back stock already listed.
 //!
-//! Privacy (Asher, 2026-11-27): only hourly rows are published, never a
+//! For now the rows are shown only on the operator dashboard
+//! (`GET /api/supply`, unfiltered, plus a live row): Asher is trying the
+//! charts there before any public page gets them (2026-11-27). [`router`]
+//! is the public view for later and is not mounted yet.
+//!
+//! Privacy for that public view (Asher, 2026-11-27): only hourly rows are published, never a
 //! live series, and while fewer than [`MIN_OPEN_REDEMPTIONS`] redemptions
 //! are open the redeeming part is folded into "held". A lone redemption's
 //! hourly drawdown would otherwise show its hashrate, which an observer
