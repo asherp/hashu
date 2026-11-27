@@ -20,6 +20,16 @@
 //!   without a session it leaves out each redemption's pool and worker
 //!   (the buyer's pool account).
 //!
+//! - **App tokens.** The Hashu Operator app (hashu.me built with
+//!   `HASHU_APP=operator`, on its own origin) signs in with `POST
+//!   /api/session` `{ "user", "password" }` (same rate limit) and gets a
+//!   bearer token for [`APP_TOKEN_TTL`]; it sends `Authorization: Bearer
+//!   <token>` on every call and `DELETE /api/session` signs it out. A
+//!   bearer token is never sent by the browser on its own, so requests
+//!   that carry a valid one pass the cross-site check, and with login on
+//!   every response allows any origin (CORS, no credentials). Tokens live
+//!   in memory like sessions.
+//!
 //! Every response also carries headers that keep the GUI out of frames
 //! and caches.
 
@@ -39,6 +49,8 @@ use serde_json::json;
 pub const COOKIE: &str = "hashu_operator";
 /// How long a login lasts.
 pub const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
+/// How long an app sign-in (`POST /api/session`) lasts.
+pub const APP_TOKEN_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 /// Wrong passwords a client may send per [`FAILURE_WINDOW`].
 pub const MAX_FAILURES: usize = 5;
 pub const FAILURE_WINDOW: Duration = Duration::from_secs(15 * 60);
@@ -62,6 +74,8 @@ struct Login {
     user: String,
     hash: String,
     sessions: Mutex<HashMap<String, Instant>>,
+    /// Bearer tokens of the Hashu Operator app, apart from cookie sessions.
+    app_tokens: Mutex<HashMap<String, Instant>>,
     failures: Mutex<HashMap<String, VecDeque<Instant>>>,
     checking: tokio::sync::Semaphore,
 }
@@ -96,6 +110,7 @@ impl OperatorAuth {
                 user,
                 hash,
                 sessions: Mutex::new(HashMap::new()),
+                app_tokens: Mutex::new(HashMap::new()),
                 failures: Mutex::new(HashMap::new()),
                 checking: tokio::sync::Semaphore::new(1),
             }),
@@ -106,22 +121,41 @@ impl OperatorAuth {
         self.login.is_some()
     }
 
-    /// Whether `headers` carry a live session (always true with login off).
+    /// Whether `headers` carry a live session or app token (always true
+    /// with login off).
     pub fn authed(&self, headers: &HeaderMap) -> bool {
         let Some(l) = &self.login else {
             return true;
         };
+        if self.authed_bearer(headers) {
+            return true;
+        }
         let Some(token) = cookie(headers, COOKIE) else {
             return false;
         };
-        let now = Instant::now();
-        let mut s = l.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        s.retain(|_, exp| *exp > now);
-        s.contains_key(token)
+        live(&l.sessions, token)
+    }
+
+    /// Whether `headers` carry a live app token (`Authorization: Bearer`).
+    /// Always false with login off, so the cross-site check stays on there.
+    pub fn authed_bearer(&self, headers: &HeaderMap) -> bool {
+        match (&self.login, bearer(headers)) {
+            (Some(l), Some(token)) => live(&l.app_tokens, token),
+            _ => false,
+        }
     }
 
     /// Check `user`/`password` for `client`; on success, a new session token.
     pub async fn login(&self, client: &str, user: &str, password: &str) -> LoginResult {
+        self.sign_in(client, user, password, false).await
+    }
+
+    /// [`Self::login`] for the app: a bearer token for [`APP_TOKEN_TTL`].
+    pub async fn login_app(&self, client: &str, user: &str, password: &str) -> LoginResult {
+        self.sign_in(client, user, password, true).await
+    }
+
+    async fn sign_in(&self, client: &str, user: &str, password: &str, app: bool) -> LoginResult {
         let Some(l) = &self.login else {
             return LoginResult::Wrong;
         };
@@ -143,10 +177,14 @@ impl OperatorAuth {
                 rand::Rng::fill(&mut rand::thread_rng(), &mut b[..]);
                 hex::encode(b)
             };
-            l.sessions
-                .lock()
+            let (map, ttl) = if app {
+                (&l.app_tokens, APP_TOKEN_TTL)
+            } else {
+                (&l.sessions, SESSION_TTL)
+            };
+            map.lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(token.clone(), Instant::now() + SESSION_TTL);
+                .insert(token.clone(), Instant::now() + ttl);
             LoginResult::Ok(token)
         } else {
             l.fail(client);
@@ -162,6 +200,32 @@ impl OperatorAuth {
                 .remove(token);
         }
     }
+
+    /// End the app token in `headers`, if any.
+    pub fn logout_app(&self, headers: &HeaderMap) {
+        if let (Some(l), Some(token)) = (&self.login, bearer(headers)) {
+            l.app_tokens
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(token);
+        }
+    }
+}
+
+/// Whether `token` is in `map` and not expired (dropping expired ones).
+fn live(map: &Mutex<HashMap<String, Instant>>, token: &str) -> bool {
+    let now = Instant::now();
+    let mut m = map.lock().unwrap_or_else(|e| e.into_inner());
+    m.retain(|_, exp| *exp > now);
+    m.contains_key(token)
+}
+
+/// The token of an `Authorization: Bearer <token>` header.
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    let v = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = v.trim().split_once(' ')?;
+    let token = token.trim();
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
 }
 
 impl Login {
@@ -320,6 +384,56 @@ async fn handle_login(auth: &OperatorAuth, req: Request) -> Response {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct AppLogin {
+    #[serde(default)]
+    user: String,
+    #[serde(default)]
+    password: String,
+}
+
+fn json_error(status: StatusCode, msg: &str) -> Response {
+    (status, axum::Json(json!({ "error": msg }))).into_response()
+}
+
+/// `POST /api/session` `{ user, password }`: an app token.
+async fn handle_app_login(auth: &OperatorAuth, req: Request) -> Response {
+    let headers = req.headers().clone();
+    let Ok(axum::Json(f)) = axum::Json::<AppLogin>::from_request(req, &()).await else {
+        return json_error(StatusCode::BAD_REQUEST, "send JSON { user, password }");
+    };
+    if f.user.len() > MAX_FIELD || f.password.len() > MAX_FIELD {
+        return json_error(StatusCode::UNAUTHORIZED, "Wrong user or password.");
+    }
+    let client = client_of(&headers);
+    match auth.login_app(&client, &f.user, &f.password).await {
+        LoginResult::Ok(token) => {
+            tracing::info!(%client, "operator signed in from the app");
+            axum::Json(json!({
+                "token": token,
+                "user": f.user.trim(),
+                "expires_in_s": APP_TOKEN_TTL.as_secs(),
+            }))
+            .into_response()
+        }
+        LoginResult::Wrong => {
+            tracing::warn!(%client, "operator app sign-in failed");
+            json_error(StatusCode::UNAUTHORIZED, "Wrong user or password.")
+        }
+        LoginResult::Limited => {
+            tracing::warn!(%client, "operator app sign-in rate limited");
+            json_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many wrong passwords. Try again in 15 minutes.",
+            )
+        }
+        LoginResult::Busy => json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The server is busy checking other logins. Try again shortly.",
+        ),
+    }
+}
+
 /// Middleware for the operator router: security headers, CSRF check,
 /// login/logout, and the session gate.
 pub async fn guard(
@@ -331,7 +445,36 @@ pub async fn guard(
         Some(r) => r,
         None => next.run(req).await,
     };
-    with_security_headers(resp)
+    let resp = with_security_headers(resp);
+    if auth.login_enabled() {
+        with_cors(resp)
+    } else {
+        resp
+    }
+}
+
+/// CORS for the Hashu Operator app on another origin. Only with login on:
+/// then every route needs a bearer token (or a `SameSite=Strict` cookie a
+/// cross-origin fetch never carries), so allowing any origin to read
+/// answers gives a page nothing it could not fetch itself.
+fn with_cors(mut r: Response) -> Response {
+    let h = r.headers_mut();
+    let set = |h: &mut HeaderMap, k: &'static str, v: &'static str| {
+        h.insert(k, HeaderValue::from_static(v));
+    };
+    set(h, "access-control-allow-origin", "*");
+    set(
+        h,
+        "access-control-allow-headers",
+        "authorization, content-type",
+    );
+    set(
+        h,
+        "access-control-allow-methods",
+        "GET, POST, DELETE, OPTIONS",
+    );
+    set(h, "access-control-max-age", "600");
+    r
 }
 
 /// `Some(response)` answers the request here; `None` passes it on.
@@ -339,7 +482,13 @@ async fn gate(auth: &OperatorAuth, req: &mut Request) -> Option<Response> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
     let safe = matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
-    if !safe && !same_origin(req.headers()) {
+    // CORS preflight for the app: answered here, before the session gate.
+    if method == Method::OPTIONS && auth.login_enabled() {
+        return Some(StatusCode::NO_CONTENT.into_response());
+    }
+    // The app signs in cross-site; the password and rate limit guard it.
+    let app_login = method == Method::POST && path == "/api/session" && auth.login_enabled();
+    if !safe && !app_login && !same_origin(req.headers()) && !auth.authed_bearer(req.headers()) {
         tracing::warn!(%method, %path, "refused a cross-site operator request");
         return Some(
             (
@@ -356,6 +505,14 @@ async fn gate(auth: &OperatorAuth, req: &mut Request) -> Option<Response> {
         }
         (Method::GET, "/login") if auth.login_enabled() => {
             return Some(login_page(StatusCode::OK, ""));
+        }
+        (Method::POST, "/api/session") if auth.login_enabled() => {
+            let r = std::mem::replace(req, Request::new(Body::empty()));
+            return Some(handle_app_login(auth, r).await);
+        }
+        (Method::DELETE, "/api/session") if auth.login_enabled() => {
+            auth.logout_app(req.headers());
+            return Some(StatusCode::NO_CONTENT.into_response());
         }
         (Method::POST, "/logout") if auth.login_enabled() => {
             auth.logout(req.headers());
@@ -609,6 +766,103 @@ mod tests {
             .header("origin", "https://evil.example")
             .header("host", "mint.example.com");
         assert_eq!(send(&app, authed(post)).await.0, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn app_tokens_work_cross_site() {
+        let hash = bcrypt::hash("hunter22", 4).unwrap();
+        let app = app(OperatorAuth::with_password_hash("operator", &hash).unwrap());
+
+        // Preflight from the app's origin.
+        let pre = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/api/controls")
+            .header("origin", "https://operator.example.com")
+            .header("sec-fetch-site", "cross-site")
+            .body(Body::empty())
+            .unwrap();
+        let (st, h, _) = send(&app, pre).await;
+        assert_eq!(st, StatusCode::NO_CONTENT);
+        assert_eq!(h["access-control-allow-origin"], "*");
+        assert!(h["access-control-allow-headers"]
+            .to_str()
+            .unwrap()
+            .contains("authorization"));
+
+        let login = |pw: &str| {
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/session")
+                .header("sec-fetch-site", "cross-site")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"user":"operator","password":"{pw}"}}"#
+                )))
+                .unwrap()
+        };
+        assert_eq!(send(&app, login("nope")).await.0, StatusCode::UNAUTHORIZED);
+        let (st, _, body) = send(&app, login("hunter22")).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let token = v["token"].as_str().unwrap().to_string();
+        assert_eq!(v["expires_in_s"], APP_TOKEN_TTL.as_secs());
+
+        let post = |auth: &str| {
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/controls")
+                .header("sec-fetch-site", "cross-site")
+                .header(header::AUTHORIZATION, auth)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let (st, _, body) = send(&app, post(&format!("Bearer {token}"))).await;
+        assert_eq!((st, body.as_str()), (StatusCode::OK, "changed"));
+        // A forged token is still a cross-site request.
+        assert_eq!(
+            send(&app, post("Bearer forged")).await.0,
+            StatusCode::FORBIDDEN
+        );
+        // A token is not a cookie session, nor the other way round.
+        let as_cookie = Request::builder()
+            .uri("/")
+            .header(header::COOKIE, format!("{COOKIE}={token}"))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(send(&app, as_cookie).await.0, StatusCode::UNAUTHORIZED);
+
+        // Sign out ends it.
+        let out = Request::builder()
+            .method(Method::DELETE)
+            .uri("/api/session")
+            .header("sec-fetch-site", "cross-site")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(send(&app, out).await.0, StatusCode::NO_CONTENT);
+        let get = Request::builder()
+            .uri("/")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(send(&app, get).await.0, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn no_cors_with_login_off() {
+        let app = app(OperatorAuth::open());
+        let get = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let (_, h, _) = send(&app, get).await;
+        assert!(h.get("access-control-allow-origin").is_none());
+        // A bearer header does not lift the cross-site check either.
+        let post = Request::builder()
+            .method(Method::POST)
+            .uri("/api/controls")
+            .header("sec-fetch-site", "cross-site")
+            .header(header::AUTHORIZATION, "Bearer anything")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(send(&app, post).await.0, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

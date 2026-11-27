@@ -712,6 +712,35 @@ fn supplier_router(ctx: SupplierCtx) -> axum::Router {
         .route("/api/restock", axum::routing::post(post_restock))
         .route("/api/plan", get(get_plan).post(post_plan))
         .with_state(ctx)
+        .layer(axum::middleware::from_fn(supplier_cors))
+}
+
+/// The Hashu Operator app (another origin) calls `/api/*` here. The
+/// dashboard key travels in [`KEY_HEADER`], which a browser never adds on
+/// its own, so any origin may read what the key unlocks.
+async fn supplier_cors(req: Request, next: Next) -> Response {
+    let api = req.uri().path().starts_with("/api/");
+    let mut res = if api && req.method() == axum::http::Method::OPTIONS {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        next.run(req).await
+    };
+    if api {
+        let h = res.headers_mut();
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            axum::http::HeaderValue::from_static("*"),
+        );
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            axum::http::HeaderValue::from_static("GET, POST, OPTIONS"),
+        );
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            axum::http::HeaderValue::from_static("content-type, x-hashu-key"),
+        );
+    }
+    res
 }
 
 async fn supplier_status(State(ctx): State<SupplierCtx>) -> Response {
