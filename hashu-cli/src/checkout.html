@@ -429,7 +429,7 @@ function showSeller (seller) {
   for (const [id, act] of [['seller-buy', 'buying'], ['seller-redeem', 'redeeming']]) {
     const el = $(id)
     if (!seller || !seller.name) { el.hidden = true; el.innerHTML = ''; continue }
-    const url = seller.terms_url && /^https?:\/\//.test(seller.terms_url) ? seller.terms_url : ''
+    const url = seller.terms_url && /^(https?:\/\/|\/(?!\/))/.test(seller.terms_url) ? seller.terms_url : ''
     const was = el.querySelector('input') && el.querySelector('input').checked
     el.innerHTML = url
       ? `<label><input type="checkbox" class="agree"${was ? ' checked' : ''}><span>Sold by <b>${esc(seller.name)}</b>. I agree to the seller's <a href="${esc(url)}" target="_blank" rel="noopener">terms of sale</a>, which apply to ${act} these vouchers.</span></label>`

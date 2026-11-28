@@ -367,6 +367,11 @@ pub struct RunArgs {
     /// checkout links them and asks buyers and redeemers to accept them.
     #[arg(long, env = "HASHU_TERMS_URL")]
     pub terms_url: Option<String>,
+    /// The seller's terms of sale as a Markdown file, served at `/terms/`
+    /// and linked from the checkout (instead of `--terms-url`). Hashu's
+    /// own are in `deploy/terms/service-terms.md`.
+    #[arg(long, env = "HASHU_TERMS_FILE")]
+    pub terms_file: Option<PathBuf>,
 
     // ---- capacity ---------------------------------------------------
     /// MiningRigRentals API key. With `--mrr-api-secret`, the mint reads the
@@ -1005,6 +1010,13 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
     } else {
         format!("http://{}", args.listen)
     };
+    let terms_page = args
+        .terms_file
+        .as_deref()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(crate::terms::load)
+        .transpose()?
+        .map(Arc::new);
     let checkout = Arc::new(
         CheckoutState::new(
             internal_url.clone(),
@@ -1027,6 +1039,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         .with_seller(seller(
             args.seller_name.as_deref(),
             args.terms_url.as_deref(),
+            terms_page.is_some(),
         )?)
         .with_encrypted_pools_only(args.encrypted_pools_only)
         .with_stratum(stratum.clone())
@@ -1220,6 +1233,7 @@ async fn run_daemon(args: RunArgs) -> Result<()> {
         .await
         .context("build mint HTTP router")?
         .merge(checkout::router(checkout.clone()))
+        .merge(crate::terms::router(terms_page.clone()))
         .merge(crate::reliability::router(reliability.clone(), ""))
         .merge(tip_routes.unwrap_or_default())
         .merge(landing::router());
@@ -1642,14 +1656,21 @@ fn app_url(raw: Option<&str>) -> Result<Option<String>> {
     Ok(Some(raw.trim_end_matches('/').to_string()))
 }
 
-/// `--seller-name` and `--terms-url`: the seller shown at checkout. Empty
-/// values count as unset; terms without a seller name are refused.
-fn seller(name: Option<&str>, terms: Option<&str>) -> Result<Option<crate::checkout::Seller>> {
+/// `--seller-name`, `--terms-url` and `--terms-file`: the seller shown at
+/// checkout. Empty values count as unset. Terms need a seller name, and
+/// come from a URL or from the served file (linked as `/terms/`), not both.
+fn seller(
+    name: Option<&str>,
+    terms: Option<&str>,
+    terms_file: bool,
+) -> Result<Option<crate::checkout::Seller>> {
     let name = name.map(str::trim).filter(|s| !s.is_empty());
     let terms = terms.map(str::trim).filter(|s| !s.is_empty());
-    let terms_url = match terms {
-        None => None,
-        Some(t) => {
+    let terms_url = match (terms, terms_file) {
+        (Some(_), true) => bail!("set --terms-url or --terms-file, not both"),
+        (None, true) => Some(crate::terms::PATH.to_string()),
+        (None, false) => None,
+        (Some(t), false) => {
             let rest = t
                 .strip_prefix("https://")
                 .or_else(|| t.strip_prefix("http://"))
@@ -1665,7 +1686,7 @@ fn seller(name: Option<&str>, terms: Option<&str>) -> Result<Option<crate::check
     match (name, terms_url) {
         (None, None) => Ok(None),
         (None, Some(_)) => {
-            bail!("--terms-url needs --seller-name: the checkout names who the terms are with")
+            bail!("terms need --seller-name: the checkout names who the terms are with")
         }
         (Some(n), terms_url) => Ok(Some(crate::checkout::Seller {
             name: n.to_string(),
@@ -1680,22 +1701,31 @@ mod seller_tests {
 
     #[test]
     fn seller_is_optional_and_checked() {
-        assert_eq!(seller(None, None).unwrap(), None);
-        assert_eq!(seller(Some(" "), Some("")).unwrap(), None);
+        assert_eq!(seller(None, None, false).unwrap(), None);
+        assert_eq!(seller(Some(" "), Some(""), false).unwrap(), None);
         let s = seller(
             Some("Example Mining, LLC"),
             Some("https://example.com/terms"),
+            false,
         )
         .unwrap()
         .unwrap();
         assert_eq!(s.name, "Example Mining, LLC");
         assert_eq!(s.terms_url.as_deref(), Some("https://example.com/terms"));
         assert_eq!(
-            seller(Some("Example"), None).unwrap().unwrap().terms_url,
+            seller(Some("Example"), None, false)
+                .unwrap()
+                .unwrap()
+                .terms_url,
             None
         );
-        assert!(seller(None, Some("https://example.com/terms")).is_err());
-        assert!(seller(Some("Example"), Some("example.com/terms")).is_err());
+        assert!(seller(None, Some("https://example.com/terms"), false).is_err());
+        assert!(seller(Some("Example"), Some("example.com/terms"), false).is_err());
+        // A served terms file is linked on the mint's own host.
+        let s = seller(Some("Example"), None, true).unwrap().unwrap();
+        assert_eq!(s.terms_url.as_deref(), Some("/terms/"));
+        assert!(seller(Some("Example"), Some("https://example.com/terms"), true).is_err());
+        assert!(seller(None, None, true).is_err());
     }
 }
 

@@ -34,6 +34,7 @@ pub mod supplier;
 pub mod supply;
 pub mod telemetry;
 pub mod tenants;
+pub mod terms;
 pub mod tips;
 mod ur;
 pub mod waitlist;

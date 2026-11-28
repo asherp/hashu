@@ -253,7 +253,8 @@ struct Checkout {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Seller {
     pub name: String,
-    /// The seller's terms of sale (http(s) URL); none when not published.
+    /// The seller's terms of sale: an http(s) URL, or `/terms/` when the
+    /// mint serves them itself; none when not published.
     pub terms_url: Option<String>,
 }
 
@@ -693,7 +694,8 @@ async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
         // The operator's Hashu wallet; null when it runs none.
         "app_url": s.app_url,
         // `{name, terms_url}`: who sells these vouchers and their terms of
-        // sale (HASHU_SELLER_NAME, HASHU_TERMS_URL); null when unset.
+        // sale (HASHU_SELLER_NAME, and HASHU_TERMS_URL or `/terms/` with
+        // HASHU_TERMS_FILE); null when unset.
         "seller": s.seller,
         // Where miners point to sell through this mint: `{url, host,
         // port}` (HASHU_STRATUM_URL); null when not known.

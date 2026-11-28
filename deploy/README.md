@@ -88,6 +88,7 @@ again at startup, so running them without compose fails the same way.
 | `HASHU_APP_DOMAIN` | no | Serves the [hashu.me wallet](https://github.com/asherp/hashu.me) (built into the caddy image) on this host, e.g. `app.hashu.io`. Needs an A record pointing here. The mint's landing and checkout pages then link to it ("Open wallet", "Open in wallet" for tokens). Unset: no wallet. |
 | `HASHU_SELLER_NAME` | no | Legal name of the seller of this mint's vouchers, e.g. `Example Mining, LLC`, named on the checkout page. Unset: no seller line. |
 | `HASHU_TERMS_URL` | no | The seller's terms of sale. With `HASHU_SELLER_NAME`, the checkout links them and buyers and redeemers must tick a box accepting them. Separate from the wallet's terms. |
+| `HASHU_TERMS_FILE` | no | The seller's terms as Markdown, served at `/terms/` and linked from the checkout instead of `HASHU_TERMS_URL`. `deploy/terms/` is mounted at `/etc/hashu/terms`; Hashu's own terms are `/etc/hashu/terms/service-terms.md`. Startup fails if the file is missing. |
 | `HASHU_OPERATOR_APP_DOMAIN` | no | Serves the Hashu Operator app (hashu.me built as its second app) on this host, e.g. `operator.hashu.io`. Needs an A record pointing here. Sign in with the mint URL plus the operator user and password (or a supplier mint URL and its dashboard key). Unset: no operator app; the dashboard at `/operator/` works either way. |
 | `HASHU_REGISTRY`, `HASHU_IMAGE_TAG` | no | Image source for `docker compose pull` (default `ghcr.io/asherp`, `latest`). Point at your fork's registry to deploy your own builds. |
 
