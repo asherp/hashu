@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hashu supplier mint</title>
+<title>Hashu supplier mine</title>
 <style>
 :root { --bg:#f6f6f4; --surface:#fff; --ink:#1b1b1a; --ink-2:#55534f; --line:rgba(27,27,26,.12); --brand:#e8850c; --bad:#c2403a; --good:#2f8a57; }
 @media (prefers-color-scheme: dark) { :root { --bg:#111110; --surface:#1a1a19; --ink:#f1efea; --ink-2:#b5b2ab; --line:rgba(241,239,234,.14); --brand:#f7931a; --bad:#e06c6c; --good:#5cc28a; } }
@@ -56,7 +56,7 @@ button.ghost { background:transparent; color:var(--ink); border-color:var(--line
 </head>
 <body>
 <main class="wrap">
-  <h1 id="name">Supplier mint</h1>
+  <h1 id="name">Supplier mine</h1>
   <p class="sub">Cashu mint <span id="url"></span> · <span class="pill off" id="state">loading</span></p>
 
   <div class="card">
@@ -68,7 +68,7 @@ button.ghost { background:transparent; color:var(--ink); border-color:var(--line
     </div>
     <p class="hint" id="stock-line"></p>
     <p class="hint" id="epoch-line" hidden></p>
-    <p class="hint" style="margin-bottom:0">Buy with any Cashu wallet: add this mint's URL and mint TiH over Lightning. You pay the supplier's own wallet.</p>
+    <p class="hint" style="margin-bottom:0">Buy with any Cashu wallet: add this mine's URL and buy TiH over Lightning. You pay the supplier's own wallet.</p>
   </div>
 
   <div class="card" id="plan-card" hidden>
@@ -118,7 +118,7 @@ button.ghost { background:transparent; color:var(--ink); border-color:var(--line
         <input id="s-horizon" type="number" min="1" step="1">
         <label for="s-ln">Lightning address or LNURL <span class="hint">where buyers pay: an address or your own LNURL-pay endpoint (lnurl1…, lnurlp:// or https://); needs payment verification (LUD-21)</span></label>
         <input id="s-ln" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="you@wallet.example or lnurl1…">
-        <label for="s-npub">Your npub <span class="hint">optional; wallets send private messages (NIP-17) for your mint to this Nostr key, so they reach you, not Hashu. Read them in any Nostr client that supports NIP-17 DMs.</span></label>
+        <label for="s-npub">Your npub <span class="hint">optional; wallets send private messages (NIP-17) for your mine to this Nostr key, so they reach you, not Hashu. Read them in any Nostr client that supports NIP-17 DMs.</span></label>
         <input id="s-npub" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="npub1…">
         <button>Save</button>
         <button type="button" id="restock">Restock now</button>

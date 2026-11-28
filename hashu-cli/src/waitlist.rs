@@ -443,16 +443,16 @@ fn validate(s: Submission) -> Result<Entry, Refusal> {
             "leave an email, an npub or another way to reach you".into(),
         ));
     }
-    let mint_name = clean(&s.mint_name, 32, "mint name")?.map(|n| n.to_lowercase());
+    let mint_name = clean(&s.mint_name, 32, "mine name")?.map(|n| n.to_lowercase());
     if let Some(n) = &mint_name {
         if !valid_mint_name(n) {
             return Err(Refusal::Invalid(
-                "mint name: 2 to 32 of a-z, 0-9 and -, not starting or ending with -".into(),
+                "mine name: 2 to 32 of a-z, 0-9 and -, not starting or ending with -".into(),
             ));
         }
         if hashu_proxy::suppliers::reserved_name(n) {
             return Err(Refusal::Invalid(
-                "mint name: that name is reserved; pick another".into(),
+                "mine name: that name is reserved; pick another".into(),
             ));
         }
     }

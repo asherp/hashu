@@ -769,7 +769,7 @@ async fn buy(State(s): State<Arc<CheckoutState>>, body: Bytes) -> Response {
     if !s.methods.contains(&method) {
         return err(
             StatusCode::BAD_REQUEST,
-            format!("this mint does not sell over {method}"),
+            format!("this mine does not sell over {method}"),
         );
     }
     if s.controls.issuance_paused() {
@@ -1805,7 +1805,7 @@ fn stop_refusal(r: &hashu_core::redemption::Redemption, down: bool) -> Option<St
     // being delivered, so waiting gains them nothing.
     if !down && !r.is_finished() && r.accumulated_hashes < u128::from(r.floor_tih) * HASHES_PER_TIH
     {
-        return Some(format!("the redeemer can stop this redemption once {} TiH is delivered; before that only the mint operator can stop it", r.floor_tih));
+        return Some(format!("the redeemer can stop this redemption once {} TiH is delivered; before that only the mine operator can stop it", r.floor_tih));
     }
     if let Some((charged, 0)) = r.settle_preview() {
         return Some(format!("stopping now would charge all {charged} TiH and return nothing, so this redemption cannot be stopped for change"));

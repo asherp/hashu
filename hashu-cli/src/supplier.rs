@@ -330,7 +330,7 @@ impl SupplierPricer {
             (b.owed_tih, b.sold_tih, b.counted)
         };
         if !counted {
-            return Err("still counting what this mint owes; try again in a few seconds".into());
+            return Err("still counting what this mine owes; try again in a few seconds".into());
         }
         self.refresh(owed, sold, now_ms, true);
         Ok(self.capacity())

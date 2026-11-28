@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hashu mint operator</title>
+<title>Hashu mine operator</title>
 <style>
 :root {
   --bg: #f6f6f4; --surface: #ffffff; --ink: #1b1b1a; --ink-2: #55534f; --ink-3: #8a8782;
@@ -187,7 +187,7 @@ td.num, th.num { text-align: right; }
 <main>
   <header>
     <div>
-      <h1><span>Hashu</span> mint operator</h1>
+      <h1><span>Hashu</span> mine operator</h1>
       <div class="sub" id="sub">connecting…</div>
     </div>
     <div class="row">
@@ -252,14 +252,14 @@ td.num, th.num { text-align: right; }
       <h2 id="h-inbox">Messages <span class="unread" id="inbox-unread" hidden></span></h2>
       <span class="sub mono" id="inbox-npub"></span>
     </div>
-    <p class="note" id="inbox-note">Private Nostr messages (NIP-17) sent to this mint's key from wallets, live. Replies are signed by the mint.</p>
+    <p class="note" id="inbox-note">Private Nostr messages (NIP-17) sent to this mine's key from wallets, live. Replies are signed by the mine.</p>
     <div class="row new-dm"><input type="text" id="inbox-to" class="mono" placeholder="npub1… to message someone new" autocomplete="off" spellcheck="false"><button class="act" id="inbox-new">New message</button><span class="live" id="inbox-live" title="Live: new messages show up as they arrive"></span></div>
     <div class="inbox">
       <ul class="convs" id="inbox-convs"><li class="sub">No messages yet.</li></ul>
       <div class="thread" id="inbox-thread" hidden>
         <div class="row" style="justify-content:space-between"><b class="mono" id="inbox-peer"></b><a id="inbox-open" target="_blank" rel="noopener" class="sub">Open in Nostr</a></div>
         <div class="bubbles" id="inbox-bubbles"></div>
-        <textarea id="inbox-text" maxlength="16000" placeholder="Reply as the mint"></textarea>
+        <textarea id="inbox-text" maxlength="16000" placeholder="Reply as the mine"></textarea>
         <div class="row"><button class="act primary" id="inbox-send">Send reply</button><span class="note" id="inbox-msg"></span></div>
         <details class="send-hashes" id="dm-hashes">
           <summary>Send hashes</summary>
@@ -338,7 +338,7 @@ td.num, th.num { text-align: right; }
 
   <div class="cols">
     <section class="card" aria-labelledby="h-ctl">
-      <h2 id="h-ctl">Mint controls</h2>
+      <h2 id="h-ctl">Mine controls</h2>
       <div class="row">
         <button class="act" id="btn-pause">…</button>
         <span class="note" id="pause-note"></span>
@@ -390,7 +390,7 @@ td.num, th.num { text-align: right; }
         <button class="act" id="btn-live-restock">Restock now</button>
         <button class="act" id="btn-live-off">Stop counting</button>
       </div>
-      <p class="note">Rigs mining on this proxy for this mint (your own rigs, e.g. a Bitaxe) back a stock of TiH, the same rule supplier mints sell by. Every hour it is topped up to what the rigs produce within the horizon: their average hashrate (EWMA, half-life = horizon ÷ 2) × the horizon, less what the mint owes beyond its rentals. In between, only sales take it down, so the quantity on sale holds still while the hashrate moves; the checkout's delivery ETA moves instead. A top-up never takes away stock already listed; changing the horizon starts a new batch. Hashrate rented rigs already declare is not counted twice. Rigs that only mine to their home pool, or serve a supplier's mint, are not counted.</p>
+      <p class="note">Rigs mining on this proxy for this mine (your own rigs, e.g. a Bitaxe) back a stock of TiH, the same rule supplier mines sell by. Every hour it is topped up to what the rigs produce within the horizon: their average hashrate (EWMA, half-life = horizon ÷ 2) × the horizon, less what the mine owes beyond its rentals. In between, only sales take it down, so the quantity on sale holds still while the hashrate moves; the checkout's delivery ETA moves instead. A top-up never takes away stock already listed; changing the horizon starts a new batch. Hashrate rented rigs already declare is not counted twice. Rigs that only mine to their home pool, or serve a supplier's mine, are not counted.</p>
     </section>
 
     <section class="card" aria-labelledby="h-mrr" id="mrr-card">
@@ -435,12 +435,12 @@ td.num, th.num { text-align: right; }
 
     <section class="card" aria-labelledby="h-test">
       <h2 id="h-test">Test redemption</h2>
-      <p class="note">Mint TiH without a payment to rehearse a redemption. They are real vouchers: they count as owed until redeemed.</p>
+      <p class="note">Issue TiH without a payment to rehearse a redemption. They are real vouchers: they count as owed until redeemed.</p>
       <div class="row"><span class="ctl"><span class="note">Count in</span><span class="seg" id="test-units"><button type="button" data-u="hash" class="on" title="Hashes: TiH (2^40), PiH or EiH">PiH</button><button type="button" data-u="rate" title="Hashrate held for a day: 1 TH/s × 24 h">TH/s/Day</button></span></span></div>
       <div class="row chips" id="test-chips"></div>
       <div class="row">
         <input type="number" id="test-amt" min="0" step="any" inputmode="decimal" value="4" aria-labelledby="test-amt-label"> <span id="test-amt-label">Pebihashes (PiH)</span>
-        <button class="act" id="btn-test-mint">Mint test TiH</button>
+        <button class="act" id="btn-test-mint">Issue test TiH</button>
       </div>
       <div class="slider" hidden><input type="range" id="test-slider" min="0" max="1000" step="1" aria-label="Test amount"><div class="ends" id="test-ends"><span></span><span></span></div></div>
       <p class="note" id="test-avail"></p>
@@ -1001,7 +1001,7 @@ function render () {
     if (lv) {
       $('live-pill').textContent = !lv.available ? 'no proxy' : lv.on ? 'counting' : 'off'
       $('live').innerHTML = kv([
-        ["This mint's rigs, measured now", `${fmtTih(lv.measured_ths, 2)} TH/s`],
+        ["This mine's rigs, measured now", `${fmtTih(lv.measured_ths, 2)} TH/s`],
         ['Declared as rented or time-limited', `${fmtTih(lv.rented_ths, 2)} TH/s`],
         ['Counted', `${fmtTih(lv.extra_ths, 2)} TH/s`],
         ['Horizon', lv.horizon_hours != null ? `${fmtTih(lv.horizon_hours, 1)} h` : 'not set'],
@@ -1037,7 +1037,7 @@ function render () {
       : '<tr><td colspan="4" class="sub">No active rentals on the MRR account. Rent rigs pointed at this proxy and they appear here on the next sync.</td></tr>'
     $('mrr-note').innerHTML = cap.mrr_enabled
       ? 'Active rentals come from the MRR API every minute. Paste a new key pair below to switch accounts.'
-      : 'Not connected. Paste an MRR API key and secret (MRR → Account → API Keys, read access to rentals) to count active rentals as capacity. They are checked with MRR, then saved on the mint (<span class="mono">mrr.json</span>), never shown again.'
+      : 'Not connected. Paste an MRR API key and secret (MRR → Account → API Keys, read access to rentals) to count active rentals as capacity. They are checked with MRR, then saved on the mine (<span class="mono">mrr.json</span>), never shown again.'
     $('btn-mrr').textContent = acct.connected ? 'Save' : 'Connect'
     $('btn-mrr-off').hidden = !acct.connected
     if (!state.mrrDirty && document.activeElement !== $('mrr-ids')) $('mrr-ids').value = (acct.rental_ids || []).join(', ')
@@ -1238,7 +1238,7 @@ function updateTestMint () {
   testAmt.disableChips(soldOut)
   $('btn-test-mint').disabled = soldOut || n < 1 || n > (l || Infinity)
   $('test-avail').textContent = av == null ? `Capacity is not enforced: up to ${testAmt.fmt(l || MAX_TEST_MINT_TIH)} per test mint.`
-    : soldOut ? 'Nothing left to sell, so nothing to mint against. Restock or add capacity first.'
+    : soldOut ? 'Nothing left to sell, so nothing to issue against. Restock or add capacity first.'
     : n > l ? `Only ${testAmt.fmt(l)} (${l.toLocaleString()} TiH) left to sell. Lower the amount.`
     : `${testAmt.fmt(av)} left to sell · ${n.toLocaleString()} TiH`
 }
@@ -1553,7 +1553,7 @@ function renderInbox () {
   $('inbox-npub').title = d.npub
   $('inbox-unread').hidden = !d.unread
   $('inbox-unread').textContent = d.unread
-  if (!d.on) $('inbox-note').textContent = 'Set HASHU_NOSTR_RELAYS to receive private messages (NIP-17) at this mint\'s key.'
+  if (!d.on) $('inbox-note').textContent = 'Set HASHU_NOSTR_RELAYS to receive private messages (NIP-17) at this mine\'s key.'
   const convs = d.conversations || []
   $('inbox-convs').innerHTML = convs.length ? convs.map((c) => {
     const last = c.messages[c.messages.length - 1] || {}
