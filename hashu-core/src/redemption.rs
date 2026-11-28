@@ -702,6 +702,15 @@ impl RedemptionLedger {
                 }
             }
         }
+        // A finished redemption never logs in to a pool again, so its pool
+        // passwords are dropped here and the compacted journal no longer
+        // holds them.
+        for r in ledger.lock().values_mut().filter(|r| r.is_finished()) {
+            r.worker_password = None;
+            for f in &mut r.fallbacks {
+                f.worker_password = None;
+            }
+        }
         let snapshot = ledger.all();
         let compact: Vec<LedgerRecord> = snapshot
             .iter()
@@ -1426,6 +1435,50 @@ mod tests {
             // 2M × 2^32 hashes = 7,812.5 TiH, charged 7,813.
             assert_eq!((r.spent_tih(), r.change_tih()), (7_813, 24_955));
         }
+    }
+
+    #[test]
+    fn finished_redemptions_drop_pool_passwords_on_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("redemptions.jsonl");
+        let backup = PoolTarget {
+            pool_url: "b".into(),
+            worker_name: "w".into(),
+            worker_password: Some("backup-secret".into()),
+        };
+        {
+            let ledger = RedemptionLedger::persistent(&path).unwrap();
+            for n in [1, 2] {
+                ledger
+                    .open(
+                        Redemption::new(id(n), 32_768, "p".into(), "w".into())
+                            .with_password(Some("secret".into()))
+                            .with_fallbacks(vec![backup.clone()])
+                            .with_floor(1),
+                    )
+                    .unwrap();
+            }
+            ledger.lock().get_mut(&id(1)).unwrap().state = RedemptionState::Active;
+            ledger.credit_share(&id(1), 2_000_000.0).unwrap();
+            ledger.settle(&id(1)).unwrap();
+        }
+        let ledger = RedemptionLedger::persistent(&path).unwrap();
+        let done = ledger.get(&id(1)).unwrap();
+        assert_eq!(done.worker_password, None);
+        assert_eq!(done.fallbacks[0].worker_password, None);
+        let open = ledger.get(&id(2)).unwrap();
+        assert_eq!(open.worker_password.as_deref(), Some("secret"));
+        assert_eq!(
+            open.fallbacks[0].worker_password.as_deref(),
+            Some("backup-secret")
+        );
+        drop(ledger);
+        let journal = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            journal.matches("secret").count(),
+            2,
+            "only the open redemption's"
+        );
     }
 
     #[test]

@@ -197,7 +197,7 @@ services:
       HASHU_SELLER_NAME: ${HASHU_SELLER_NAME:-}
       HASHU_TERMS_URL: ${HASHU_TERMS_URL:-}
       # A Markdown file under deploy/terms/ (mounted below) served at
-      # /terms/, e.g. /etc/hashu/terms/seller-terms.md.
+      # /terms/, e.g. /etc/hashu/terms/service-terms.md.
       HASHU_TERMS_FILE: ${HASHU_TERMS_FILE:-}
     command:
       - mint

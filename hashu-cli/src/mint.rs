@@ -369,7 +369,7 @@ pub struct RunArgs {
     pub terms_url: Option<String>,
     /// The seller's terms of sale as a Markdown file, served at `/terms/`
     /// and linked from the checkout (instead of `--terms-url`). Hashu's
-    /// own are in `deploy/terms/seller-terms.md`.
+    /// own are in `deploy/terms/service-terms.md`.
     #[arg(long, env = "HASHU_TERMS_FILE")]
     pub terms_file: Option<PathBuf>,
 

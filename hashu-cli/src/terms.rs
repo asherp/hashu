@@ -2,7 +2,7 @@
 //! (`--terms-file`, `HASHU_TERMS_FILE`).
 //!
 //! The file is the operator's own text: the repository ships Hashu's at
-//! `deploy/terms/seller-terms.md`, and other operators point this at theirs.
+//! `deploy/terms/service-terms.md`, and other operators point this at theirs.
 //! It is read and rendered once at startup, so a missing or unreadable file
 //! fails fast instead of serving a broken page. Raw HTML in the file is
 //! shown as text, never passed through.
@@ -123,9 +123,9 @@ mod tests {
 
     #[test]
     fn shipped_terms_render() {
-        let md = include_str!("../../deploy/terms/seller-terms.md");
+        let md = include_str!("../../deploy/terms/service-terms.md");
         let page = render(md);
-        assert!(page.contains("<title>Hashu Seller Terms of Service</title>"));
+        assert!(page.contains("<title>Hashu Hashrate Service and Supplier Terms</title>"));
         assert!(page.contains("Pembroke Creative, LLC"));
     }
 
