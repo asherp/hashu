@@ -247,6 +247,16 @@ struct Checkout {
 }
 
 /// What the checkout routes share.
+/// The seller of a mint's vouchers, as the checkout page names them: the
+/// party the buyer contracts with, and the terms of sale that apply to
+/// purchases and redemptions. A wallet's own terms are separate.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Seller {
+    pub name: String,
+    /// The seller's terms of sale (http(s) URL); none when not published.
+    pub terms_url: Option<String>,
+}
+
 pub struct CheckoutState {
     /// URL the throwaway wallets reach the mint on (loopback).
     pub internal_url: String,
@@ -266,6 +276,9 @@ pub struct CheckoutState {
     pub orders: Arc<OrderBook>,
     /// The operator's Hashu wallet, linked from the landing and checkout.
     pub app_url: Option<String>,
+    /// Who sells this mint's vouchers and where their terms of sale are,
+    /// shown at purchase and redemption. Unset: no seller line.
+    pub seller: Option<Seller>,
     /// Redeem only to `stratum+ssl://` or `stratum2+tcp://` pools
     /// (`HASHU_ENCRYPTED_POOLS_ONLY`).
     pub encrypted_pools_only: bool,
@@ -310,6 +323,7 @@ impl CheckoutState {
             meter,
             orders,
             app_url: None,
+            seller: None,
             encrypted_pools_only: false,
             stratum: None,
             rigs: None,
@@ -320,6 +334,12 @@ impl CheckoutState {
 
     pub fn with_app_url(mut self, app_url: Option<String>) -> Self {
         self.app_url = app_url;
+        self
+    }
+
+    /// The seller named on the checkout page, with their terms of sale.
+    pub fn with_seller(mut self, seller: Option<Seller>) -> Self {
+        self.seller = seller;
         self
     }
 
@@ -672,6 +692,9 @@ async fn info(State(s): State<Arc<CheckoutState>>) -> Json<Value> {
         "mint_url": s.public_url,
         // The operator's Hashu wallet; null when it runs none.
         "app_url": s.app_url,
+        // `{name, terms_url}`: who sells these vouchers and their terms of
+        // sale (HASHU_SELLER_NAME, HASHU_TERMS_URL); null when unset.
+        "seller": s.seller,
         // Where miners point to sell through this mint: `{url, host,
         // port}` (HASHU_STRATUM_URL); null when not known.
         "stratum": s.stratum,

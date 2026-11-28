@@ -192,6 +192,10 @@ services:
       # The wallet Caddy serves at HASHU_APP_DOMAIN, linked from the landing
       # and checkout pages (empty: no links).
       HASHU_APP_URL: ${HASHU_APP_DOMAIN:+https://${HASHU_APP_DOMAIN}}
+      # Who sells this mint's vouchers, and their terms of sale, shown at
+      # checkout purchase and redemption (empty: no seller line).
+      HASHU_SELLER_NAME: ${HASHU_SELLER_NAME:-}
+      HASHU_TERMS_URL: ${HASHU_TERMS_URL:-}
     command:
       - mint
       - run

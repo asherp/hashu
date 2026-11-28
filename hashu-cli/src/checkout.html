@@ -61,6 +61,8 @@ button.act:disabled { opacity: 0.5; cursor: default; }
 .caplegend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--ink-2); margin-bottom: 8px; }
 .caplegend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
 .note { color: var(--ink-3); font-size: 13px; margin: 0; }
+.note.seller label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.note.seller input { margin-top: 2px; }
 .note.soldout { color: var(--bad); background: var(--bad-bg); border: 1px solid var(--bad); border-radius: 8px; padding: 10px 14px; font-size: 14px; }
 .chips button:disabled { opacity: 0.4; cursor: not-allowed; }
 #amount:disabled { opacity: 0.5; }
@@ -133,6 +135,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
     <div class="slider" id="amount-slider-wrap" hidden><input type="range" id="amount-slider" min="0" max="1000" step="1" aria-label="Amount"><div class="ends" id="amount-ends"><span></span><span></span></div></div>
     <div class="row" id="methods-row"><span class="note">Pay with</span><div class="seg" id="methods"></div></div>
     <div class="price"><b id="price">—</b><span class="note" id="price-label"></span></div>
+    <p class="note seller" id="seller-buy" hidden></p>
     <button class="act primary" id="btn-buy">Get invoice</button>
     <p class="note" id="paused" hidden>Sales are paused by the mint operator.</p>
     <div id="cap-bar" hidden></div>
@@ -215,6 +218,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
       </div>
     </details>
     <p class="tok-msg" id="r-check" hidden></p>
+    <p class="note seller" id="seller-redeem" hidden></p>
     <button class="act primary" id="btn-redeem">Send me the hashrate</button>
     <p class="note">The mint's miners switch to your pool and mine under your worker name until the TiH in the token is delivered.</p>
   </section>
@@ -419,9 +423,33 @@ function etaText (n) {
   if (i.capacity_ends_ms && Date.now() + total * 1000 > i.capacity_ends_ms) t += ' Runs past the current rental.'
   return t
 }
+// The seller of this mint's vouchers and their terms of sale. With a
+// terms link, buying and redeeming each need the box ticked first.
+function showSeller (seller) {
+  for (const [id, act] of [['seller-buy', 'buying'], ['seller-redeem', 'redeeming']]) {
+    const el = $(id)
+    if (!seller || !seller.name) { el.hidden = true; el.innerHTML = ''; continue }
+    const url = seller.terms_url && /^https?:\/\//.test(seller.terms_url) ? seller.terms_url : ''
+    const was = el.querySelector('input') && el.querySelector('input').checked
+    el.innerHTML = url
+      ? `<label><input type="checkbox" class="agree"${was ? ' checked' : ''}><span>Sold by <b>${esc(seller.name)}</b>. I agree to the seller's <a href="${esc(url)}" target="_blank" rel="noopener">terms of sale</a>, which apply to ${act} these vouchers.</span></label>`
+      : `Sold by <b>${esc(seller.name)}</b>.`
+    el.hidden = false
+  }
+}
+// False (and says why) when the seller's terms are shown but not accepted.
+function agreed (id) {
+  const box = $(id).querySelector('input.agree')
+  if (!box || box.checked) return true
+  alertMsg("Please tick the box to accept the seller's terms of sale first.")
+  box.focus()
+  return false
+}
+
 async function loadInfo () {
   try {
     st.info = await api('api/info')
+    showSeller(st.info.seller)
     if (appHost()) $('scan-note').textContent = `From ${appHost()} or any Cashu wallet's send screen.`
     const ms = st.info.methods
     if (!st.method || !ms.includes(st.method)) st.method = ms[0] || null
@@ -449,6 +477,7 @@ async function loadInfo () {
 $('methods').addEventListener('click', (ev) => { const b = ev.target.closest('button'); if (!b) return; st.method = b.dataset.m; loadInfo() })
 
 $('btn-buy').addEventListener('click', async () => {
+  if (!agreed('seller-buy')) return
   const amount = amt.tih
   st.buying = true; updateBuy()
   try {
@@ -709,6 +738,7 @@ async function poolCheckPasses () {
   return false
 }
 $('btn-redeem').addEventListener('click', async () => {
+  if (!agreed('seller-redeem')) return
   $('btn-redeem').disabled = true
   try {
     if (!(await poolCheckPasses())) return
