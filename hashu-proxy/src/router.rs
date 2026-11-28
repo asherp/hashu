@@ -885,6 +885,12 @@ impl Router {
         }
     }
 
+    /// How the operator's own rigs are told apart (see
+    /// [`HomeConfig::rig_naming`]).
+    pub fn rig_naming(&self) -> Value {
+        self.home.rig_naming()
+    }
+
     /// Live hashrate (hashes per second) of a registered supplier's
     /// verified rigs: what its mint can sell against.
     pub fn supplier_hashrate(&self, name: &str) -> f64 {
