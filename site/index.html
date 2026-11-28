@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hashu · sell hashes, earn sats</title>
-<meta name="description" content="Hashu is open-source software that turns hashrate into Chaumian vouchers on Cashu. A Hashu mint sells hashes of computation, not money: buy with Lightning, USDT or USDC, redeem by pointing hashrate at your pool.">
+<meta name="description" content="Hashu is open-source software that turns hashrate into Chaumian vouchers on Cashu. A Hashu mine sells hashes of computation, not money: buy with Lightning, USDT or USDC, redeem by pointing hashrate at your pool.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23f7931a'/%3E%3Cpath d='M10.5 6V20A5.5 5.5 0 0 0 21.5 20V6' stroke='%23111' stroke-width='3' stroke-linecap='round' fill='none'/%3E%3Cpath d='M5 11.5H27M5 18H27' stroke='%23111' stroke-width='2.6' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
 :root {
@@ -119,21 +119,21 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     <div class="links">
       <a class="mint-link nav-redeem" data-path="checkout/#redeem" href="https://mint.hashu.io/checkout/#redeem">Redeem</a>
       <a href="https://app.hashu.io/">Wallet</a>
-      <a class="waitlist-link" href="/waitlist/" hidden>Hosted mints</a>
+      <a class="waitlist-link" href="/waitlist/" hidden>Hosted mines</a>
       <a class="mint-link" data-path="slides/" href="https://mint.hashu.io/slides/">Slides</a>
       <a href="/redeem/">Pool guides</a>
       <a href="/compare/">Compare</a>
       <a href="/units/">Units</a>
       <a href="https://github.com/asherp/hashu">GitHub</a>
-      <a class="mint-link" href="https://mint.hashu.io/">Live mint</a>
+      <a class="mint-link" href="https://mint.hashu.io/">Live mine</a>
     </div>
   </nav>
 
   <header class="hero">
     <p class="kicker">Open source · Cashu · Stratum</p>
     <h1>Sell <span>hashes</span>, earn sats.</h1>
-    <p>Hashu turns hashrate into Chaumian hashrate vouchers. A Hashu mint issues hashes, counted in <a href="/units/">TiH</a> (tebihash, 2<sup>40</sup> hashes), as Cashu tokens backed only by the hashrate of its miners, and the only way to redeem them is as real work delivered to the holder's pool. No bitcoin is held for users and none is paid out.</p>
-    <p class="live" id="live-status">Demo mint on mainnet at mint.hashu.io. Run your own to sell your hashrate.</p>
+    <p>Hashu turns hashrate into Chaumian hashrate vouchers. A Hashu mine (a Cashu mint that sells hashrate) issues hashes, counted in <a href="/units/">TiH</a> (tebihash, 2<sup>40</sup> hashes), as Cashu tokens backed only by the hashrate of its miners, and the only way to redeem them is as real work delivered to the holder's pool. No bitcoin is held for users and none is paid out.</p>
+    <p class="live" id="live-status">Demo mine on mainnet at mint.hashu.io. Run your own to sell your hashrate.</p>
     <div class="cta">
       <a class="btn primary mint-link" data-path="checkout/" data-buy href="https://mint.hashu.io/checkout/">Buy hashrate</a>
       <a class="btn" href="https://app.hashu.io/">Open wallet</a>
@@ -155,11 +155,11 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
         </ul>
       </div>
       <div class="card us">
-        <h3>A Hashu mint</h3>
+        <h3>A Hashu mine</h3>
         <ul>
           <li>Sells a service: hashes of mining computation.</li>
           <li>Never pays out bitcoin. Tokens are redeemed only as hashrate.</li>
-          <li>Tokens are backed only by the miners behind the mint.</li>
+          <li>Tokens are backed only by the miners behind the mine.</li>
         </ul>
       </div>
     </div>
@@ -169,9 +169,9 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     <h2>How it works</h2>
     <div class="grid4">
       <div class="card"><div class="num">1</div><h3>Buy</h3><p>Pay a mainnet Lightning invoice, or pay in USDT or USDC. Dollars go to hashrate and on to bitcoin without an exchange.</p></div>
-      <div class="card"><div class="num">2</div><h3>Hold</h3><p>Receive TiH as Chaumian vouchers (Cashu tokens). Blind signatures mean the mint can't link who bought to who redeems.</p></div>
-      <div class="card"><div class="num">3</div><h3>Redeem</h3><p>Redeem the tokens with a pool URL and worker name. The mint's Stratum proxy points its miners at your pool until the work is delivered.</p></div>
-      <div class="card"><div class="num">4</div><h3>Reliability</h3><p>Every hour the mint signs its hardest shares sent to redeemers' pools, posts them on Nostr and timestamps them on Bitcoin, so anyone can check its <a href="https://mint.hashu.io/reliability/">reliability record</a>. Share proofs for your own redemption are on the roadmap.</p></div>
+      <div class="card"><div class="num">2</div><h3>Hold</h3><p>Receive TiH as Chaumian vouchers (Cashu tokens). Blind signatures mean the mine can't link who bought to who redeems.</p></div>
+      <div class="card"><div class="num">3</div><h3>Redeem</h3><p>Redeem the tokens with a pool URL and worker name. The mine's Stratum proxy points its miners at your pool until the work is delivered.</p></div>
+      <div class="card"><div class="num">4</div><h3>Reliability</h3><p>Every hour the mine signs its hardest shares sent to redeemers' pools, posts them on Nostr and timestamps them on Bitcoin, so anyone can check its <a href="https://mint.hashu.io/reliability/">reliability record</a>. Share proofs for your own redemption are on the roadmap.</p></div>
     </div>
     <p class="unit" style="margin-top:20px"><b>1 TiH</b> (tebihash) = 2<sup>40</sup> hashes = 256 difficulty-1 shares. 1 TH/s for one hour ≈ 3,274 TiH. Prices are per PiH (1,024 TiH), and purchases and redemptions start at 1 PiH.</p>
   </section>
@@ -179,10 +179,10 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
   <section id="uses">
     <h2>Who it's for</h2>
     <div class="grid2">
-      <div class="card"><h3>Lightning node runners: free up inbound, get private coins</h3><p>Paying a Hashu mint's Lightning invoice spends outbound liquidity from your channels and frees up inbound capacity, much like a Loop Out. Point the hashrate you bought at your own pool account and the pool pays you on-chain in freshly mined coins with no transaction history. Blind signatures mean the mint can't link the invoice you paid to the pool the work went to, so those coins aren't tied to your public channels.</p></div>
-      <div class="card"><h3>Anyone who wants bitcoin on-chain</h3><p>Cashu mints almost always pay out over Lightning only, and very few support on-chain. A Hashu mint never pays out bitcoin at all. Instead, the hashrate you redeem mines at the pool you choose, and the pool pays your bitcoin address directly. Buy with Lightning, USDT or USDC and end up with self-custodied bitcoin on-chain.</p></div>
+      <div class="card"><h3>Lightning node runners: free up inbound, get private coins</h3><p>Paying a Hashu mine's Lightning invoice spends outbound liquidity from your channels and frees up inbound capacity, much like a Loop Out. Point the hashrate you bought at your own pool account and the pool pays you on-chain in freshly mined coins with no transaction history. Blind signatures mean the mine can't link the invoice you paid to the pool the work went to, so those coins aren't tied to your public channels.</p></div>
+      <div class="card"><h3>Anyone who wants bitcoin on-chain</h3><p>Cashu mints almost always pay out over Lightning only, and very few support on-chain. A Hashu mine never pays out bitcoin at all. Instead, the hashrate you redeem mines at the pool you choose, and the pool pays your bitcoin address directly. Buy with Lightning, USDT or USDC and end up with self-custodied bitcoin on-chain.</p></div>
     </div>
-    <p class="unit" style="margin-top:20px"><b>Good to know:</b> what your pool pays depends on network difficulty, pool luck and pool fees, so it isn't a fixed rate. How fast the work is delivered depends on the mint, so check the mint's estimated delivery time. Pools pay out once your balance passes their payout threshold. At low volume, a purchase and a redemption close together in time can still hint that they're linked.</p>
+    <p class="unit" style="margin-top:20px"><b>Good to know:</b> what your pool pays depends on network difficulty, pool luck and pool fees, so it isn't a fixed rate. How fast the work is delivered depends on the mine, so check the mine's estimated delivery time. Pools pay out once your balance passes their payout threshold. At low volume, a purchase and a redemption close together in time can still hint that they're linked.</p>
   </section>
 
   <section id="money">
@@ -224,7 +224,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
 <text class="lbl f-hash" x="387.9" y="257.4">redeem TiH</text>
 <text class="lbl f-btc" x="505.2" y="171.2">BTC, no KYC</text>
 <g class="node"><rect x="262" y="12" width="116" height="56" rx="10"/><text class="nm" x="320" y="47">You</text></g>
-<g class="node"><rect x="12" y="352" width="116" height="56" rx="10"/><text class="nm" x="70" y="378">Miner</text><text class="sub" x="70" y="395">Hashu mint</text></g>
+<g class="node"><rect x="12" y="352" width="116" height="56" rx="10"/><text class="nm" x="70" y="378">Miner</text><text class="sub" x="70" y="395">Hashu mine</text></g>
 <g class="node"><rect x="512" y="352" width="116" height="56" rx="10"/><text class="nm" x="570" y="387">Pool</text></g>
 </svg>
         <p>You pay the miner in sats, USDT or USDC and get TiH vouchers. Redeeming them points the miner's hashrate at your pool, which pays you bitcoin directly. No exchange in between.</p>
@@ -239,7 +239,7 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
   </section>
 
   <section id="run">
-    <h2>Run your own mint</h2>
+    <h2>Run your own mine</h2>
     <div class="grid2">
       <div class="card"><h3>Self-hosted software, not a service</h3><p>Anyone with hashrate can run Hashu and sell it as vouchers: one binary runs the Cashu mint, the Lightning, USDT and USDC payment rails, the Stratum proxy and an operator dashboard. Pricing follows the live hashrate rental market.</p></div>
       <div class="card"><h3>Built on open pieces</h3><p>Rust on the Cashu Development Kit (cdk), mainnet Lightning through phoenixd, and Tether's Mining Development Kit for the hardware side. Dual-licensed MIT / Apache-2.0.</p></div>
@@ -247,14 +247,14 @@ footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--i
     <div class="links-grid" style="margin-top:16px">
       <a href="https://github.com/asherp/hashu"><b>Source</b><span>github.com/asherp/hashu</span></a>
       <a class="mint-link" data-path="slides/" href="https://mint.hashu.io/slides/"><b>Slides</b><span>Honorable mention, bitcoin++ Seoul privacy hackathon</span></a>
-      <a class="mint-link" href="https://mint.hashu.io/"><b>Live mint</b><span class="mint-host">mint.hashu.io</span></a>
+      <a class="mint-link" href="https://mint.hashu.io/"><b>Live mine</b><span class="mint-host">mint.hashu.io</span></a>
       <a class="mint-link" data-path="checkout/" data-buy href="https://mint.hashu.io/checkout/"><b>Buy hashrate</b><span>Checkout with Lightning, USDT or USDC</span></a>
       <a href="https://app.hashu.io/"><b>Hashu wallet</b><span>Hold, send and redeem vouchers at app.hashu.io</span></a>
-      <a class="waitlist-link" href="/waitlist/" hidden><b>Want a hosted mint?</b><span>Miners: join the waitlist</span></a>
+      <a class="waitlist-link" href="/waitlist/" hidden><b>Want a hosted mine?</b><span>Miners: join the waitlist</span></a>
       <a href="/redeem/"><b>Redeem at your pool</b><span>Setup guides for OCEAN, Braiins, F2Pool and more</span></a>
       <a href="/compare/"><b>How Hashu compares</b><span>Cashu projects, hashrate rental, cloud mining</span></a>
       <a href="/units/"><b>Hash units</b><span>Why vouchers count TiH, and how it converts to TH/s</span></a>
-      <a class="mint-link" data-path="v1/info" href="https://mint.hashu.io/v1/info"><b>Mint API</b><span>/v1/info</span></a>
+      <a class="mint-link" data-path="v1/info" href="https://mint.hashu.io/v1/info"><b>Mine API</b><span>/v1/info</span></a>
     </div>
   </section>
 
@@ -270,7 +270,7 @@ function markSoldOut(soldOut) {
     if (!a.dataset.label) a.dataset.label = a.innerHTML;
     a.classList.toggle('soldout', soldOut && a.classList.contains('btn'));
     a.setAttribute('aria-disabled', soldOut ? 'true' : 'false');
-    a.title = soldOut ? 'Sold out: the mint has no hashrate available to sell right now' : '';
+    a.title = soldOut ? 'Sold out: the mine has no hashrate available to sell right now' : '';
     a.innerHTML = soldOut ? a.dataset.label.replace('Buy hashrate', 'Sold out') : a.dataset.label;
   });
 }
@@ -287,7 +287,7 @@ fetch('/checkout/api/info', { cache: 'no-store' })
     markSoldOut(i.available_tih === 0 || !!i.issuance_paused);
     const live = document.getElementById('live-status');
     if (live && (i.issuance_paused || i.available_tih === 0)) {
-      live.textContent = 'Demo mint on mainnet (' + (i.issuance_paused ? 'sales paused' : 'sold out') + '). Run your own to sell your hashrate.';
+      live.textContent = 'Demo mine on mainnet (' + (i.issuance_paused ? 'sales paused' : 'sold out') + '). Run your own to sell your hashrate.';
     }
     if (!/^https?:\/\//.test(i.mint_url || '')) return;
     const base = i.mint_url.replace(/\/+$/, '') + '/';

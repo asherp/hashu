@@ -113,7 +113,7 @@ tr.us th { color: var(--brand); }
       <a href="/redeem/">Pool guides</a>
       <a href="/units/">Units</a>
       <a href="https://github.com/asherp/hashu">GitHub</a>
-      <a href="https://mint.hashu.io/checkout/">Live mint</a>
+      <a href="https://mint.hashu.io/checkout/">Live mine</a>
     </div>
   </nav>
 
@@ -141,12 +141,12 @@ tr.us th { color: var(--brand); }
     <div class="tbl"><table>
       <thead><tr><th>Project</th><th>A token is</th><th>Backed by</th><th>Redeemed for</th><th>Status</th></tr></thead>
       <tbody>
-        <tr class="us"><th>Hashu</th><td>A voucher for hashes, counted in TiH (2<sup>40</sup> hashes), sold to buyers</td><td>The hashrate of the mint's miners. No bitcoin is held for users</td><td>Work delivered to the holder's pool. Never sats</td><td>Demo mint on mainnet at mint.hashu.io</td></tr>
+        <tr class="us"><th>Hashu</th><td>A voucher for hashes, counted in TiH (2<sup>40</sup> hashes), sold to buyers</td><td>The hashrate of the mine's miners. No bitcoin is held for users</td><td>Work delivered to the holder's pool. Never sats</td><td>Demo mine on mainnet at mint.hashu.io</td></tr>
         <tr><th>Cashu mints<br><small>Nutshell, CDK</small></th><td>An IOU for sats</td><td>Bitcoin the mint holds in custody</td><td>Sats over Lightning (melt)</td><td>Widely used, with wallets such as Cashu.me and Minibits</td></tr>
         <tr><th>Hashpool<br><small>eHash, by vnprc</small></th><td>A token per mining share, issued by a pool to its miners</td><td>Proof of work: a claim on the pool's future block rewards</td><td>Bitcoin after a maturity window, over Lightning, on-chain or as ecash</td><td>Early development, Testnet4</td></tr>
       </tbody>
     </table></div>
-    <p class="note">Hashu runs on the Cashu Development Kit (CDK), the same mint software many Cashu mints use, and its vouchers work with any Cashu wallet, such as Cashu.me. The difference is the unit: a regular mint holds bitcoin and owes sats, while a Hashu mint holds no bitcoin for users and owes only work. Hashpool sits on the other side of the market. It pays miners for shares they have already produced, while Hashu sells future hashes to buyers. The two could fit together: a Hashu voucher redeemed at a Hashpool would turn bought hashes into eHash.</p>
+    <p class="note">Hashu runs on the Cashu Development Kit (CDK), the same mint software many Cashu mints use, and its vouchers work with any Cashu wallet, such as Cashu.me. The difference is the unit: a regular mint holds bitcoin and owes sats, while a Hashu mine holds no bitcoin for users and owes only work. Hashpool sits on the other side of the market. It pays miners for shares they have already produced, while Hashu sells future hashes to buyers. The two could fit together: a Hashu voucher redeemed at a Hashpool would turn bought hashes into eHash.</p>
   </section>
 
   <section id="rental">
@@ -154,13 +154,13 @@ tr.us th { color: var(--brand); }
     <div class="tbl"><table>
       <thead><tr><th>Service</th><th>How you buy</th><th>Account and payment</th><th>Smallest order</th><th>Fees</th></tr></thead>
       <tbody>
-        <tr class="us"><th>Hashu</th><td>Buy a quantity of hashes now, redeem them later at any Stratum pool and worker. Vouchers can be held, split or handed on</td><td>No account. Pay each order over Lightning or in USDT or USDC</td><td>1 PiH (2<sup>50</sup> hashes, about 0.3 TH/s for one hour)</td><td>Set by each mint operator as a markup on the market price</td></tr>
+        <tr class="us"><th>Hashu</th><td>Buy a quantity of hashes now, redeem them later at any Stratum pool and worker. Vouchers can be held, split or handed on</td><td>No account. Pay each order over Lightning or in USDT or USDC</td><td>1 PiH (2<sup>50</sup> hashes, about 0.3 TH/s for one hour)</td><td>Set by each mine operator as a markup on the market price</td></tr>
         <tr><th>MiningRigRentals</th><td>Rent a specific rig by the hour, pointed at your pool</td><td>Account with a deposited balance</td><td>Set by each rig owner</td><td>3% on transactions</td></tr>
         <tr><th>NiceHash</th><td>Place a hashpower order with a price and speed, pointed at your pool</td><td>Account with a deposited BTC balance</td><td>Set by NiceHash per algorithm</td><td>Set by NiceHash</td></tr>
         <tr><th>Braiins Hashpower</th><td>Bid a price, budget and destination pool; hashrate is delivered and settled hourly</td><td>Braiins ID account with a BTC deposit, screened for compliance</td><td>1 PH/s, with a budget of 10,000 sats or more</td><td>0% on spot bids during the beta</td></tr>
       </tbody>
     </table></div>
-    <p class="note">Rental marketplaces deliver hashrate to your pool, the same thing a Hashu redemption does. The difference is in how you hold it. On a marketplace your money sits in an account and buys time on rigs. With Hashu you hold bearer vouchers for a fixed quantity of work, and blind signatures mean the mint can't link who bought to who redeems. Rental marketplaces are much larger: Hashu's demo mint sells only what its own miners can produce.</p>
+    <p class="note">Rental marketplaces deliver hashrate to your pool, the same thing a Hashu redemption does. The difference is in how you hold it. On a marketplace your money sits in an account and buys time on rigs. With Hashu you hold bearer vouchers for a fixed quantity of work, and blind signatures mean the mine can't link who bought to who redeems. Rental marketplaces are much larger: Hashu's demo mine sells only what its own miners can produce.</p>
   </section>
 
   <section id="cloud">
@@ -180,8 +180,8 @@ tr.us th { color: var(--brand); }
         <ul>
           <li>You buy a fixed quantity of hashes, priced from the live hashrate rental market.</li>
           <li>The work goes to your own pool and worker, where you can watch the shares arrive.</li>
-          <li>The mint pays nothing out. Any reward comes from your pool, under its rules.</li>
-          <li>A voucher is a purchase of computation, not an investment, and it can't be cashed out at the mint.</li>
+          <li>The mine pays nothing out. Any reward comes from your pool, under its rules.</li>
+          <li>A voucher is a purchase of computation, not an investment, and it can't be cashed out at the mine.</li>
         </ul>
       </div>
     </div>
@@ -189,7 +189,7 @@ tr.us th { color: var(--brand); }
     <div class="tbl" style="margin-top:12px"><table>
       <thead><tr><th></th><th>What you buy</th><th>Account and payment</th><th>Where the work goes</th><th>Fees</th></tr></thead>
       <tbody>
-        <tr class="us"><th>Hashu</th><td>A fixed quantity of hashes as bearer vouchers, redeemed whenever you choose</td><td>No account. Lightning, USDT or USDC per order</td><td>Any Stratum pool and worker you name at redemption</td><td>Mint operator's markup on the market price</td></tr>
+        <tr class="us"><th>Hashu</th><td>A fixed quantity of hashes as bearer vouchers, redeemed whenever you choose</td><td>No account. Lightning, USDT or USDC per order</td><td>Any Stratum pool and worker you name at redemption</td><td>Mine operator's markup on the market price</td></tr>
         <tr><th>NiceHash VM Mining</th><td>A package of "virtual miners": fixed price, speed and duration, or a flexible amount and speed</td><td>Verified account with 2FA, paid in USDT from your NiceHash wallet</td><td>The NiceHash pool, which pays BTC to your NiceHash wallet every 4 hours, or your own pool, set at purchase</td><td>6% infrastructure fee, a fixed fee of up to 1 USDT, and a 3% buy fee on each purchase or refill; hashrate priced 1% above the index</td></tr>
       </tbody>
     </table></div>

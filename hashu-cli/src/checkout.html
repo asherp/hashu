@@ -137,7 +137,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
     <div class="price"><b id="price">—</b><span class="note" id="price-label"></span></div>
     <p class="note seller" id="seller-buy" hidden></p>
     <button class="act primary" id="btn-buy">Get invoice</button>
-    <p class="note" id="paused" hidden>Sales are paused by the mint operator.</p>
+    <p class="note" id="paused" hidden>Sales are paused by the mine operator.</p>
     <div id="cap-bar" hidden></div>
     <p class="note" id="avail" hidden></p>
     <p class="note" id="over" hidden></p>
@@ -162,7 +162,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
     <textarea id="token" readonly></textarea>
     <details class="words" id="token-words-box" hidden>
       <summary>Show as words</summary>
-      <p class="note" style="margin-top:8px">The same voucher as plain English, made with Glossia. Read it aloud, write it down or send it in a message, and paste it into any Hashu redeem box to get the token back; a few mistyped words are repaired. It doesn't look like a token and names no mint, but it is still the voucher: anyone who has it can redeem it.</p>
+      <p class="note" style="margin-top:8px">The same voucher as plain English, made with Glossia. Read it aloud, write it down or send it in a message, and paste it into any Hashu redeem box to get the token back; a few mistyped words are repaired. It doesn't look like a token and names no mine, but it is still the voucher: anyone who has it can redeem it.</p>
       <p class="words-text" id="token-words"></p>
       <div class="row" style="margin-top:8px"><button class="act" id="btn-copy-words">Copy words</button><button class="act" id="btn-dl-words">Download .txt</button><button class="act" id="btn-full-words">Full screen</button></div>
     </details>
@@ -205,7 +205,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
     <details class="words" id="r-backup">
       <summary>Backup pool (optional)</summary>
       <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
-        <p class="note">If your pool can't be reached or refuses the work, the mint's miners switch here and keep filling the same redemption. They go back to your pool once it answers again.</p>
+        <p class="note">If your pool can't be reached or refuses the work, the mine's miners switch here and keep filling the same redemption. They go back to your pool once it answers again.</p>
         <label class="f">Backup pool URL
           <input type="text" id="r-backup-pool" placeholder="stratum+tcp://backup.example:3333">
         </label>
@@ -220,7 +220,7 @@ details.words summary { cursor: pointer; color: var(--ink-2, inherit); font-size
     <p class="tok-msg" id="r-check" hidden></p>
     <p class="note seller" id="seller-redeem" hidden></p>
     <button class="act primary" id="btn-redeem">Send me the hashrate</button>
-    <p class="note">The mint's miners switch to your pool and mine under your worker name until the TiH in the token is delivered.</p>
+    <p class="note">The mine's miners switch to your pool and mine under your worker name until the TiH in the token is delivered.</p>
   </section>
 
   <!-- 5. progress -->
@@ -413,7 +413,7 @@ function etaText (n) {
   const d = st.info && st.info.delivery
   if (!d) return ''
   const hs = d.hashrate_hs || 0
-  if (!(hs > 0)) return 'No hashrate on the mint right now; delivery starts when its miners are back.'
+  if (!(hs > 0)) return 'No hashrate on the mine right now; delivery starts when its miners are back.'
   const total = (d.queue_tih + n) * HASHES_PER_TIH / hs
   const ahead = d.queue_tih > 0.0005 ? `, after ${d.open_redemptions} earlier redemption${d.open_redemptions === 1 ? '' : 's'}` : ''
   const done = new Date(Date.now() + Math.round(total / 60) * 60000)
@@ -463,7 +463,7 @@ async function loadInfo () {
       const min = (st.info.min_buy_tih || 1).toLocaleString()
       $('avail').textContent = av > 0 ? `${fmtAmount(av)} available now (${(st.info.rented_ths || 0).toFixed(1)} TH/s rented${ends}).`
         : st.info.below_min ? `Sold out: ${fmtTih(st.info.headroom_tih, 0)} TiH of headroom left, below the ${min} TiH minimum purchase. Capacity counts the mint's declared hashrate rentals × hours left, not live hashrate. Purchases reopen when more is rented; this page updates on its own.`
-        : 'Sold out: the mint has no hashrate available to sell right now. Purchases reopen when new hashrate is rented; this page updates on its own.'
+        : 'Sold out: the mine has no hashrate available to sell right now. Purchases reopen when new hashrate is rented; this page updates on its own.'
     }
     $('avail').classList.toggle('soldout', av === 0)
     const total = st.info.capacity_tih
@@ -661,7 +661,7 @@ async function checkToken () {
   $('btn-redeem').disabled = true
   showTokenCard(false)
   if (!text) { tokMsg(''); return }
-  tokMsg('Checking token with the mint…', 'busy')
+  tokMsg('Checking token with the mine…', 'busy')
   try {
     const r = await post('api/token', { token: text })
     if (seq !== tokSeq) return
@@ -672,7 +672,7 @@ async function checkToken () {
     $('r-token-amt').innerHTML = `${r.amount_tih} <small>TiH ready to redeem</small>`
     $('r-token-sub').textContent = r.spent_tih > 0
       ? `${r.spent_tih} of the token's ${r.total_tih} TiH is already spent; the rest redeems.`
-      : (etaText(r.amount_tih) || 'Checked with the mint.')
+      : (etaText(r.amount_tih) || 'Checked with the mine.')
     if (r.from_words) {
       $('r-token-sub').textContent += r.repaired_words
         ? ` Read from words; ${r.repaired_words} mistyped word${r.repaired_words === 1 ? ' was' : 's were'} repaired.`
@@ -746,7 +746,7 @@ $('btn-redeem').addEventListener('click', async () => {
     // only into the order link's #fragment, which the server never sees.
     const C = await loadChange()
     const ks = ((await mintApi('v1/keysets')).keysets || []).find((k) => k.active && String(k.unit).toLowerCase() === 'tih')
-    if (!ks) throw new Error('The mint has no active TiH keyset.')
+    if (!ks) throw new Error('The mine has no active TiH keyset.')
     const key = C.newKey(), n = C.blankCount(st.tokenAmount || 2 ** 20)
     const outputs = C.blanks(key, n, ks.id)
     const fallback_pools = $('r-backup-pool').value.trim()
