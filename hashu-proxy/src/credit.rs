@@ -361,11 +361,13 @@ mod tests {
         let ledger = Arc::new(RedemptionLedger::new());
         ledger
             .open(
-                Redemption::new(id(1), 1, "p".into(), "w".into()).with_fallbacks(vec![PoolTarget {
-                    pool_url: "q".into(),
-                    worker_name: "v".into(),
-                    worker_password: None,
-                }]),
+                Redemption::new(id(1), 1, "p".into(), "w".into()).with_fallbacks(vec![
+                    PoolTarget {
+                        pool_url: "q".into(),
+                        worker_name: "v".into(),
+                        worker_password: None,
+                    },
+                ]),
             )
             .unwrap();
         let ctx = CreditContext::new(
@@ -383,7 +385,10 @@ mod tests {
             .collect();
         assert_eq!(
             got,
-            vec![("q", 8 * HASHES_PER_DIFF_ONE), ("p", 2 * HASHES_PER_DIFF_ONE)]
+            vec![
+                ("q", 8 * HASHES_PER_DIFF_ONE),
+                ("p", 2 * HASHES_PER_DIFF_ONE)
+            ]
         );
     }
 

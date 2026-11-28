@@ -1209,6 +1209,9 @@ async fn operator_json(s: &OperatorState) -> anyhow::Result<Value> {
             // bind behind a port mapping.
             "stratum": s.info.stratum,
             "default_upstream": s.control.default_upstream,
+            // How a new rig names itself to mine for this mint (the
+            // operator app's "Add worker"); null without a proxy router.
+            "workers": s.control.router.as_ref().map(|r| r.rig_naming()),
             "metrics": {
                 "connections_accepted": m.connections_accepted,
                 "shares_submitted": m.shares_submitted,

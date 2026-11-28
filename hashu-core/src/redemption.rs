@@ -337,11 +337,15 @@ impl Redemption {
         if self.state.is_finished() {
             return self.state;
         }
-        let target = self.pools().into_iter().nth(pool).unwrap_or_else(|| PoolTarget {
-            pool_url: self.pool_url.clone(),
-            worker_name: self.worker_name.clone(),
-            worker_password: None,
-        });
+        let target = self
+            .pools()
+            .into_iter()
+            .nth(pool)
+            .unwrap_or_else(|| PoolTarget {
+                pool_url: self.pool_url.clone(),
+                worker_name: self.worker_name.clone(),
+                worker_password: None,
+            });
         self.add_pool_hashes(&target.pool_url, &target.worker_name, hashes);
         self.accumulated_hashes = self.accumulated_hashes.saturating_add(hashes);
         self.refresh_state();
@@ -382,8 +386,11 @@ impl Redemption {
     /// exactly [`Self::delivered_tih`]: each pool's share rounded down,
     /// then the units rounding leaves over go to the largest remainders.
     pub fn pool_tih(&self) -> Vec<(&PoolHashes, u64)> {
-        let mut out: Vec<(&PoolHashes, u64)> =
-            self.pool_hashes.iter().map(|p| (p, p.tih_floor())).collect();
+        let mut out: Vec<(&PoolHashes, u64)> = self
+            .pool_hashes
+            .iter()
+            .map(|p| (p, p.tih_floor()))
+            .collect();
         let sum: u64 = out.iter().map(|(_, t)| *t).sum();
         let mut left = self.delivered_tih().saturating_sub(sum);
         let mut by_rem: Vec<usize> = (0..out.len()).collect();

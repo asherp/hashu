@@ -763,6 +763,14 @@ async fn supplier_status(State(ctx): State<SupplierCtx>) -> Response {
             hashu_core::denom::sats_per_th_day(hashu_core::denom::msat_per_pih_from_sats_per_eih(a as f64))
         }),
         "pays_by_lightning": s.lnurl.is_some(),
+        // Where this supplier's rigs connect, as `<name>.<rig>` with
+        // `pw=<secret>` (the operator app's "Add worker").
+        "stratum": {
+            "url": tenants.cfg.stratum.url,
+            "host": tenants.cfg.stratum.host,
+            "port": tenants.cfg.stratum.port,
+            "user": format!("{}.<rig>", ctx.name),
+        },
         "capacity": cap,
         "epochs": t.epochs.is_some(),
     }))

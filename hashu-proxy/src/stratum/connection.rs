@@ -463,11 +463,7 @@ impl Leg {
     /// Feed a line from this leg's pool to its session; on an accepted
     /// share, rebuild its header and credit the redemption the share was
     /// sent for (which also appends it to that redemption's tree). Returns an accepted share's difficulty.
-    fn ingest_pool(
-        &mut self,
-        line: &str,
-        ctx: &Ctx,
-    ) -> Option<f64> {
+    fn ingest_pool(&mut self, line: &str, ctx: &Ctx) -> Option<f64> {
         self.session.try_absorb_subscribe_response(line);
         match self.session.ingest(line, Direction::P2M) {
             SessionEvent::SubmitRejected { id } => {

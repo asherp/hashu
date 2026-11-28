@@ -107,6 +107,19 @@ impl HomeConfig {
                 .is_some_and(|o| !o.is_empty())
     }
 
+    /// How a new rig of the operator's names itself, for the operator
+    /// app's "Add worker" helper: `worker_prefix` (the deprecated
+    /// [`HomeConfig::operator_worker`], users `<prefix>.<rig>`), whether a
+    /// `pw=<secret>` rig secret makes a rig Hashu's (`secret`), and whether
+    /// any rig is borrowed (`open`, neither set). Never the secret itself.
+    pub fn rig_naming(&self) -> serde_json::Value {
+        serde_json::json!({
+            "worker_prefix": self.operator_worker.as_deref().filter(|w| !w.is_empty()),
+            "secret": self.operator_secret_sha256.is_some(),
+            "open": !self.has_operator(),
+        })
+    }
+
     /// Whether `secret` (a rig's `pw=`) is the operator's.
     pub fn is_operator_secret(&self, secret: Option<&str>) -> bool {
         match (self.operator_secret_sha256.as_deref(), secret) {
@@ -499,6 +512,23 @@ mod tests {
         );
         assert_eq!(id.secret.as_deref(), Some("s3cret"));
         assert_eq!(id.home.unwrap().worker_password, "d=512");
+    }
+
+    #[test]
+    fn rig_naming_names_the_prefix_never_the_secret() {
+        let open = HomeConfig::default().rig_naming();
+        assert_eq!(open["open"], true);
+        assert!(open["worker_prefix"].is_null());
+        let cfg = HomeConfig {
+            operator_worker: Some("acct".into()),
+            operator_secret_sha256: Some("ab".repeat(32)),
+            ..HomeConfig::default()
+        };
+        let n = cfg.rig_naming();
+        assert_eq!(n["worker_prefix"], "acct");
+        assert_eq!(n["secret"], true);
+        assert_eq!(n["open"], false);
+        assert!(!n.to_string().contains(&"ab".repeat(32)));
     }
 
     #[test]
