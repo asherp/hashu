@@ -55,6 +55,8 @@ crc32fast = "1"
 ciborium = "0.2"
 # TiH vouchers as English words (see src/words.rs). No nlprule or image.
 glossia = { version = "0.7", default-features = false }
+# Renders the seller's terms of sale (--terms-file) at /terms/.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 [dev-dependencies]
 base64 = "0.22"

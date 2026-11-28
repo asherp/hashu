@@ -196,6 +196,9 @@ services:
       # checkout purchase and redemption (empty: no seller line).
       HASHU_SELLER_NAME: ${HASHU_SELLER_NAME:-}
       HASHU_TERMS_URL: ${HASHU_TERMS_URL:-}
+      # A Markdown file under deploy/terms/ (mounted below) served at
+      # /terms/, e.g. /etc/hashu/terms/seller-terms.md.
+      HASHU_TERMS_FILE: ${HASHU_TERMS_FILE:-}
     command:
       - mint
       - run
@@ -210,6 +213,8 @@ services:
       - --network=${HASHU_NETWORK:-bitcoin}
     volumes:
       - hashu_data:/data
+      # Terms of sale (HASHU_TERMS_FILE), read-only from the checkout.
+      - ./terms:/etc/hashu/terms:ro
     # No `ports:` for Stratum: miners reach it through `relay` below, which
     # keeps their connections open while this container is redeployed.
     networks: [backend, edge]
